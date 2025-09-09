@@ -33,7 +33,6 @@ tmp/
 
 # Data storage
 data/
-*.json
 *.db
 *.sqlite
 
