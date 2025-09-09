@@ -45,11 +45,11 @@ class SourceHandlers {
             const track = await this.handleURL(query);
             if (track) results.push(track);
         } else {
-            // Search both Spotify and YouTube
+            // Search Spotify, YouTube, and SoundCloud
             const searches = await Promise.allSettled([
                 this.searchSpotify(query, limit),
-                this.searchYouTube(query, limit)
-                // SoundCloud temporarily disabled due to API issues
+                this.searchYouTube(query, limit),
+                this.searchSoundCloud(query, limit)
             ]);
 
             for (const search of searches) {
@@ -112,25 +112,86 @@ class SourceHandlers {
 
     async searchSoundCloud(query, limit = 5) {
         try {
-            // Use web scraping as fallback for SoundCloud
-            const searchUrl = `https://soundcloud.com/search?q=${encodeURIComponent(query)}`;
+            // Use SoundCloud's API-like endpoint (public)
+            const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}&client_id=LBCcHmRB8XSStWL6wKH2HPACspQlXeOt`;
             const response = await fetch(searchUrl, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 }
             });
             
             if (!response.ok) {
-                throw new Error(`SoundCloud search failed: ${response.status}`);
+                console.log('🔍 SoundCloud API failed, using fallback search');
+                return await this.searchSoundCloudFallback(query, limit);
             }
             
-            // For now, return empty array as SoundCloud scraping is complex
-            // Users can still paste SoundCloud URLs directly
-            console.log('🔍 SoundCloud search attempted, please use direct URLs for now');
-            return [];
+            const data = await response.json();
+            
+            if (!data.collection || data.collection.length === 0) {
+                return [];
+            }
+            
+            return data.collection.map(track => ({
+                title: track.title,
+                author: track.user?.username || 'Unknown Artist',
+                duration: this.formatDuration(track.duration || 0),
+                url: track.permalink_url,
+                thumbnail: track.artwork_url?.replace('large', 't500x500') || track.user?.avatar_url,
+                source: 'soundcloud',
+                type: 'track',
+                playbackCount: track.playback_count || 0,
+                likesCount: track.favoritings_count || 0,
+                description: track.description || '',
+                id: track.id,
+                streamable: track.streamable
+            }));
             
         } catch (error) {
             console.error('❌ SoundCloud search error:', error);
+            return await this.searchSoundCloudFallback(query, limit);
+        }
+    }
+
+    async searchSoundCloudFallback(query, limit = 5) {
+        try {
+            // Fallback: Try different SoundCloud client IDs
+            const clientIds = [
+                'LBCcHmRB8XSStWL6wKH2HPACspQlXeOt',
+                'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoJ',
+                'a3e059563d7fd3372b49b37f00a00bcf'
+            ];
+            
+            for (const clientId of clientIds) {
+                try {
+                    const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}&client_id=${clientId}`;
+                    const response = await fetch(searchUrl);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.collection && data.collection.length > 0) {
+                            console.log('✅ SoundCloud fallback successful');
+                            return data.collection.slice(0, limit).map(track => ({
+                                title: track.title,
+                                author: track.user?.username || 'Unknown Artist',
+                                duration: this.formatDuration(track.duration || 0),
+                                url: track.permalink_url,
+                                thumbnail: track.artwork_url,
+                                source: 'soundcloud',
+                                type: 'track',
+                                id: track.id
+                            }));
+                        }
+                    }
+                } catch (err) {
+                    continue;
+                }
+            }
+            
+            console.log('🔍 All SoundCloud methods failed, returning empty results');
+            return [];
+            
+        } catch (error) {
+            console.error('❌ SoundCloud fallback error:', error);
             return [];
         }
     }
@@ -143,9 +204,228 @@ class SourceHandlers {
             return await this.getSpotifyTrack(url);
         } else if (url.includes('soundcloud.com')) {
             return await this.getSoundCloudTrack(url);
+        } else if (url.includes('bandcamp.com')) {
+            return await this.getBandcampTrack(url);
+        } else if (url.includes('vimeo.com')) {
+            return await this.getVimeoTrack(url);
+        } else if (this.isDirectAudioURL(url)) {
+            return await this.getDirectAudioTrack(url);
+        } else if (this.isStreamPlaylist(url)) {
+            return await this.getStreamPlaylistTrack(url);
         }
         
         return null;
+    }
+
+    isDirectAudioURL(url) {
+        const audioExtensions = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus'];
+        const lowerUrl = url.toLowerCase();
+        return audioExtensions.some(ext => lowerUrl.includes(ext)) || 
+               lowerUrl.includes('audio') || 
+               url.match(/\.(mp3|flac|wav|m4a|aac|ogg|opus)(\?|$)/i);
+    }
+
+    isStreamPlaylist(url) {
+        return url.toLowerCase().includes('.m3u') || 
+               url.toLowerCase().includes('.pls') ||
+               url.includes('stream') ||
+               url.includes('radio');
+    }
+
+    async getDirectAudioTrack(url) {
+        try {
+            console.log(`🎵 Processing direct audio URL: ${url}`);
+            
+            // Try to get metadata from HTTP headers
+            const response = await fetch(url, { method: 'HEAD' });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const contentType = response.headers.get('content-type');
+            const contentLength = response.headers.get('content-length');
+            const filename = url.split('/').pop().split('?')[0];
+            
+            if (!contentType?.includes('audio')) {
+                console.log(`⚠️ Warning: Content-Type is ${contentType}, may not be audio`);
+            }
+
+            return {
+                title: decodeURIComponent(filename) || 'Direct Audio Stream',
+                author: 'Unknown Artist',
+                duration: contentLength ? this.estimateDuration(parseInt(contentLength)) : '0:00',
+                url: url,
+                thumbnail: null,
+                source: 'direct',
+                type: 'audio',
+                contentType: contentType,
+                fileSize: contentLength ? parseInt(contentLength) : 0,
+                filename: filename
+            };
+        } catch (error) {
+            console.error('❌ Error processing direct audio URL:', error);
+            return null;
+        }
+    }
+
+    async getStreamPlaylistTrack(url) {
+        try {
+            console.log(`🎵 Processing stream playlist: ${url}`);
+            
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const playlistContent = await response.text();
+            
+            // Parse M3U playlist
+            if (url.includes('.m3u') || playlistContent.includes('#EXTM3U')) {
+                const streamUrl = this.parseM3UPlaylist(playlistContent);
+                if (streamUrl) {
+                    return {
+                        title: 'Internet Radio Stream',
+                        author: 'Radio Station',
+                        duration: 'Live',
+                        url: streamUrl,
+                        thumbnail: null,
+                        source: 'radio',
+                        type: 'stream',
+                        isLive: true,
+                        originalPlaylist: url
+                    };
+                }
+            }
+            
+            // Parse PLS playlist
+            if (url.includes('.pls') || playlistContent.includes('[playlist]')) {
+                const streamUrl = this.parsePLSPlaylist(playlistContent);
+                if (streamUrl) {
+                    return {
+                        title: 'Internet Radio Stream',
+                        author: 'Radio Station',
+                        duration: 'Live',
+                        url: streamUrl,
+                        thumbnail: null,
+                        source: 'radio',
+                        type: 'stream',
+                        isLive: true,
+                        originalPlaylist: url
+                    };
+                }
+            }
+
+            throw new Error('Unable to parse stream playlist');
+        } catch (error) {
+            console.error('❌ Error processing stream playlist:', error);
+            return null;
+        }
+    }
+
+    parseM3UPlaylist(content) {
+        const lines = content.split('\n');
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('#') && trimmed.startsWith('http')) {
+                return trimmed;
+            }
+        }
+        return null;
+    }
+
+    parsePLSPlaylist(content) {
+        const lines = content.split('\n');
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('File') && trimmed.includes('=http')) {
+                return trimmed.split('=')[1];
+            }
+        }
+        return null;
+    }
+
+    estimateDuration(fileSize) {
+        // Rough estimate: average MP3 is ~1MB per minute at 128kbps
+        const estimatedMinutes = Math.round(fileSize / (1024 * 1024));
+        return estimatedMinutes > 0 ? `${estimatedMinutes}:00` : '0:30';
+    }
+
+    async getBandcampTrack(url) {
+        try {
+            console.log(`🎵 Processing Bandcamp URL: ${url}`);
+            
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Bandcamp fetch failed: ${response.status}`);
+            }
+            
+            const html = await response.text();
+            const $ = cheerio.load(html);
+            
+            // Extract track info from Bandcamp page
+            const title = $('h2.trackTitle').text().trim() || 
+                         $('meta[property="og:title"]').attr('content') || 'Unknown Track';
+            const artist = $('.albumTitle .text').text().trim() || 
+                          $('meta[property="og:site_name"]').attr('content') || 'Unknown Artist';
+            const thumbnail = $('meta[property="og:image"]').attr('content');
+            
+            return {
+                title: title,
+                author: artist,
+                duration: '0:00', // Bandcamp duration is hard to extract without API
+                url: url,
+                thumbnail: thumbnail,
+                source: 'bandcamp',
+                type: 'track',
+                description: $('meta[property="og:description"]').attr('content') || ''
+            };
+        } catch (error) {
+            console.error('❌ Error processing Bandcamp track:', error);
+            return null;
+        }
+    }
+
+    async getVimeoTrack(url) {
+        try {
+            console.log(`🎵 Processing Vimeo URL: ${url}`);
+            
+            const videoId = url.match(/vimeo\.com\/(\d+)/)?.[1];
+            if (!videoId) {
+                throw new Error('Invalid Vimeo URL');
+            }
+            
+            const apiUrl = `https://vimeo.com/api/v2/video/${videoId}.json`;
+            const response = await fetch(apiUrl);
+            
+            if (!response.ok) {
+                throw new Error(`Vimeo API failed: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            const video = data[0];
+            
+            return {
+                title: video.title,
+                author: video.user_name,
+                duration: this.formatDuration(video.duration * 1000),
+                url: video.url,
+                thumbnail: video.thumbnail_large,
+                source: 'vimeo',
+                type: 'video',
+                viewCount: video.stats_number_of_plays,
+                description: video.description,
+                id: videoId
+            };
+        } catch (error) {
+            console.error('❌ Error processing Vimeo track:', error);
+            return null;
+        }
     }
 
     async getYouTubeTrack(url) {
@@ -244,7 +524,24 @@ class SourceHandlers {
     async getStream(track) {
         console.log(`🎵 Getting stream for: ${track.title} from ${track.source}`);
         
-        // Try different streaming methods in order of reliability
+        // Use different methods based on source
+        if (track.source === 'soundcloud') {
+            return await this.getSoundCloudStream(track);
+        } else if (track.source === 'spotify') {
+            return await this.getSpotifyStreamWithAlternatives(track);
+        } else if (track.source === 'youtube') {
+            return await this.getYouTubeStreamWithAlternatives(track);
+        } else if (track.source === 'direct') {
+            return await this.getDirectAudioStream(track);
+        } else if (track.source === 'radio') {
+            return await this.getRadioStream(track);
+        } else if (track.source === 'bandcamp') {
+            return await this.getBandcampStream(track);
+        } else if (track.source === 'vimeo') {
+            return await this.getVimeoStream(track);
+        }
+        
+        // Fallback to original methods
         const streamingMethods = [
             () => this.getStreamWithYtDlp(track),
             () => this.getStreamWithPlayDl(track),
@@ -266,6 +563,59 @@ class SourceHandlers {
         }
         
         throw new Error(`All streaming methods failed for: ${track.title}`);
+    }
+
+    async getYouTubeStreamWithAlternatives(track) {
+        // Try Invidious instances first, then regular YouTube
+        const methods = [
+            () => this.getInvidiousStream(track),
+            () => this.getStreamWithYtDlp(track),
+            () => this.getStreamWithPlayDl(track),
+            () => this.getStreamWithYtdlCore(track)
+        ];
+        
+        for (const [index, method] of methods.entries()) {
+            try {
+                console.log(`🔄 Trying YouTube method ${index + 1}/4`);
+                const stream = await method();
+                if (stream) {
+                    console.log(`✅ YouTube stream created with method ${index + 1}`);
+                    return stream;
+                }
+            } catch (error) {
+                console.log(`❌ YouTube method ${index + 1} failed: ${error.message}`);
+                continue;
+            }
+        }
+        
+        throw new Error(`All YouTube methods failed for: ${track.title}`);
+    }
+
+    async getSpotifyStreamWithAlternatives(track) {
+        // For Spotify tracks, try SoundCloud first, then YouTube alternatives
+        console.log(`🎵 Finding alternatives for Spotify track: ${track.title}`);
+        
+        const alternatives = [
+            () => this.findAndStreamSoundCloudAlternative(track),
+            () => this.findAndStreamInvidiousAlternative(track),
+            () => this.getSpotifyStream(track) // Original method as fallback
+        ];
+        
+        for (const [index, method] of alternatives.entries()) {
+            try {
+                console.log(`🔄 Trying Spotify alternative ${index + 1}/3`);
+                const stream = await method();
+                if (stream) {
+                    console.log(`✅ Spotify alternative stream created with method ${index + 1}`);
+                    return stream;
+                }
+            } catch (error) {
+                console.log(`❌ Spotify alternative ${index + 1} failed: ${error.message}`);
+                continue;
+            }
+        }
+        
+        throw new Error(`All Spotify alternatives failed for: ${track.title}`);
     }
     
     async getStreamWithYtDlp(track) {
@@ -614,21 +964,190 @@ class SourceHandlers {
 
     async getSoundCloudStream(track) {
         try {
-            // SoundCloud streaming requires complex audio extraction
-            // For now, fallback to YouTube search
-            console.log('🔍 SoundCloud streaming via YouTube fallback...');
+            console.log(`🎵 Getting SoundCloud stream for: ${track.title}`);
+            
+            // Try to get direct SoundCloud stream
+            const streamUrl = await this.getSoundCloudStreamUrl(track);
+            if (streamUrl) {
+                console.log('✅ Found direct SoundCloud stream');
+                const response = await fetch(streamUrl);
+                if (response.ok) {
+                    return response.body;
+                }
+            }
+            
+            throw new Error('Direct SoundCloud streaming failed');
+        } catch (error) {
+            console.log('❌ Direct SoundCloud failed, trying YouTube fallback...');
+            // Fallback to YouTube search
             const searchQuery = `${track.title} ${track.author}`;
             const youtubeResults = await this.searchYouTube(searchQuery, 1);
             
             if (youtubeResults.length > 0) {
-                return await this.getYouTubeStream(youtubeResults[0]);
+                return await this.getYouTubeStreamWithAlternatives(youtubeResults[0]);
             }
             
-            throw new Error('No YouTube equivalent found for SoundCloud track');
-        } catch (error) {
-            console.error('❌ Error getting SoundCloud stream:', error);
-            throw error;
+            throw new Error('No alternatives found for SoundCloud track');
         }
+    }
+
+    async getSoundCloudStreamUrl(track) {
+        try {
+            // Extract track ID from SoundCloud URL
+            const trackId = await this.getSoundCloudTrackId(track.url);
+            if (!trackId) return null;
+
+            // Try different client IDs for SoundCloud streaming
+            const clientIds = [
+                'LBCcHmRB8XSStWL6wKH2HPACspQlXeOt',
+                'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoJ',
+                'a3e059563d7fd3372b49b37f00a00bcf'
+            ];
+
+            for (const clientId of clientIds) {
+                try {
+                    const streamUrl = `https://api-v2.soundcloud.com/tracks/${trackId}/stream?client_id=${clientId}`;
+                    const response = await fetch(streamUrl, { method: 'HEAD' });
+                    
+                    if (response.ok) {
+                        return streamUrl;
+                    }
+                } catch (err) {
+                    continue;
+                }
+            }
+
+            return null;
+        } catch (error) {
+            console.error('❌ Error getting SoundCloud stream URL:', error);
+            return null;
+        }
+    }
+
+    async getSoundCloudTrackId(url) {
+        try {
+            // If URL already contains track ID, extract it
+            if (url.includes('/tracks/')) {
+                const match = url.match(/\/tracks\/(\d+)/);
+                return match ? match[1] : null;
+            }
+
+            // Otherwise, resolve the permalink URL to get track ID
+            const clientIds = ['LBCcHmRB8XSStWL6wKH2HPACspQlXeOt'];
+            
+            for (const clientId of clientIds) {
+                try {
+                    const resolveUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(url)}&client_id=${clientId}`;
+                    const response = await fetch(resolveUrl);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        return data.id?.toString();
+                    }
+                } catch (err) {
+                    continue;
+                }
+            }
+
+            return null;
+        } catch (error) {
+            console.error('❌ Error getting SoundCloud track ID:', error);
+            return null;
+        }
+    }
+
+    async getInvidiousStream(track) {
+        // List of working Invidious instances
+        const invidiousInstances = [
+            'https://invidious.fdn.fr',
+            'https://invidious.privacydev.net',
+            'https://inv.nadeko.net',
+            'https://invidious.slipfox.xyz',
+            'https://invidious.weblibre.org'
+        ];
+
+        const videoId = this.extractYouTubeVideoId(track.url);
+        if (!videoId) {
+            throw new Error('Invalid YouTube URL for Invidious');
+        }
+
+        for (const instance of invidiousInstances) {
+            try {
+                console.log(`🔄 Trying Invidious instance: ${instance}`);
+                const apiUrl = `${instance}/api/v1/videos/${videoId}`;
+                
+                const response = await fetch(apiUrl, {
+                    timeout: 5000,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                });
+
+                if (!response.ok) continue;
+
+                const data = await response.json();
+                const audioFormat = data.adaptiveFormats?.find(f => f.type?.includes('audio')) || 
+                                  data.formatStreams?.find(f => f.type?.includes('audio'));
+
+                if (audioFormat?.url) {
+                    console.log(`✅ Found Invidious stream: ${instance}`);
+                    const streamResponse = await fetch(audioFormat.url);
+                    if (streamResponse.ok) {
+                        return streamResponse.body;
+                    }
+                }
+            } catch (error) {
+                console.log(`❌ Invidious instance ${instance} failed: ${error.message}`);
+                continue;
+            }
+        }
+
+        throw new Error('All Invidious instances failed');
+    }
+
+    async findAndStreamSoundCloudAlternative(track) {
+        console.log(`🎵 Searching SoundCloud for: ${track.title} by ${track.author}`);
+        
+        const soundCloudResults = await this.searchSoundCloud(`${track.title} ${track.author}`, 3);
+        
+        for (const scTrack of soundCloudResults) {
+            if (this.isGoodMatch(track, scTrack)) {
+                console.log(`✅ Found SoundCloud alternative: ${scTrack.title}`);
+                return await this.getSoundCloudStream(scTrack);
+            }
+        }
+        
+        throw new Error('No SoundCloud alternative found');
+    }
+
+    async findAndStreamInvidiousAlternative(track) {
+        console.log(`🎵 Searching YouTube for Invidious streaming: ${track.title} by ${track.author}`);
+        
+        const youtubeResults = await this.searchYouTube(`${track.title} ${track.author}`, 3);
+        
+        for (const ytTrack of youtubeResults) {
+            if (this.isGoodMatch(track, ytTrack)) {
+                console.log(`✅ Found YouTube alternative for Invidious: ${ytTrack.title}`);
+                return await this.getInvidiousStream(ytTrack);
+            }
+        }
+        
+        throw new Error('No Invidious alternative found');
+    }
+
+    extractYouTubeVideoId(url) {
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/,
+            /youtube\.com\/embed\/([^&\n?#]+)/,
+            /youtube\.com\/v\/([^&\n?#]+)/
+        ];
+
+        for (const pattern of patterns) {
+            const match = url.match(pattern);
+            if (match) return match[1];
+        }
+
+        return null;
     }
 
 
@@ -910,6 +1429,147 @@ class SourceHandlers {
         }
         
         return matrix[str2.length][str1.length];
+    }
+
+    async getDirectAudioStream(track) {
+        try {
+            console.log(`🎵 Getting direct audio stream: ${track.title}`);
+            
+            const response = await fetch(track.url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Range': 'bytes=0-' // Support for range requests
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            console.log(`✅ Direct audio stream created successfully`);
+            return response.body;
+        } catch (error) {
+            console.error('❌ Error getting direct audio stream:', error);
+            throw error;
+        }
+    }
+
+    async getRadioStream(track) {
+        try {
+            console.log(`📻 Getting radio stream: ${track.title}`);
+            
+            const response = await fetch(track.url, {
+                headers: {
+                    'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16',
+                    'Icy-MetaData': '1' // Request ICY metadata for radio streams
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            console.log(`✅ Radio stream created successfully`);
+            return response.body;
+        } catch (error) {
+            console.error('❌ Error getting radio stream:', error);
+            throw error;
+        }
+    }
+
+    async getBandcampStream(track) {
+        try {
+            console.log(`🎵 Getting Bandcamp stream: ${track.title}`);
+            
+            // For Bandcamp, we need to extract the actual audio file URL
+            const response = await fetch(track.url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Bandcamp page fetch failed: ${response.status}`);
+            }
+            
+            const html = await response.text();
+            
+            // Extract audio file URL from Bandcamp page JavaScript
+            const audioUrlMatch = html.match(/"file":{"mp3-128":"([^"]+)"/);
+            if (audioUrlMatch) {
+                const audioUrl = audioUrlMatch[1].replace(/\\\//g, '/');
+                console.log(`✅ Found Bandcamp audio URL`);
+                
+                const audioResponse = await fetch(audioUrl);
+                if (audioResponse.ok) {
+                    return audioResponse.body;
+                }
+            }
+            
+            throw new Error('Could not extract Bandcamp audio URL');
+        } catch (error) {
+            console.error('❌ Error getting Bandcamp stream:', error);
+            // Fallback to YouTube search
+            console.log('🔄 Trying YouTube fallback for Bandcamp track...');
+            const youtubeResults = await this.searchYouTube(`${track.title} ${track.author}`, 1);
+            
+            if (youtubeResults.length > 0) {
+                return await this.getYouTubeStreamWithAlternatives(youtubeResults[0]);
+            }
+            
+            throw error;
+        }
+    }
+
+    async getVimeoStream(track) {
+        try {
+            console.log(`🎵 Getting Vimeo stream: ${track.title}`);
+            
+            const videoId = track.id || track.url.match(/vimeo\.com\/(\d+)/)?.[1];
+            if (!videoId) {
+                throw new Error('Invalid Vimeo video ID');
+            }
+            
+            // Try to get video config with audio streams
+            const configUrl = `https://player.vimeo.com/video/${videoId}/config`;
+            const response = await fetch(configUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Vimeo config failed: ${response.status}`);
+            }
+            
+            const config = await response.json();
+            const progressiveStreams = config.request?.files?.progressive;
+            
+            if (progressiveStreams && progressiveStreams.length > 0) {
+                // Choose the lowest quality for audio-only purposes
+                const stream = progressiveStreams.find(s => s.quality === 'medium') || 
+                              progressiveStreams[progressiveStreams.length - 1];
+                
+                console.log(`✅ Found Vimeo stream URL`);
+                const streamResponse = await fetch(stream.url);
+                if (streamResponse.ok) {
+                    return streamResponse.body;
+                }
+            }
+            
+            throw new Error('No suitable Vimeo streams found');
+        } catch (error) {
+            console.error('❌ Error getting Vimeo stream:', error);
+            // Fallback to YouTube search
+            console.log('🔄 Trying YouTube fallback for Vimeo track...');
+            const youtubeResults = await this.searchYouTube(`${track.title} ${track.author}`, 1);
+            
+            if (youtubeResults.length > 0) {
+                return await this.getYouTubeStreamWithAlternatives(youtubeResults[0]);
+            }
+            
+            throw error;
+        }
     }
 }
 
