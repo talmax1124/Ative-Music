@@ -1,0 +1,569 @@
+const { createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, demuxProbe } = require('@discordjs/voice');
+const { createReadStream } = require('fs');
+const { promises: fs } = require('fs');
+const path = require('path');
+const config = require('../config.js');
+const SmartAutoPlay = require('./SmartAutoPlay.js');
+
+class MusicManager {
+    constructor(guildId, sourceHandlers) {
+        this.guildId = guildId;
+        this.sourceHandlers = sourceHandlers;
+        this.queue = [];
+        this.currentTrack = null;
+        this.currentTrackIndex = -1;
+        this.isPlaying = false;
+        this.isPaused = false;
+        this.volume = config.settings.defaultVolume;
+        this.loopMode = 'off'; // 'off', 'track', 'queue'
+        this.connection = null;
+        this.player = createAudioPlayer();
+        this.lastChannel = null;
+        this.playHistory = [];
+        this.smartAutoPlay = new SmartAutoPlay(sourceHandlers);
+        this.autoPlayEnabled = true;
+        this.continuousPlayback = true;
+        this.autoPlayTimeout = null;
+        
+        this.setupPlayerEvents();
+        this.queueFile = path.join(__dirname, `../data/queue_${guildId}.json`);
+        this.loadQueue();
+    }
+
+    setupPlayerEvents() {
+        this.player.on(AudioPlayerStatus.Playing, () => {
+            this.isPlaying = true;
+            this.isPaused = false;
+            console.log(`🎵 Now playing: ${this.currentTrack?.title || 'Unknown'}`);
+        });
+
+        this.player.on(AudioPlayerStatus.Paused, () => {
+            this.isPaused = true;
+            console.log('⏸️ Player paused');
+        });
+
+        this.player.on(AudioPlayerStatus.Idle, () => {
+            this.isPlaying = false;
+            this.isPaused = false;
+            console.log('💤 Player idle - track finished');
+            this.handleTrackEnd();
+        });
+
+        this.player.on('error', (error) => {
+            console.error('❌ Audio player error:', error);
+            this.handleTrackEnd();
+        });
+
+        this.player.on(AudioPlayerStatus.Buffering, () => {
+            console.log('⏳ Buffering...');
+        });
+    }
+
+    setConnection(connection) {
+        this.connection = connection;
+        this.connection.subscribe(this.player);
+        this.lastChannel = connection.joinConfig.channelId;
+        
+        this.connection.on('stateChange', (oldState, newState) => {
+            console.log(`🔗 Connection state changed: ${oldState.status} -> ${newState.status}`);
+        });
+    }
+
+    async addToQueue(track, position = -1) {
+        track.addedAt = new Date();
+        track.id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        if (position === -1) {
+            this.queue.push(track);
+        } else {
+            this.queue.splice(position, 0, track);
+        }
+        
+        console.log(`📝 Added to queue: ${track.title} (Position: ${this.queue.length})`);
+        
+        // Auto-save queue after changes
+        this.saveQueue();
+        
+        return track;
+    }
+
+    async addPlaylist(tracks, smart = false) {
+        if (smart) {
+            const smartTracks = await this.smartSort(tracks);
+            for (const track of smartTracks) {
+                await this.addToQueue(track);
+            }
+        } else {
+            for (const track of tracks) {
+                await this.addToQueue(track);
+            }
+        }
+    }
+
+    async smartSort(tracks) {
+        return tracks.sort((a, b) => {
+            let scoreA = 0;
+            let scoreB = 0;
+            
+            if (a.viewCount) scoreA += Math.log10(a.viewCount) * 0.3;
+            if (b.viewCount) scoreB += Math.log10(b.viewCount) * 0.3;
+            
+            if (a.likes) scoreA += Math.log10(a.likes) * 0.2;
+            if (b.likes) scoreB += Math.log10(b.likes) * 0.2;
+            
+            const currentYear = new Date().getFullYear();
+            if (a.publishedAt) {
+                const ageA = currentYear - new Date(a.publishedAt).getFullYear();
+                scoreA += Math.max(0, 10 - ageA) * 0.1;
+            }
+            if (b.publishedAt) {
+                const ageB = currentYear - new Date(b.publishedAt).getFullYear();
+                scoreB += Math.max(0, 10 - ageB) * 0.1;
+            }
+            
+            if (a.duration && b.duration) {
+                const durationA = this.parseDuration(a.duration);
+                const durationB = this.parseDuration(b.duration);
+                
+                if (durationA >= 120000 && durationA <= 300000) scoreA += 0.2;
+                if (durationB >= 120000 && durationB <= 300000) scoreB += 0.2;
+            }
+            
+            return scoreB - scoreA;
+        });
+    }
+
+    async play() {
+        if (this.queue.length === 0) {
+            console.log('📭 Queue is empty');
+            return false;
+        }
+
+        if (this.currentTrackIndex === -1) {
+            this.currentTrackIndex = 0;
+        }
+
+        this.currentTrack = this.queue[this.currentTrackIndex];
+        
+        try {
+            console.log(`🎵 Attempting to play: ${this.currentTrack.title}`);
+            
+            const stream = await this.sourceHandlers.getStream(this.currentTrack);
+            
+            if (!stream) {
+                console.error('❌ Failed to get stream for track');
+                await this.skip();
+                return false;
+            }
+
+            // Optimize for faster playback start
+            const resource = createAudioResource(stream, {
+                inputType: StreamType.Arbitrary,
+                inlineVolume: true,
+                silencePaddingFrames: 0  // Remove padding for faster start
+            });
+
+            resource.volume?.setVolume(this.volume / 100);
+
+            this.player.play(resource);
+            
+            this.playHistory.push({
+                ...this.currentTrack,
+                playedAt: new Date()
+            });
+            
+            if (this.playHistory.length > 50) {
+                this.playHistory = this.playHistory.slice(-50);
+            }
+            
+            // Reset consecutive errors on successful play
+            this.consecutiveErrors = 0;
+
+            return true;
+
+        } catch (error) {
+            console.error('❌ Error playing track:', error);
+            
+            // If all streaming methods failed, try to skip to next track
+            if (error.message.includes('All streaming methods failed')) {
+                console.log('❌ All streaming methods failed for this track, skipping...');
+                await this.skip();
+                return false;
+            }
+            
+            // If it's a persistent 403 error across multiple tracks, clear queue
+            if (error.message.includes('403') && this.consecutiveErrors > 3) {
+                console.log('🚨 Multiple 403 errors detected - clearing queue');
+                this.clearQueue();
+                this.stop();
+                this.consecutiveErrors = 0;
+                return false;
+            }
+            
+            // Track consecutive errors
+            this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
+            
+            await this.skip();
+            return false;
+        }
+    }
+
+    async skip() {
+        if (this.queue.length === 0) return false;
+
+        if (this.loopMode === 'track') {
+            await this.play();
+            return true;
+        }
+
+        this.currentTrackIndex++;
+        
+        if (this.currentTrackIndex >= this.queue.length) {
+            if (this.loopMode === 'queue') {
+                this.currentTrackIndex = 0;
+                await this.play();
+                return true;
+            } else {
+                this.stop();
+                return false;
+            }
+        }
+
+        await this.play();
+        return true;
+    }
+
+    async previous() {
+        if (this.playHistory.length === 0) return false;
+
+        this.currentTrackIndex = Math.max(0, this.currentTrackIndex - 1);
+        await this.play();
+        return true;
+    }
+
+    pause() {
+        if (this.isPlaying && !this.isPaused) {
+            this.player.pause();
+            return true;
+        }
+        return false;
+    }
+
+    resume() {
+        if (this.isPaused) {
+            this.player.unpause();
+            return true;
+        }
+        return false;
+    }
+
+    stop(userInitiated = false) {
+        this.player.stop();
+        this.isPlaying = false;
+        this.isPaused = false;
+        this.currentTrack = null;
+        this.currentTrackIndex = -1;
+        
+        // Disable auto-play if user manually stopped
+        if (userInitiated) {
+            this.autoPlayEnabled = false;
+            console.log('⏹️ Playback stopped by user - auto-play disabled');
+        } else {
+            console.log('⏹️ Playback stopped');
+        }
+    }
+
+    clearQueue(userInitiated = false) {
+        this.queue = [];
+        this.currentTrackIndex = -1;
+        
+        // Disable auto-play if user manually cleared
+        if (userInitiated) {
+            this.autoPlayEnabled = false;
+            console.log('🗑️ Queue cleared by user - auto-play disabled');
+        } else {
+            console.log('🗑️ Queue cleared');
+        }
+        
+        // Save cleared queue and clear persisted file
+        this.clearPersistedQueue();
+    }
+
+    shuffle() {
+        if (this.queue.length < 2) return false;
+
+        const currentTrack = this.queue[this.currentTrackIndex];
+        const remainingQueue = this.queue.slice(this.currentTrackIndex + 1);
+        
+        for (let i = remainingQueue.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [remainingQueue[i], remainingQueue[j]] = [remainingQueue[j], remainingQueue[i]];
+        }
+
+        this.queue = [
+            ...this.queue.slice(0, this.currentTrackIndex + 1),
+            ...remainingQueue
+        ];
+
+        console.log('🔀 Queue shuffled');
+        return true;
+    }
+
+    setVolume(volume) {
+        this.volume = Math.max(0, Math.min(100, volume));
+        if (this.player.state.resource?.volume) {
+            this.player.state.resource.volume.setVolume(this.volume / 100);
+        }
+        console.log(`🔊 Volume set to ${this.volume}%`);
+    }
+
+    setLoop(mode) {
+        const validModes = ['off', 'track', 'queue'];
+        if (validModes.includes(mode)) {
+            this.loopMode = mode;
+            console.log(`🔁 Loop mode set to: ${mode}`);
+            return true;
+        }
+        return false;
+    }
+
+    removeFromQueue(index) {
+        if (index < 0 || index >= this.queue.length) return false;
+
+        if (index === this.currentTrackIndex) {
+            this.skip();
+        } else if (index < this.currentTrackIndex) {
+            this.currentTrackIndex--;
+        }
+
+        const removed = this.queue.splice(index, 1)[0];
+        console.log(`🗑️ Removed from queue: ${removed.title}`);
+        return removed;
+    }
+
+    moveInQueue(from, to) {
+        if (from < 0 || from >= this.queue.length || to < 0 || to >= this.queue.length) {
+            return false;
+        }
+
+        const track = this.queue.splice(from, 1)[0];
+        this.queue.splice(to, 0, track);
+
+        if (from === this.currentTrackIndex) {
+            this.currentTrackIndex = to;
+        } else if (from < this.currentTrackIndex && to >= this.currentTrackIndex) {
+            this.currentTrackIndex--;
+        } else if (from > this.currentTrackIndex && to <= this.currentTrackIndex) {
+            this.currentTrackIndex++;
+        }
+
+        return true;
+    }
+
+    getQueueInfo() {
+        return {
+            queue: this.queue,
+            currentTrack: this.currentTrack,
+            currentIndex: this.currentTrackIndex,
+            isPlaying: this.isPlaying,
+            isPaused: this.isPaused,
+            volume: this.volume,
+            loopMode: this.loopMode,
+            queueLength: this.queue.length,
+            queueDuration: this.getTotalDuration()
+        };
+    }
+
+    getTotalDuration() {
+        return this.queue.reduce((total, track) => {
+            const duration = this.parseDuration(track.duration);
+            return total + duration;
+        }, 0);
+    }
+
+    parseDuration(duration) {
+        if (typeof duration === 'number') return duration;
+        if (!duration) return 0;
+
+        const parts = duration.split(':').reverse();
+        let seconds = 0;
+        let multiplier = 1;
+
+        for (const part of parts) {
+            seconds += parseInt(part) * multiplier;
+            multiplier *= 60;
+        }
+
+        return seconds * 1000;
+    }
+
+    formatDuration(ms) {
+        const seconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+
+        if (hours > 0) {
+            return `${hours}:${(minutes % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
+        }
+        return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`;
+    }
+
+    async handleTrackEnd() {
+        console.log('🎵 Track ended, determining next action...');
+        
+        clearTimeout(this.autoPlayTimeout);
+        
+        this.autoPlayTimeout = setTimeout(async () => {
+            if (!this.isPlaying) {
+                // Try to play next track in queue
+                const hasNext = await this.skip();
+                
+                // If no next track and auto-play is enabled, find a smart recommendation
+                if (!hasNext && this.autoPlayEnabled && this.continuousPlayback) {
+                    console.log('🤖 Queue empty, finding smart recommendation...');
+                    await this.findAndPlayRecommendation();
+                }
+            }
+        }, 2000); // 2 second delay to avoid rapid transitions
+    }
+
+    async findAndPlayRecommendation() {
+        try {
+            const recommendation = await this.smartAutoPlay.getNextRecommendation(
+                this.currentTrack, 
+                this.playHistory
+            );
+            
+            if (recommendation) {
+                console.log(`🎵 Auto-playing: ${recommendation.title} by ${recommendation.author}`);
+                await this.addToQueue(recommendation);
+                await this.play();
+                return true;
+            } else {
+                console.log('❌ No recommendation found');
+                return false;
+            }
+        } catch (error) {
+            console.error('❌ Auto-play recommendation failed:', error);
+            return false;
+        }
+    }
+
+    async fillQueueWithRecommendations(count = 10) {
+        if (this.queue.length >= count) return;
+
+        console.log(`🎵 Filling queue with ${count} smart recommendations...`);
+        
+        try {
+            const recommendations = await this.smartAutoPlay.generateContinuousPlaylist(
+                this.currentTrack || this.playHistory[this.playHistory.length - 1],
+                count - this.queue.length
+            );
+            
+            for (const recommendation of recommendations) {
+                await this.addToQueue(recommendation);
+            }
+            
+            console.log(`✅ Added ${recommendations.length} tracks to queue`);
+        } catch (error) {
+            console.error('❌ Failed to fill queue:', error);
+        }
+    }
+
+    setAutoPlay(enabled) {
+        this.autoPlayEnabled = enabled;
+        console.log(`🤖 Auto-play ${enabled ? 'enabled' : 'disabled'}`);
+        
+        if (enabled && this.queue.length === 0 && this.connection) {
+            // Start auto-play immediately if queue is empty
+            this.findAndPlayRecommendation();
+        }
+    }
+
+    setContinuousPlayback(enabled) {
+        this.continuousPlayback = enabled;
+        console.log(`🔄 Continuous playback ${enabled ? 'enabled' : 'disabled'}`);
+        
+        if (enabled) {
+            this.fillQueueWithRecommendations();
+        }
+    }
+
+    handleDisconnect() {
+        this.stop();
+        this.connection = null;
+        console.log('🔌 Disconnected from voice channel');
+    }
+
+    getRecommendations(count = 5) {
+        if (!this.currentTrack) return [];
+
+        const recommendations = [];
+        
+        return recommendations.slice(0, count);
+    }
+
+    // Queue Persistence Methods
+    async saveQueue() {
+        try {
+            await fs.mkdir(path.dirname(this.queueFile), { recursive: true });
+            const queueData = {
+                queue: this.queue,
+                currentTrackIndex: this.currentTrackIndex,
+                loopMode: this.loopMode,
+                volume: this.volume,
+                autoPlayEnabled: this.autoPlayEnabled,
+                continuousPlayback: this.continuousPlayback,
+                savedAt: new Date().toISOString()
+            };
+            await fs.writeFile(this.queueFile, JSON.stringify(queueData, null, 2));
+            console.log(`💾 Queue saved for guild ${this.guildId}`);
+        } catch (error) {
+            console.error('❌ Failed to save queue:', error);
+        }
+    }
+
+    async loadQueue() {
+        try {
+            const data = await fs.readFile(this.queueFile, 'utf8');
+            const queueData = JSON.parse(data);
+            
+            const originalQueue = queueData.queue || [];
+            
+            // Filter out YouTube tracks since they're currently broken
+            this.queue = originalQueue.filter(track => track.source !== 'youtube');
+            const removedCount = originalQueue.length - this.queue.length;
+            
+            if (removedCount > 0) {
+                console.log(`🚨 Removed ${removedCount} broken YouTube tracks from queue`);
+            }
+            
+            this.currentTrackIndex = -1; // Reset to start from beginning
+            this.loopMode = queueData.loopMode || 'off';
+            this.volume = queueData.volume || config.settings.defaultVolume;
+            this.autoPlayEnabled = queueData.autoPlayEnabled !== undefined ? queueData.autoPlayEnabled : true;
+            this.continuousPlayback = queueData.continuousPlayback !== undefined ? queueData.continuousPlayback : true;
+            
+            console.log(`💿 Restored queue for guild ${this.guildId}: ${this.queue.length} tracks (${removedCount} YouTube tracks removed)`);
+            
+            // Save the cleaned queue
+            if (removedCount > 0) {
+                this.saveQueue();
+            }
+        } catch (error) {
+            // File doesn't exist or is corrupted - start fresh
+            console.log(`🆕 Starting fresh queue for guild ${this.guildId}`);
+        }
+    }
+
+    async clearPersistedQueue() {
+        try {
+            await fs.unlink(this.queueFile);
+            console.log(`🗑️ Cleared persisted queue for guild ${this.guildId}`);
+        } catch (error) {
+            // File might not exist - ignore
+        }
+    }
+}
+
+module.exports = MusicManager;
