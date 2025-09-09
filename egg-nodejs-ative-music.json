@@ -13,7 +13,7 @@
     "Nodejs 18": "ghcr.io/ptero-eggs/yolks:nodejs_18"
   },
   "file_denylist": [],
-  "startup": "if [[ -d .git ]]; then echo \"Pulling latest changes from git...\"; git pull; echo \"Git pull completed.\"; fi; if [[ ! -z ${NODE_PACKAGES} ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z ${UNNODE_PACKAGES} ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; echo \"Checking for package.json...\"; if [ -f /home/container/package.json ]; then echo \"Installing npm dependencies...\"; /usr/local/bin/npm install --verbose; echo \"Dependencies installation completed.\"; else echo \"No package.json found!\"; fi; /usr/local/bin/node \"/home/container/${MAIN_FILE}\"",
+  "startup": "if [[ -d .git ]]; then echo \"Forcing update to latest version...\"; git fetch origin && git reset --hard origin/${BRANCH:-main}; echo \"Git update completed.\"; fi; if [[ ! -z ${NODE_PACKAGES} ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z ${UNNODE_PACKAGES} ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; echo \"Checking for package.json...\"; if [ -f /home/container/package.json ]; then echo \"Installing npm dependencies...\"; /usr/local/bin/npm install --verbose; echo \"Dependencies installation completed.\"; else echo \"No package.json found!\"; fi; /usr/local/bin/node \"/home/container/${MAIN_FILE}\"",
   "config": {
     "files": "{}",
     "startup": "{\r\n    \"done\": [\r\n        \"🎵 Ative Music Bot is ready!\",\r\n        \"Bot is ready!\",\r\n        \"Ready!\",\r\n        \"logged in\"\r\n    ]\r\n}",
