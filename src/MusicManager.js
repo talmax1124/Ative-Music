@@ -22,7 +22,9 @@ class MusicManager {
         this.playHistory = [];
         this.smartAutoPlay = new SmartAutoPlay(sourceHandlers);
         this.autoPlayEnabled = true;
-        this.continuousPlayback = true;
+        this.continuousPlayback = false; // Disable by default - user controls progression
+        this.onTrackEnd = null;
+        this.onTrackStart = null;
         this.autoPlayTimeout = null;
         
         this.setupPlayerEvents();
@@ -35,6 +37,11 @@ class MusicManager {
             this.isPlaying = true;
             this.isPaused = false;
             console.log(`🎵 Now playing: ${this.currentTrack?.title || 'Unknown'}`);
+            
+            // Emit track start event for UI updates
+            if (this.onTrackStart) {
+                this.onTrackStart(this.currentTrack);
+            }
         });
 
         this.player.on(AudioPlayerStatus.Paused, () => {
@@ -156,11 +163,15 @@ class MusicManager {
                 return false;
             }
 
-            // Optimize for faster playback start
+            // Enhanced audio resource for better mobile compatibility
             const resource = createAudioResource(stream, {
                 inputType: StreamType.Arbitrary,
                 inlineVolume: true,
-                silencePaddingFrames: 0  // Remove padding for faster start
+                silencePaddingFrames: 0,  // Remove padding for faster start
+                metadata: {
+                    title: this.currentTrack.title,
+                    author: this.currentTrack.author
+                }
             });
 
             resource.volume?.setVolume(this.volume / 100);
@@ -413,18 +424,33 @@ class MusicManager {
         
         clearTimeout(this.autoPlayTimeout);
         
-        this.autoPlayTimeout = setTimeout(async () => {
-            if (!this.isPlaying) {
-                // Try to play next track in queue
-                const hasNext = await this.skip();
-                
-                // If no next track and auto-play is enabled, find a smart recommendation
-                if (!hasNext && this.autoPlayEnabled && this.continuousPlayback) {
+        // Emit track end event for UI updates
+        if (this.onTrackEnd) {
+            this.onTrackEnd(this.currentTrack);
+        }
+        
+        // Only auto-advance if continuous playback is enabled AND there are songs in queue
+        if (this.continuousPlayback && this.queue.length > this.currentTrackIndex + 1) {
+            this.autoPlayTimeout = setTimeout(async () => {
+                if (!this.isPlaying) {
+                    console.log('🔄 Auto-advancing to next track in queue...');
+                    await this.skip();
+                }
+            }, 2000); // 2 second delay
+        } else if (!this.continuousPlayback) {
+            console.log('⏸️ Track ended - waiting for user action (continuous playback disabled)');
+            // Stop playback and wait for user to manually advance
+            this.isPlaying = false;
+            this.isPaused = false;
+        } else if (this.autoPlayEnabled && this.continuousPlayback) {
+            // Only find recommendations if auto-play is enabled and queue is empty
+            this.autoPlayTimeout = setTimeout(async () => {
+                if (!this.isPlaying) {
                     console.log('🤖 Queue empty, finding smart recommendation...');
                     await this.findAndPlayRecommendation();
                 }
-            }
-        }, 2000); // 2 second delay to avoid rapid transitions
+            }, 2000);
+        }
     }
 
     async findAndPlayRecommendation() {

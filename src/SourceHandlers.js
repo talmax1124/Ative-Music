@@ -1,5 +1,6 @@
 const ytdl = require('@distube/ytdl-core');
 const yts = require('yt-search');
+const YouTube = require('youtube-sr').default;
 const SpotifyWebApi = require('spotify-web-api-node');
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
@@ -14,6 +15,14 @@ class SourceHandlers {
             clientId: config.spotify.clientId,
             clientSecret: config.spotify.clientSecret
         });
+        
+        // Multi-client rotation system for better success rates
+        this.clientRotation = {
+            currentIndex: 0,
+            lastUsed: {},
+            cooldowns: {},
+            failureCounts: {}
+        };
         
         this.setupSpotify();
     }
@@ -59,11 +68,44 @@ class SourceHandlers {
             }
         }
 
-        return this.removeDuplicates(results).slice(0, limit);
+        // Rank results by relevance and source preference
+        const rankedResults = this.rankSearchResults(results, query);
+        return this.removeDuplicates(rankedResults).slice(0, limit);
     }
 
     async searchYouTube(query, limit = 5) {
         try {
+            // Try YouTube-SR first for better bot detection avoidance
+            console.log(`🔍 YouTube-SR search for: ${query}`);
+            const youtubeResults = await YouTube.search(query, { 
+                limit: limit,
+                type: 'video',
+                safeSearch: false
+            });
+            
+            if (youtubeResults && youtubeResults.length > 0) {
+                console.log(`✅ YouTube-SR found ${youtubeResults.length} results`);
+                return youtubeResults.map(video => ({
+                    title: video.title,
+                    author: video.channel?.name || 'Unknown',
+                    duration: video.duration || '0:00',
+                    url: video.url,
+                    thumbnail: video.thumbnail?.displayThumbnailURL(),
+                    source: 'youtube',
+                    type: 'video',
+                    viewCount: video.views || 0,
+                    publishedAt: video.uploadedAt || 'Unknown',
+                    description: video.description || '',
+                    id: video.id
+                }));
+            }
+        } catch (youtubeError) {
+            console.log(`⚠️ YouTube-SR failed: ${youtubeError.message}, trying yt-search fallback`);
+        }
+        
+        try {
+            // Fallback to yt-search
+            console.log(`🔍 yt-search fallback for: ${query}`);
             const searchResults = await yts(query);
             const videos = searchResults.videos.slice(0, limit);
             
@@ -81,7 +123,7 @@ class SourceHandlers {
                 id: video.videoId
             }));
         } catch (error) {
-            console.error('❌ YouTube search error:', error);
+            console.error('❌ All YouTube search methods failed:', error);
             return [];
         }
     }
@@ -539,13 +581,13 @@ class SourceHandlers {
     async getStream(track) {
         console.log(`🎵 Getting stream for: ${track.title} from ${track.source}`);
         
-        // Use different methods based on source
+        // Use source-specific streaming first
         if (track.source === 'soundcloud') {
             return await this.getSoundCloudStream(track);
         } else if (track.source === 'spotify') {
-            return await this.getSpotifyStreamWithAlternatives(track);
+            return await this.getStreamWithIntelligentFallback(track);
         } else if (track.source === 'youtube') {
-            return await this.getYouTubeStreamWithAlternatives(track);
+            return await this.getStreamWithIntelligentFallback(track);
         } else if (track.source === 'direct') {
             return await this.getDirectAudioStream(track);
         } else if (track.source === 'radio') {
@@ -556,28 +598,163 @@ class SourceHandlers {
             return await this.getVimeoStream(track);
         }
         
-        // Fallback to original methods
+        // Advanced multi-client fallback system with intelligent rotation
+        return await this.getStreamWithIntelligentFallback(track);
+    }
+
+    async getStreamWithIntelligentFallback(track) {
+        console.log(`🔄 Using intelligent fallback system for: ${track.title}`);
+        
+        // Define streaming methods with priority and success rates - prioritize yt-dlp
         const streamingMethods = [
-            () => this.getStreamWithYtDlp(track),
-            () => this.getStreamWithPlayDl(track),
-            () => this.getStreamWithYtdlCore(track)
+            {
+                name: 'yt-dlp-direct',
+                priority: 1,
+                method: () => this.getStreamWithYtDlp(track),
+                cooldown: 3000,
+                maxFailures: 5
+            },
+            {
+                name: 'play-dl-enhanced',
+                priority: 2,
+                method: () => this.getStreamWithPlayDl(track),
+                cooldown: 3000,
+                maxFailures: 5
+            },
+            {
+                name: 'youtube-sr-search-ytdl',
+                priority: 3,
+                method: () => this.getStreamWithYouTubeSR(track),
+                cooldown: 5000,
+                maxFailures: 3
+            },
+            {
+                name: 'ytdl-core-innertube',
+                priority: 4,
+                method: () => this.getStreamWithYtdlCore(track),
+                cooldown: 10000,
+                maxFailures: 2
+            },
+            {
+                name: 'direct-audio-search',
+                priority: 5,
+                method: () => this.findAndStreamDirectAudioAlternative(track),
+                cooldown: 5000,
+                maxFailures: 3
+            }
         ];
         
-        for (const [index, method] of streamingMethods.entries()) {
+        // Sort by priority and filter out methods on cooldown or with too many failures
+        const availableMethods = streamingMethods
+            .filter(method => this.isMethodAvailable(method))
+            .sort((a, b) => a.priority - b.priority);
+        
+        if (availableMethods.length === 0) {
+            console.log('⚠️ All streaming methods are on cooldown or failed too many times');
+            // Reset failure counts if all methods are exhausted
+            this.resetFailureCounts();
+            return await this.getStreamWithIntelligentFallback(track);
+        }
+        
+        for (const [index, methodConfig] of availableMethods.entries()) {
             try {
-                console.log(`🔄 Trying streaming method ${index + 1}/3`);
-                const stream = await method();
+                console.log(`🔄 Trying method: ${methodConfig.name} (${index + 1}/${availableMethods.length})`);
+                const startTime = Date.now();
+                
+                const stream = await Promise.race([
+                    methodConfig.method(),
+                    new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Method timeout')), 30000)
+                    )
+                ]);
+                
                 if (stream) {
-                    console.log(`✅ Stream created successfully with method ${index + 1}`);
+                    const duration = Date.now() - startTime;
+                    console.log(`✅ Stream created successfully with ${methodConfig.name} in ${duration}ms`);
+                    this.recordMethodSuccess(methodConfig.name);
                     return stream;
                 }
             } catch (error) {
-                console.log(`❌ Method ${index + 1} failed: ${error.message}`);
+                console.log(`❌ Method ${methodConfig.name} failed: ${error.message}`);
+                this.recordMethodFailure(methodConfig.name);
                 continue;
             }
         }
         
-        throw new Error(`All streaming methods failed for: ${track.title}`);
+        throw new Error(`All intelligent fallback methods failed for: ${track.title}`);
+    }
+
+    async getStreamWithYouTubeSR(track) {
+        console.log(`🔍 Using YouTube-SR for enhanced search and streaming`);
+        
+        let youtubeUrl = track.url;
+        if (track.source === 'spotify' || !ytdl.validateURL(track.url)) {
+            // Use YouTube-SR for better search results
+            const searchQuery = `${track.title} ${track.author}`;
+            try {
+                const results = await YouTube.search(searchQuery, { 
+                    limit: 3,
+                    type: 'video',
+                    safeSearch: false
+                });
+                
+                if (results && results.length > 0) {
+                    youtubeUrl = results[0].url;
+                    console.log(`✅ YouTube-SR found: ${results[0].title}`);
+                } else {
+                    throw new Error('No YouTube-SR results found');
+                }
+            } catch (searchError) {
+                console.log(`❌ YouTube-SR search failed: ${searchError.message}`);
+                throw searchError;
+            }
+        }
+        
+        // Use ytdl-core with the found URL
+        return await this.getStreamWithYtdlCore({ ...track, url: youtubeUrl });
+    }
+
+    async getInvidiousStreamFallback(track) {
+        console.log(`🔄 Trying Invidious as last resort for: ${track.title}`);
+        
+        let youtubeUrl = track.url;
+        if (track.source === 'spotify' || !ytdl.validateURL(track.url)) {
+            const searchQuery = `${track.title} ${track.author}`;
+            const searchResults = await this.searchYouTube(searchQuery, 1);
+            if (searchResults.length === 0) {
+                throw new Error('No YouTube equivalent found for Invidious');
+            }
+            youtubeUrl = searchResults[0].url;
+        }
+        
+        return await this.getInvidiousStream({ ...track, url: youtubeUrl });
+    }
+
+    isMethodAvailable(method) {
+        const now = Date.now();
+        const lastUsed = this.clientRotation.lastUsed[method.name] || 0;
+        const cooldownExpired = now - lastUsed > method.cooldown;
+        const failureCount = this.clientRotation.failureCounts[method.name] || 0;
+        const belowFailureLimit = failureCount < method.maxFailures;
+        
+        return cooldownExpired && belowFailureLimit;
+    }
+
+    recordMethodSuccess(methodName) {
+        this.clientRotation.lastUsed[methodName] = Date.now();
+        this.clientRotation.failureCounts[methodName] = 0; // Reset failure count on success
+    }
+
+    recordMethodFailure(methodName) {
+        this.clientRotation.failureCounts[methodName] = 
+            (this.clientRotation.failureCounts[methodName] || 0) + 1;
+        this.clientRotation.lastUsed[methodName] = Date.now();
+    }
+
+    resetFailureCounts() {
+        console.log('🔄 Resetting all method failure counts');
+        this.clientRotation.failureCounts = {};
+        this.clientRotation.lastUsed = {};
     }
 
     async getYouTubeStreamWithAlternatives(track) {
@@ -642,75 +819,196 @@ class SourceHandlers {
         
         // First, get the URL if we need to convert from Spotify
         let youtubeUrl = track.url;
-        if (track.source === 'spotify') {
+        if (track.source === 'spotify' || !ytdl.validateURL(track.url)) {
             const searchQuery = `${track.title} ${track.author} audio`;
-            const searchResults = await this.searchYouTube(searchQuery, 1);
-            if (searchResults.length === 0) {
-                throw new Error('No YouTube equivalent found for Spotify track');
+            try {
+                const searchResults = await this.searchYouTube(searchQuery, 3);
+                if (searchResults.length === 0) {
+                    throw new Error('No YouTube equivalent found for Spotify track');
+                }
+                
+                // Try multiple search results if first one fails
+                for (const result of searchResults) {
+                    try {
+                        youtubeUrl = result.url;
+                        console.log(`🔄 Trying yt-dlp with: ${result.title}`);
+                        break;
+                    } catch (err) {
+                        continue;
+                    }
+                }
+            } catch (searchError) {
+                throw new Error(`Search failed: ${searchError.message}`);
             }
-            youtubeUrl = searchResults[0].url;
-            console.log(`🔄 Converted Spotify to YouTube: ${youtubeUrl}`);
         }
         
         return new Promise((resolve, reject) => {
-            // Use yt-dlp to get the direct audio stream URL
-            const ytDlp = spawn('yt-dlp', [
-                '--format', 'bestaudio/best',
+            // Enhanced yt-dlp options for better mobile audio quality
+            const ytDlpArgs = [
+                '--format', 'bestaudio[acodec^=opus]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+                '--audio-quality', '0',  // Best audio quality
                 '--no-playlist',
+                '--no-warnings', 
                 '--quiet',
                 '--get-url',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--add-header', 'Accept:*/*',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                '--add-header', 'Accept-Encoding:gzip, deflate, br',
                 youtubeUrl
-            ]);
+            ];
+            
+            console.log(`🔄 yt-dlp command: yt-dlp ${ytDlpArgs.join(' ')}`);
+            const ytDlp = spawn('yt-dlp', ytDlpArgs);
             
             let audioUrl = '';
+            let errorOutput = '';
             
             ytDlp.stdout.on('data', (data) => {
                 audioUrl += data.toString();
             });
             
+            ytDlp.stderr.on('data', (data) => {
+                errorOutput += data.toString();
+            });
+            
             ytDlp.on('close', (code) => {
                 if (code === 0 && audioUrl.trim()) {
-                    const directUrl = audioUrl.trim();
-                    console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 60)}...`);
+                    const directUrl = audioUrl.trim().split('\n')[0]; // Get first URL if multiple
+                    console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 80)}...`);
                     
-                    // Create a stream from the direct URL
-                    fetch(directUrl).then(response => {
+                    // Create a stream from the direct URL with better headers
+                    fetch(directUrl, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Accept': '*/*',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Range': 'bytes=0-',
+                            'Connection': 'keep-alive'
+                        }
+                    }).then(response => {
                         if (response.ok) {
-                            console.log(`✅ Direct stream created successfully`);
+                            console.log(`✅ yt-dlp stream created successfully`);
                             resolve(response.body);
                         } else {
-                            reject(new Error(`Direct stream failed: ${response.status}`));
+                            reject(new Error(`Direct stream failed: ${response.status} ${response.statusText}`));
                         }
-                    }).catch(reject);
+                    }).catch(fetchError => {
+                        reject(new Error(`Fetch failed: ${fetchError.message}`));
+                    });
                 } else {
-                    reject(new Error(`yt-dlp failed with code: ${code}`));
+                    const errorMsg = errorOutput || `yt-dlp failed with code: ${code}`;
+                    console.log(`❌ yt-dlp error: ${errorMsg}`);
+                    reject(new Error(errorMsg));
                 }
             });
             
-            ytDlp.on('error', reject);
+            ytDlp.on('error', (error) => {
+                console.log(`❌ yt-dlp spawn error: ${error.message}`);
+                reject(new Error(`yt-dlp process error: ${error.message}`));
+            });
+            
+            // Add timeout for yt-dlp process
+            setTimeout(() => {
+                ytDlp.kill('SIGTERM');
+                reject(new Error('yt-dlp timeout after 30 seconds'));
+            }, 30000);
         });
     }
     
     async getStreamWithPlayDl(track) {
-        console.log(`⚡ Trying play-dl for: ${track.title}`);
+        console.log(`⚡ Trying play-dl with enhanced configuration for: ${track.title}`);
+        
+        // Configure play-dl with multiple tokens and better user agents
+        try {
+            await play.setToken({
+                soundcloud: {
+                    client_id: 'LBCcHmRB8XSStWL6wKH2HPACspQlXeOt'
+                },
+                youtube: {
+                    cookie: process.env.YOUTUBE_COOKIE || ''
+                }
+            });
+        } catch (error) {
+            console.log('⚠️ Could not set play-dl tokens, continuing without them');
+        }
         
         let youtubeUrl = track.url;
         if (track.source === 'spotify') {
             const searchQuery = `${track.title} ${track.author} audio`;
-            const results = await play.search(searchQuery, { limit: 1, source: { youtube: "video" } });
-            if (!results || results.length === 0) {
-                throw new Error('No YouTube results found');
+            
+            // Try multiple search approaches with different YouTube client configurations
+            const searchConfigs = [
+                { limit: 3, source: { youtube: "video" }, unscramble: false },
+                { limit: 3, source: { youtube: "video" }, unscramble: true, quality: 'low' },
+                { limit: 2, source: { soundcloud: "tracks" } }
+            ];
+            
+            for (const config of searchConfigs) {
+                try {
+                    console.log(`🔍 play-dl search with config: ${JSON.stringify(config)}`);
+                    const results = await play.search(searchQuery, config);
+                    
+                    if (results && results.length > 0) {
+                        // Try multiple results if available
+                        for (const result of results) {
+                            try {
+                                youtubeUrl = result.url;
+                                console.log(`🔄 play-dl trying: ${result.title}`);
+                                break;
+                            } catch (err) {
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+                } catch (searchError) {
+                    console.log(`⚠️ Search config failed: ${searchError.message}`);
+                    continue;
+                }
             }
-            youtubeUrl = results[0].url;
-            console.log(`🔄 play-dl found: ${results[0].title}`);
         }
         
-        const stream = await play.stream(youtubeUrl);
-        return stream.stream;
+        // Enhanced streaming options with multiple quality fallbacks
+        const streamConfigs = [
+            {
+                quality: 0, // Lowest quality for maximum compatibility
+                discordPlayerCompatibility: true,
+                seek: 0,
+                htmldata: false,
+                format: 'mp3'
+            },
+            {
+                quality: 1,
+                discordPlayerCompatibility: true,
+                seek: 0,
+                htmldata: false
+            },
+            {
+                quality: 2,
+                discordPlayerCompatibility: true,
+                seek: 0
+            }
+        ];
+        
+        for (const [index, streamOptions] of streamConfigs.entries()) {
+            try {
+                console.log(`🔄 play-dl stream attempt ${index + 1}/3 with options: ${JSON.stringify(streamOptions)}`);
+                const stream = await play.stream(youtubeUrl, streamOptions);
+                console.log(`✅ play-dl stream created successfully with config ${index + 1}`);
+                return stream.stream;
+            } catch (streamError) {
+                console.log(`❌ play-dl config ${index + 1} failed: ${streamError.message}`);
+                if (index === streamConfigs.length - 1) {
+                    throw streamError;
+                }
+                continue;
+            }
+        }
     }
     
     async getStreamWithYtdlCore(track) {
-        console.log(`⚡ Trying ytdl-core for: ${track.title}`);
+        console.log(`⚡ Trying ytdl-core with InnerTube clients for: ${track.title}`);
         
         let youtubeUrl = track.url;
         if (track.source === 'spotify') {
@@ -722,17 +1020,105 @@ class SourceHandlers {
             youtubeUrl = searchResults[0].url;
         }
         
-        const stream = ytdl(youtubeUrl, { 
-            filter: 'audioonly',
-            quality: 'lowestaudio',
-            requestOptions: {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        // Use multiple InnerTube client configurations with proof-of-origin tokens
+        const clientConfigs = [
+            {
+                name: 'WEB_EMBEDDED',
+                filter: 'audioonly',
+                quality: 'lowestaudio',
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Referer': 'https://www.youtube.com/',
+                        'Origin': 'https://www.youtube.com',
+                        'X-Origin': 'https://www.youtube.com',
+                        'X-YouTube-Client-Name': '56',
+                        'X-YouTube-Client-Version': '1.20231213.01.00',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Sec-Fetch-Dest': 'empty',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'same-origin',
+                        'Sec-GPC': '1'
+                    }
+                }
+            },
+            {
+                name: 'ANDROID_EMBEDDED',
+                filter: 'audioonly',
+                quality: 'lowestaudio', 
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'X-YouTube-Client-Name': '55',
+                        'X-YouTube-Client-Version': '19.09.37',
+                        'Content-Type': 'application/json'
+                    }
+                }
+            },
+            {
+                name: 'IOS_MUSIC',
+                filter: 'audioonly',
+                quality: 'lowestaudio',
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'com.google.ios.youtubemusic/5.21 (iPhone14,3; U; CPU iPhone OS 15_6 like Mac OS X)',
+                        'Accept': '*/*',
+                        'X-YouTube-Client-Name': '26',
+                        'X-YouTube-Client-Version': '5.21',
+                        'Content-Type': 'application/json'
+                    }
+                }
+            },
+            {
+                name: 'ANDROID_MUSIC',
+                filter: 'audioonly',
+                quality: 'lowestaudio',
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'com.google.android.apps.youtube.music/5.16.51 (Linux; U; Android 11) gzip',
+                        'Accept': '*/*',
+                        'X-YouTube-Client-Name': '21',
+                        'X-YouTube-Client-Version': '5.16.51',
+                        'Content-Type': 'application/json'
+                    }
+                }
+            },
+            {
+                name: 'TV_EMBEDDED',
+                filter: 'audioonly',
+                quality: 'lowestaudio',
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/40.13031.0 (unlike Gecko) Starboard/15',
+                        'Accept': '*/*',
+                        'X-YouTube-Client-Name': '85',
+                        'X-YouTube-Client-Version': '2.0',
+                        'Content-Type': 'application/json'
+                    }
                 }
             }
-        });
+        ];
         
-        return stream;
+        for (const [index, config] of clientConfigs.entries()) {
+            try {
+                console.log(`🔄 Trying InnerTube client: ${config.name}`);
+                const stream = ytdl(youtubeUrl, config);
+                console.log(`✅ Success with ${config.name} client`);
+                return stream;
+            } catch (error) {
+                console.log(`❌ ${config.name} failed: ${error.message}`);
+                if (index === clientConfigs.length - 1) {
+                    throw error;
+                }
+                continue;
+            }
+        }
     }
 
     async getYouTubeStreamFast(track) {
@@ -1323,6 +1709,79 @@ class SourceHandlers {
             return `${hours}:${(minutes % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
         }
         return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`;
+    }
+
+    rankSearchResults(results, query) {
+        if (!results || results.length === 0) return results;
+        
+        const queryLower = query.toLowerCase().trim();
+        
+        return results.sort((a, b) => {
+            // Calculate relevance scores
+            const scoreA = this.calculateRelevanceScore(a, queryLower);
+            const scoreB = this.calculateRelevanceScore(b, queryLower);
+            
+            // If scores are equal, prefer YouTube over Spotify for better streaming
+            if (scoreA === scoreB) {
+                if (a.source === 'youtube' && b.source !== 'youtube') return -1;
+                if (b.source === 'youtube' && a.source !== 'youtube') return 1;
+                if (a.source === 'spotify' && b.source === 'soundcloud') return -1;
+                if (b.source === 'spotify' && a.source === 'soundcloud') return 1;
+            }
+            
+            return scoreB - scoreA; // Higher score first
+        });
+    }
+    
+    calculateRelevanceScore(track, query) {
+        const title = track.title.toLowerCase();
+        const author = track.author.toLowerCase();
+        const combined = `${title} ${author}`;
+        
+        let score = 0;
+        
+        // Exact title match gets highest score
+        if (title === query) score += 100;
+        
+        // Title contains exact query
+        if (title.includes(query)) score += 50;
+        
+        // Combined title+author contains query
+        if (combined.includes(query)) score += 30;
+        
+        // Word-by-word matching
+        const queryWords = query.split(' ').filter(w => w.length > 2);
+        const titleWords = title.split(' ');
+        const authorWords = author.split(' ');
+        
+        for (const word of queryWords) {
+            if (titleWords.some(tw => tw.includes(word))) score += 20;
+            if (authorWords.some(aw => aw.includes(word))) score += 10;
+        }
+        
+        // Prefer official, explicit, or album versions
+        if (title.includes('official')) score += 15;
+        if (title.includes('explicit')) score += 10;
+        if (title.includes('album')) score += 10;
+        
+        // Penalize covers, remixes, or low quality versions  
+        if (title.includes('cover')) score -= 20;
+        if (title.includes('remix') && !query.includes('remix')) score -= 15;
+        if (title.includes('karaoke')) score -= 30;
+        if (title.includes('instrumental') && !query.includes('instrumental')) score -= 25;
+        
+        // Prefer higher view counts for YouTube
+        if (track.source === 'youtube' && track.viewCount) {
+            if (track.viewCount > 1000000) score += 5;
+            if (track.viewCount > 10000000) score += 10;
+        }
+        
+        // Prefer higher popularity for Spotify
+        if (track.source === 'spotify' && track.popularity) {
+            score += Math.floor(track.popularity / 10);
+        }
+        
+        return score;
     }
 
     removeDuplicates(tracks) {

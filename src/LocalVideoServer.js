@@ -10,6 +10,11 @@ class LocalVideoServer {
         this.server = null;
         this.isRunning = false;
         this.cacheDir = path.join(__dirname, '../cache/videos');
+        
+        // Get external host from environment for Pterodactyl compatibility
+        this.host = process.env.SERVER_HOST || process.env.HOST || 'localhost';
+        this.externalPort = process.env.SERVER_PORT || port;
+        
         this.setupServer();
     }
 
@@ -33,7 +38,7 @@ class LocalVideoServer {
                     exists: true,
                     size: stats.size,
                     url: `/videos/${videoId}.mp4`,
-                    fullUrl: `http://localhost:${this.port}/videos/${videoId}.mp4`
+                    fullUrl: `http://${this.host}:${this.externalPort}/videos/${videoId}.mp4`
                 });
             } else {
                 res.json({ exists: false });
@@ -261,16 +266,21 @@ class LocalVideoServer {
                 return;
             }
 
-            this.server = this.app.listen(this.port, 'localhost', (error) => {
+            // Bind to all interfaces (0.0.0.0) for Pterodactyl external access
+            this.server = this.app.listen(this.port, '0.0.0.0', (error) => {
                 if (error) {
                     reject(error);
                     return;
                 }
                 
                 this.isRunning = true;
-                const url = `http://localhost:${this.port}`;
-                console.log(`🌐 Local video server started at ${url}`);
-                resolve(url);
+                const localUrl = `http://localhost:${this.port}`;
+                const externalUrl = `http://${this.host}:${this.externalPort}`;
+                console.log(`🌐 Local video server started at ${localUrl}`);
+                if (this.host !== 'localhost') {
+                    console.log(`🌍 External access available at ${externalUrl}`);
+                }
+                resolve(externalUrl);
             });
         });
     }

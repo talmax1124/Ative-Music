@@ -13,7 +13,7 @@ class StayConnectedManager {
     }
 
     setupEventHandlers() {
-        this.client.on('ready', () => {
+        this.client.on('clientReady', () => {
             if (config.settings.stayInChannel) {
                 this.initializeConnections();
             }

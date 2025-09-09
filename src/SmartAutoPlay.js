@@ -2,31 +2,56 @@ class SmartAutoPlay {
     constructor(sourceHandlers) {
         this.sourceHandlers = sourceHandlers;
         this.playHistory = [];
-        this.genres = ['pop', 'rock', 'hip hop', 'electronic', 'jazz', 'classical', 'indie', 'alternative', 'r&b', 'country'];
-        this.moods = ['energetic', 'chill', 'upbeat', 'relaxing', 'focus', 'party', 'workout', 'study'];
+        this.currentTheme = null; // Track the current musical theme
+        this.genres = {
+            'reggaeton': ['reggaeton', 'perreo', 'dembow', 'urbano', 'latino', 'bad bunny', 'daddy yankee', 'j balvin', 'maluma', 'karol g', 'ozuna', 'anuel', 'farruko', 'nicky jam', 'wisin', 'yandel', 'plan b', 'arcangel', 'de la ghetto', 'zion', 'lennox', 'tito el bambino', 'hector el father', 'tempo', 'voltio', 'baby rasta', 'gringo', 'feid', 'rauw alejandro', 'sech', 'myke towers', 'jhay cortez', 'bryant myers', 'lenny tavarez', 'lunay', 'casper magico', 'nio garcia', 'darell', 'justin quiles', 'manuel turizo', 'rafa pabon', 'mau y ricky', 'reik', 'cnco', 'sebastian yatra', 'camilo', 'piso 21'],
+            'pop': ['catchy', 'mainstream', 'radio', 'top 40', 'chart', 'hit', 'taylor swift', 'ariana grande', 'dua lipa', 'olivia rodrigo', 'billie eilish'],
+            'rock': ['guitar', 'band', 'loud', 'electric', 'metal', 'alternative', 'foo fighters', 'imagine dragons', 'linkin park'],
+            'hip hop': ['rap', 'beats', 'flow', 'trap', 'drill', 'freestyle', 'drake', 'kendrick lamar', 'j cole', 'travis scott', 'future', 'lil wayne', 'eminem', 'kanye west'],
+            'electronic': ['edm', 'techno', 'house', 'dubstep', 'synth', 'dance', 'calvin harris', 'david guetta', 'skrillex', 'deadmau5'],
+            'jazz': ['smooth', 'saxophone', 'improvisation', 'swing', 'blues', 'miles davis', 'john coltrane'],
+            'classical': ['orchestra', 'symphony', 'piano', 'violin', 'instrumental', 'mozart', 'beethoven', 'bach'],
+            'indie': ['independent', 'underground', 'alternative', 'experimental', 'arctic monkeys', 'vampire weekend'],
+            'r&b': ['soul', 'vocals', 'rhythm', 'smooth', 'contemporary', 'weeknd', 'frank ocean', 'sza', 'daniel caesar'],
+            'country': ['acoustic', 'guitar', 'storytelling', 'rural', 'folk', 'luke bryan', 'carrie underwood', 'keith urban'],
+            'reggae': ['bob marley', 'jamaican', 'island', 'rastafari', 'ska', 'damian marley', 'ziggy marley'],
+            'salsa': ['salsa', 'merengue', 'bachata', 'marc anthony', 'victor manuelle', 'gilberto santa rosa'],
+            'cumbia': ['cumbia', 'vallenato', 'champeta', 'carlos vives', 'grupo niche'],
+            'banda': ['banda', 'mariachi', 'ranchera', 'vicente fernandez', 'alejandro fernandez'],
+            'trap latino': ['trap', 'anuel aa', 'bad bunny trap', 'bryant myers', 'noriel', 'lary over']
+        };
+        this.moods = {
+            'energetic': ['pump up', 'workout', 'party', 'upbeat', 'high energy'],
+            'chill': ['relaxed', 'calm', 'ambient', 'peaceful', 'slow'],
+            'romantic': ['love', 'romantic', 'slow dance', 'emotional', 'intimate'],
+            'focus': ['study', 'concentration', 'instrumental', 'background'],
+            'nostalgic': ['throwback', 'classic', 'retro', 'old school', 'vintage'],
+            'sad': ['emotional', 'melancholy', 'heartbreak', 'crying', 'depression'],
+            'happy': ['uplifting', 'positive', 'cheerful', 'feel good', 'smile']
+        };
         this.popularArtists = [
             'Ed Sheeran', 'Taylor Swift', 'Drake', 'The Weeknd', 'Billie Eilish',
             'Post Malone', 'Ariana Grande', 'Dua Lipa', 'Harry Styles', 'Olivia Rodrigo',
             'Bad Bunny', 'Justin Bieber', 'BTS', 'Doja Cat', 'Lil Nas X'
-        ];
-        this.backupPlaylists = [
-            'top hits 2024', 'chill vibes', 'focus music', 'workout playlist',
-            'indie rock', 'electronic chill', 'pop hits', 'lo-fi study'
         ];
     }
 
     async getNextRecommendation(currentTrack, playHistory = [], userPreferences = {}) {
         console.log('🤖 Smart Auto-Play: Finding next recommendation...');
         
+        // Update current theme based on the track
+        this.updateTheme(currentTrack);
+        
         try {
-            // Try different recommendation strategies
+            // Smart theme-based recommendation strategies
             const strategies = [
+                () => this.getThemeBasedRecommendation(currentTrack),
                 () => this.getRelatedArtistTrack(currentTrack),
+                () => this.getSimilarGenreTrack(currentTrack),
+                () => this.getMoodMatchingTrack(currentTrack),
                 () => this.getGenreBasedRecommendation(currentTrack),
                 () => this.getTrendingTrack(),
-                () => this.getMoodBasedRecommendation(),
-                () => this.getRandomPopularTrack(),
-                () => this.getBackupPlaylistTrack()
+                () => this.getRandomPopularTrack()
             ];
 
             for (const strategy of strategies) {
@@ -293,6 +318,191 @@ class SmartAutoPlay {
 
         console.log(`✅ Generated playlist with ${playlist.length} tracks`);
         return playlist;
+    }
+
+    updateTheme(track) {
+        if (!track) return;
+        
+        const detectedGenre = this.detectGenre(track);
+        const detectedMood = this.detectMood(track);
+        
+        this.currentTheme = {
+            genre: detectedGenre,
+            mood: detectedMood,
+            artist: track.author,
+            lastTrack: track.title,
+            updatedAt: new Date()
+        };
+        
+        console.log(`🎨 Theme updated: ${detectedGenre} | ${detectedMood} | ${track.author}`);
+    }
+
+    detectGenre(track) {
+        const text = `${track.title} ${track.author}`.toLowerCase();
+        const genreScores = {};
+        
+        // Score each genre based on keyword matches
+        for (const [genre, keywords] of Object.entries(this.genres)) {
+            let score = 0;
+            
+            for (const keyword of keywords) {
+                // Exact artist name match gets highest score
+                if (track.author.toLowerCase() === keyword.toLowerCase()) {
+                    score += 100;
+                } 
+                // Artist name contains keyword
+                else if (track.author.toLowerCase().includes(keyword.toLowerCase())) {
+                    score += 50;
+                }
+                // Title contains keyword
+                else if (track.title.toLowerCase().includes(keyword.toLowerCase())) {
+                    score += 25;
+                }
+                // General text match
+                else if (text.includes(keyword.toLowerCase())) {
+                    score += 10;
+                }
+            }
+            
+            if (score > 0) {
+                genreScores[genre] = score;
+            }
+        }
+        
+        // Return genre with highest score
+        if (Object.keys(genreScores).length > 0) {
+            const topGenre = Object.entries(genreScores)
+                .sort(([,a], [,b]) => b - a)[0][0];
+            
+            console.log(`🎵 Genre detected: ${topGenre} (score: ${genreScores[topGenre]}) for "${track.author} - ${track.title}"`);
+            return topGenre;
+        }
+        
+        // Enhanced fallback logic
+        if (track.author.toLowerCase().includes('lil') || text.includes('rap') || text.includes('hip hop')) {
+            return 'hip hop';
+        }
+        if (text.includes('electronic') || text.includes('house') || text.includes('techno')) {
+            return 'electronic';
+        }
+        if (text.includes('reggaeton') || text.includes('urbano') || text.includes('perreo')) {
+            return 'reggaeton';
+        }
+        
+        console.log(`🎵 Genre fallback: pop for "${track.author} - ${track.title}"`);
+        return 'pop'; // Default fallback
+    }
+
+    detectMood(track) {
+        const text = `${track.title} ${track.author}`.toLowerCase();
+        
+        for (const [mood, keywords] of Object.entries(this.moods)) {
+            const matches = keywords.filter(keyword => text.includes(keyword)).length;
+            if (matches > 0) {
+                return mood;
+            }
+        }
+        
+        // Time-based mood detection
+        const hour = new Date().getHours();
+        if (hour >= 6 && hour < 12) return 'energetic'; // Morning
+        if (hour >= 12 && hour < 17) return 'focus'; // Afternoon
+        if (hour >= 17 && hour < 22) return 'chill'; // Evening
+        return 'relaxed'; // Night
+    }
+
+    async getThemeBasedRecommendation(currentTrack) {
+        if (!this.currentTheme) return null;
+        
+        const { genre, mood, artist } = this.currentTheme;
+        
+        // More specific search queries for better genre matching
+        const searchQueries = [
+            `${artist} similar artists`,  // Same artist style first
+            `${genre} music 2024`,       // Recent tracks in same genre
+            `best ${genre} songs`,       // Popular tracks in genre
+            `${genre} playlist`,         // Genre playlists
+            `${genre} ${mood}`          // Genre + mood combination
+        ];
+        
+        for (const query of searchQueries) {
+            try {
+                console.log(`🎯 Theme search: ${query}`);
+                const results = await this.sourceHandlers.search(query, 8);
+                
+                if (results.length > 0) {
+                    // Strict genre filtering - only exact matches
+                    const exactGenreMatches = results.filter(track => {
+                        const detectedGenre = this.detectGenre(track);
+                        return detectedGenre === genre;
+                    });
+                    
+                    if (exactGenreMatches.length > 0) {
+                        console.log(`✅ Found ${exactGenreMatches.length} exact ${genre} matches`);
+                        return exactGenreMatches[Math.floor(Math.random() * exactGenreMatches.length)];
+                    }
+                    
+                    // If no exact genre matches, try mood matching within the same genre family
+                    const moodMatches = results.filter(track => {
+                        const detectedMood = this.detectMood(track);
+                        const detectedGenre = this.detectGenre(track);
+                        return detectedMood === mood && this.isRelatedGenre(detectedGenre, genre);
+                    });
+                    
+                    if (moodMatches.length > 0) {
+                        console.log(`✅ Found ${moodMatches.length} mood matches in related genres`);
+                        return moodMatches[Math.floor(Math.random() * moodMatches.length)];
+                    }
+                }
+            } catch (error) {
+                console.log(`❌ Theme search failed for: ${query}`);
+                continue;
+            }
+        }
+        
+        console.log(`⚠️ No theme-based recommendations found for ${genre}`);
+        return null;
+    }
+
+    isRelatedGenre(detectedGenre, targetGenre) {
+        const genreFamilies = {
+            'reggaeton': ['reggaeton', 'trap latino', 'salsa', 'cumbia'],
+            'hip hop': ['hip hop', 'trap latino', 'r&b'],
+            'electronic': ['electronic', 'pop'],
+            'rock': ['rock', 'indie', 'alternative'],
+            'pop': ['pop', 'r&b', 'electronic'],
+            'reggae': ['reggae'],  // Keep reggae separate from reggaeton
+            'jazz': ['jazz', 'r&b'],
+            'country': ['country', 'folk'],
+            'classical': ['classical']
+        };
+        
+        const targetFamily = genreFamilies[targetGenre] || [targetGenre];
+        return targetFamily.includes(detectedGenre);
+    }
+
+    async getSimilarGenreTrack(currentTrack) {
+        const genre = this.detectGenre(currentTrack);
+        const searchQuery = `${genre} music similar artists`;
+        
+        try {
+            const results = await this.sourceHandlers.search(searchQuery, 3);
+            return results.length > 0 ? results[Math.floor(Math.random() * results.length)] : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    async getMoodMatchingTrack(currentTrack) {
+        const mood = this.detectMood(currentTrack);
+        const searchQuery = `${mood} playlist music`;
+        
+        try {
+            const results = await this.sourceHandlers.search(searchQuery, 3);
+            return results.length > 0 ? results[Math.floor(Math.random() * results.length)] : null;
+        } catch (error) {
+            return null;
+        }
     }
 }
 

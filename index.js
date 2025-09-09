@@ -31,6 +31,7 @@ class AtiveMusicBot {
         this.errorHandler = new ErrorHandler();
         this.playlistManager = new PlaylistManager();
         this.searchCache = new Map();
+        this.musicPanels = new Map(); // Track music control panels by guild ID
         
         this.setupEventListeners();
         this.registerCommands();
@@ -84,9 +85,63 @@ class AtiveMusicBot {
 
     getMusicManager(guildId) {
         if (!this.musicManagers.has(guildId)) {
-            this.musicManagers.set(guildId, new MusicManager(guildId, this.sourceHandlers));
+            const musicManager = new MusicManager(guildId, this.sourceHandlers);
+            
+            // Set up event callbacks for panel management
+            musicManager.onTrackStart = (track) => {
+                this.handleTrackStart(guildId, track);
+            };
+            
+            musicManager.onTrackEnd = (track) => {
+                this.handleTrackEnd(guildId, track);
+            };
+            
+            this.musicManagers.set(guildId, musicManager);
         }
         return this.musicManagers.get(guildId);
+    }
+
+    async handleTrackStart(guildId, track) {
+        console.log(`🎵 Track started in guild ${guildId}: ${track.title}`);
+        
+        // Find the appropriate channel to send the panel
+        const guild = this.client.guilds.cache.get(guildId);
+        if (!guild) return;
+        
+        // Try to find the last channel where music was used, or use a general channel
+        const panelInfo = this.musicPanels.get(guildId);
+        let channel = null;
+        
+        if (panelInfo) {
+            channel = guild.channels.cache.get(panelInfo.channelId);
+        }
+        
+        if (!channel) {
+            // Find a general/music channel or use the first text channel
+            channel = guild.channels.cache.find(ch => 
+                ch.name.includes('music') || 
+                ch.name.includes('bot') || 
+                ch.name.includes('general')
+            ) || guild.channels.cache.find(ch => ch.type === 0); // 0 = GUILD_TEXT
+        }
+        
+        if (channel) {
+            await this.sendNewMusicPanel(channel, track, true, false);
+        }
+    }
+
+    async handleTrackEnd(guildId, track) {
+        console.log(`🎵 Track ended in guild ${guildId}: ${track.title}`);
+        // The panel will be replaced when the next track starts
+        // or can be manually controlled by users via buttons
+    }
+
+    updatePanelReference(guildId, track) {
+        const panelInfo = this.musicPanels.get(guildId);
+        if (panelInfo) {
+            panelInfo.track = track;
+            this.musicPanels.set(guildId, panelInfo);
+        }
     }
 
     async handleSlashCommand(interaction) {
@@ -173,11 +228,24 @@ class AtiveMusicBot {
                 });
             }
 
-            // Select the best track (prioritize Spotify since YouTube is broken)
-            const selectedTrack = searchResults.find(track => track.source === 'spotify') || searchResults[0];
+            // Select the best track (prioritize YouTube since yt-dlp works directly with it)
+            const selectedTrack = searchResults.find(track => track.source === 'youtube') || 
+                                 searchResults.find(track => track.source === 'spotify') || 
+                                 searchResults[0];
             console.log(`✅ Selected track: ${selectedTrack.title} from ${selectedTrack.source}`);
 
             await musicManager.addToQueue(selectedTrack);
+
+            // Store channel info for panel management  
+            const panelInfo = this.musicPanels.get(interaction.guildId);
+            if (!panelInfo || panelInfo.channelId !== interaction.channelId) {
+                // Update or set the channel for future panels, keeping existing message if available
+                this.musicPanels.set(interaction.guildId, {
+                    message: panelInfo?.message || null,
+                    channelId: interaction.channelId,
+                    track: panelInfo?.track || null
+                });
+            }
 
             const embed = this.createMusicEmbed(
                 '🎵 Added to Queue',
@@ -326,6 +394,76 @@ class AtiveMusicBot {
         return [row1, row2];
     }
 
+    async updateMusicPanel(guildId, track, isPlaying = true, isPaused = false) {
+        const panelInfo = this.musicPanels.get(guildId);
+        if (!panelInfo) return;
+
+        const embed = this.createMusicEmbed(
+            '🎵 Now Playing',
+            `**${track.title}**\nBy: ${track.author}\nDuration: ${track.duration}\nSource: ${track.source.toUpperCase()}`,
+            config.colors.success,
+            track.thumbnail
+        );
+
+        try {
+            await panelInfo.message.edit({
+                embeds: [embed],
+                components: this.createMusicControls(isPlaying, isPaused)
+            });
+        } catch (error) {
+            console.log('❌ Failed to update music panel:', error.message);
+            // Remove invalid panel reference
+            this.musicPanels.delete(guildId);
+        }
+    }
+
+    async deletePreviousPanel(guildId) {
+        const panelInfo = this.musicPanels.get(guildId);
+        if (panelInfo && panelInfo.message) {
+            try {
+                await panelInfo.message.delete();
+                console.log('🗑️ Deleted previous music panel');
+            } catch (error) {
+                console.log('⚠️ Could not delete previous panel:', error.message);
+            }
+        }
+        // Always clean up the panel reference, even if deletion failed
+        this.musicPanels.delete(guildId);
+    }
+
+    async sendNewMusicPanel(channel, track, isPlaying = true, isPaused = false) {
+        const guildId = channel.guild.id;
+        
+        // Delete previous panel first
+        await this.deletePreviousPanel(guildId);
+
+        const embed = this.createMusicEmbed(
+            '🎵 Now Playing',
+            `**${track.title}**\nBy: ${track.author}\nDuration: ${track.duration}\nSource: ${track.source.toUpperCase()}`,
+            config.colors.success,
+            track.thumbnail
+        );
+
+        try {
+            const message = await channel.send({
+                embeds: [embed],
+                components: this.createMusicControls(isPlaying, isPaused)
+            });
+
+            // Store new panel reference
+            this.musicPanels.set(guildId, {
+                message: message,
+                channelId: channel.id,
+                track: track
+            });
+
+            return message;
+        } catch (error) {
+            console.error('❌ Failed to send music panel:', error);
+            return null;
+        }
+    }
+
     createAdvancedControls() {
         return new ActionRowBuilder()
             .addComponents(
@@ -365,7 +503,30 @@ class AtiveMusicBot {
             switch (interaction.customId) {
             case 'music_pause':
                 if (musicManager.pause()) {
-                    await interaction.reply({ content: '⏸️ Music paused', ephemeral: true });
+                    const track = musicManager.currentTrack;
+                    const queueInfo = musicManager.getQueueInfo();
+                    const embed = this.createMusicEmbed(
+                        '⏸️ Paused', 
+                        track ? `**${track.title}** by ${track.author}` : 'Unknown track',
+                        config.colors.warning, 
+                        track?.thumbnail
+                    );
+                    
+                    // Add current queue info
+                    embed.addFields([
+                        { name: 'Queue Position', value: `${queueInfo.currentIndex + 1} of ${queueInfo.queue.length}`, inline: true },
+                        { name: 'Volume', value: `${musicManager.volume}%`, inline: true },
+                        { name: 'Loop', value: String(musicManager.loopMode || 'off'), inline: true }
+                    ]);
+                    
+                    try {
+                        await interaction.update({ embeds: [embed], components: this.createMusicControls(false, true) });
+                        
+                        // Update the stored panel reference with the new state
+                        this.updatePanelReference(interaction.guildId, track);
+                    } catch (updateError) {
+                        await interaction.reply({ embeds: [embed], components: this.createMusicControls(false, true), ephemeral: true });
+                    }
                 } else {
                     await interaction.reply({ content: '❌ Nothing to pause!', ephemeral: true });
                 }
@@ -376,7 +537,7 @@ class AtiveMusicBot {
                     const track = musicManager.currentTrack;
                     const queueInfo = musicManager.getQueueInfo();
                     const embed = this.createMusicEmbed(
-                        'Resumed', 
+                        '▶️ Now Playing', 
                         track ? `**${track.title}** by ${track.author}` : 'Unknown track',
                         config.colors.success, 
                         track?.thumbnail
@@ -386,11 +547,14 @@ class AtiveMusicBot {
                     embed.addFields([
                         { name: 'Queue Position', value: `${queueInfo.currentIndex + 1} of ${queueInfo.queue.length}`, inline: true },
                         { name: 'Volume', value: `${musicManager.volume}%`, inline: true },
-                        { name: 'Loop', value: musicManager.loopMode, inline: true }
+                        { name: 'Loop', value: String(musicManager.loopMode || 'off'), inline: true }
                     ]);
                     
                     try {
                         await interaction.update({ embeds: [embed], components: this.createMusicControls(true, false) });
+                        
+                        // Update the stored panel reference with the new state
+                        this.updatePanelReference(interaction.guildId, track);
                     } catch (updateError) {
                         await interaction.reply({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
@@ -420,6 +584,9 @@ class AtiveMusicBot {
                         
                         try {
                             await interaction.update({ embeds: [embed], components: this.createMusicControls(true, false) });
+                            
+                            // Update the stored panel reference with the new track
+                            this.updatePanelReference(interaction.guildId, nextTrack);
                         } catch (updateError) {
                             await interaction.reply({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                         }
@@ -476,6 +643,13 @@ class AtiveMusicBot {
                     
                     try {
                         await interaction.update({ embeds: [embed], components: this.createMusicControls(true, false) });
+                        
+                        // Update the stored panel reference with the new track
+                        const panelInfo = this.musicPanels.get(interaction.guildId);
+                        if (panelInfo) {
+                            panelInfo.track = track;
+                            this.musicPanels.set(interaction.guildId, panelInfo);
+                        }
                     } catch (updateError) {
                         await interaction.reply({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
@@ -775,12 +949,17 @@ class AtiveMusicBot {
             });
         }
 
-        musicManager.stop();
-        musicManager.clearQueue();
+        musicManager.stop(true); // User initiated - disable auto-play
+        musicManager.clearQueue(true); // User initiated - disable auto-play
+        musicManager.setAutoPlay(false); // Explicitly disable auto-play
+        musicManager.setContinuousPlayback(false); // Disable continuous playback
+        
+        // Delete the current music panel since playback stopped
+        await this.deletePreviousPanel(interaction.guildId);
 
         const embed = this.createMusicEmbed(
             '⏹️ Playback Stopped',
-            'Music stopped and queue cleared.',
+            'Music stopped and queue cleared. Auto-play disabled.',
             config.colors.warning
         );
 
