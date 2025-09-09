@@ -12,7 +12,6 @@ const VideoHandler = require('./src/VideoHandler.js');
 const LocalVideoServer = require('./src/LocalVideoServer.js');
 const ErrorHandler = require('./src/ErrorHandler.js');
 const PlaylistManager = require('./src/PlaylistManager.js');
-const colors = require('colors');
 
 class AtiveMusicBot {
     constructor() {
