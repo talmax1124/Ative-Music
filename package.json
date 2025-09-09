@@ -7,13 +7,14 @@
     "start": "node start.js",
     "dev": "node start.js",
     "setup": "node setup.js",
-    "check": "node check-system.js"
+    "check": "node check-system.js",
+    "vps-check": "node vps-deployment-check.js",
+    "validate": "node vps-deployment-check.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.17.0",
     "@distube/ytdl-core": "^4.16.12",
     "cheerio": "^1.1.2",
-    "colors": "^1.4.0",
     "discord.js": "^14.14.1",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",

@@ -36,7 +36,7 @@ class StayConnectedManager {
                 if (!channel || channel.type !== 2) continue; // 2 = GUILD_VOICE
 
                 await this.connectToChannel(channel);
-                console.log(`🔄 Reconnected to ${channel.name} in ${guild.name}`.cyan);
+                console.log(`🔄 Reconnected to ${channel.name} in ${guild.name}`);
                 
             } catch (error) {
                 console.error(`❌ Failed to reconnect to channel in guild ${guildId}:`, error);
@@ -67,7 +67,7 @@ class StayConnectedManager {
                         entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
                     ]);
                 } catch (error) {
-                    console.log(`🔌 Connection lost for ${channel.name}, attempting reconnect...`.yellow);
+                    console.log(`🔌 Connection lost for ${channel.name}, attempting reconnect...`);
                     connection.destroy();
                     this.connections.delete(guildId);
                     await this.attemptReconnect(channel);
@@ -97,33 +97,33 @@ class StayConnectedManager {
         const guildId = channel.guild.id;
         
         if (attempt > this.maxReconnectAttempts) {
-            console.error(`❌ Max reconnection attempts reached for ${channel.name}`.red);
+            console.error(`❌ Max reconnection attempts reached for ${channel.name}`);
             this.reconnectAttempts.delete(guildId);
             return;
         }
 
         this.reconnectAttempts.set(guildId, attempt);
         
-        console.log(`🔄 Reconnection attempt ${attempt}/${this.maxReconnectAttempts} for ${channel.name}...`.yellow);
+        console.log(`🔄 Reconnection attempt ${attempt}/${this.maxReconnectAttempts} for ${channel.name}...`);
         
         setTimeout(async () => {
             try {
                 // Check if channel still exists and bot has permissions
                 const freshChannel = this.client.channels.cache.get(channel.id);
                 if (!freshChannel) {
-                    console.log(`❌ Channel ${channel.name} no longer exists`.red);
+                    console.log(`❌ Channel ${channel.name} no longer exists`);
                     this.removeChannel(guildId);
                     return;
                 }
 
                 const permissions = freshChannel.permissionsFor(this.client.user);
                 if (!permissions.has(['CONNECT', 'SPEAK'])) {
-                    console.log(`❌ Missing permissions for ${channel.name}`.red);
+                    console.log(`❌ Missing permissions for ${channel.name}`);
                     return;
                 }
 
                 await this.connectToChannel(freshChannel, true);
-                console.log(`✅ Successfully reconnected to ${freshChannel.name}`.green);
+                console.log(`✅ Successfully reconnected to ${freshChannel.name}`);
                 
             } catch (error) {
                 console.error(`❌ Reconnection attempt ${attempt} failed:`, error);
@@ -147,7 +147,7 @@ class StayConnectedManager {
             newState.channelId && 
             oldState.channelId !== newState.channelId) {
             
-            console.log(`🎵 Moved to ${newState.channel.name}`.cyan);
+            console.log(`🎵 Moved to ${newState.channel.name}`);
             this.saveChannel(newState.guild.id, newState.channelId);
         }
 
@@ -159,10 +159,10 @@ class StayConnectedManager {
             const humanMembers = currentChannel.members.filter(member => !member.user.bot);
             
             if (humanMembers.size === 0) {
-                console.log(`😴 No users in ${voiceChannel.name}, pausing playback...`.yellow);
+                console.log(`😴 No users in ${voiceChannel.name}, pausing playback...`);
                 this.pauseInGuild(oldState.guild.id);
             } else if (humanMembers.size > 0 && this.isPausedDueToEmpty(oldState.guild.id)) {
-                console.log(`😊 Users returned to ${voiceChannel.name}, resuming playback...`.green);
+                console.log(`😊 Users returned to ${voiceChannel.name}, resuming playback...`);
                 this.resumeInGuild(oldState.guild.id);
             }
         }, 5000); // 5 second delay to avoid rapid state changes

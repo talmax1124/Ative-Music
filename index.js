@@ -39,8 +39,8 @@ class AtiveMusicBot {
 
     setupEventListeners() {
         this.client.once('clientReady', async () => {
-            console.log(`🎵 ${this.client.user.tag} is online!`.green);
-            console.log(`🎶 Serving music in ${this.client.guilds.cache.size} servers`.cyan);
+            console.log(`🎵 ${this.client.user.tag} is online!`);
+            console.log(`🎶 Serving music in ${this.client.guilds.cache.size} servers`);
             
             // Clean up any debug HTML files on startup
             this.cleanupDebugFiles();
@@ -1816,11 +1816,11 @@ class AtiveMusicBot {
         const rest = new REST({ version: '10' }).setToken(config.token);
 
         try {
-            console.log('🔄 Refreshing slash commands...'.yellow);
+            console.log('🔄 Refreshing slash commands...');
             await rest.put(Routes.applicationCommands(config.clientId), { body: commands });
-            console.log('✅ Slash commands registered successfully!'.green);
+            console.log('✅ Slash commands registered successfully!');
         } catch (error) {
-            console.error('❌ Error registering commands:'.red, error);
+            console.error('❌ Error registering commands:', error);
         }
     }
 
@@ -2240,7 +2240,7 @@ class AtiveMusicBot {
         try {
             await this.client.login(config.token);
         } catch (error) {
-            console.error('❌ Failed to start bot:'.red, error);
+            console.error('❌ Failed to start bot:', error);
             process.exit(1);
         }
     }
@@ -2254,7 +2254,7 @@ process.on('unhandledRejection', (error) => {
 });
 
 process.on('SIGINT', () => {
-    console.log('\n🛑 Shutting down bot...'.yellow);
+    console.log('\n🛑 Shutting down bot...');
     bot.client.destroy();
     process.exit(0);
 });

@@ -24,6 +24,9 @@ class SourceHandlers {
             failureCounts: {}
         };
         
+        // Initialize yt-dlp availability cache
+        this.ytDlpAvailable = undefined;
+        
         this.setupSpotify();
     }
 
@@ -41,7 +44,7 @@ class SourceHandlers {
                 }
             }, data.body.expires_in * 1000 - 60000);
             
-            console.log('✅ Spotify API initialized'.green);
+            console.log('✅ Spotify API initialized');
         } catch (error) {
             console.error('❌ Failed to initialize Spotify API:', error);
         }
@@ -605,42 +608,41 @@ class SourceHandlers {
     async getStreamWithIntelligentFallback(track) {
         console.log(`🔄 Using intelligent fallback system for: ${track.title}`);
         
-        // Define streaming methods with priority and success rates - prioritize yt-dlp
-        const streamingMethods = [
+        // Check if yt-dlp is available first
+        const hasYtDlp = await this.checkYtDlpAvailable();
+        
+        // Define streaming methods - prioritize working methods only
+        const streamingMethods = hasYtDlp ? [
+            // If yt-dlp is available, use only reliable methods
             {
                 name: 'yt-dlp-direct',
                 priority: 1,
                 method: () => this.getStreamWithYtDlp(track),
-                cooldown: 3000,
-                maxFailures: 5
-            },
-            {
-                name: 'play-dl-enhanced',
-                priority: 2,
-                method: () => this.getStreamWithPlayDl(track),
-                cooldown: 3000,
-                maxFailures: 5
+                cooldown: 1000,
+                maxFailures: 3
             },
             {
                 name: 'youtube-sr-search-ytdl',
-                priority: 3,
+                priority: 2,
                 method: () => this.getStreamWithYouTubeSR(track),
-                cooldown: 5000,
-                maxFailures: 3
-            },
+                cooldown: 2000,
+                maxFailures: 2
+            }
+        ] : [
+            // Fallback methods when yt-dlp is not available
             {
-                name: 'ytdl-core-innertube',
-                priority: 4,
-                method: () => this.getStreamWithYtdlCore(track),
-                cooldown: 10000,
+                name: 'play-dl-enhanced',
+                priority: 1,
+                method: () => this.getStreamWithPlayDl(track),
+                cooldown: 3000,
                 maxFailures: 2
             },
             {
-                name: 'direct-audio-search',
-                priority: 5,
-                method: () => this.findAndStreamDirectAudioAlternative(track),
+                name: 'ytdl-core-innertube',
+                priority: 2,
+                method: () => this.getStreamWithYtdlCore(track),
                 cooldown: 5000,
-                maxFailures: 3
+                maxFailures: 2
             }
         ];
         
@@ -1782,6 +1784,46 @@ class SourceHandlers {
         }
         
         return score;
+    }
+
+    async checkYtDlpAvailable() {
+        // Cache the result to avoid repeated checks
+        if (this.ytDlpAvailable !== undefined) {
+            return this.ytDlpAvailable;
+        }
+        
+        try {
+            const { spawn } = require('child_process');
+            return new Promise((resolve) => {
+                const ytDlp = spawn('yt-dlp', ['--version']);
+                
+                ytDlp.on('close', (code) => {
+                    this.ytDlpAvailable = (code === 0);
+                    if (this.ytDlpAvailable) {
+                        console.log('✅ yt-dlp is available - using optimized streaming');
+                    } else {
+                        console.log('⚠️ yt-dlp not available - using fallback methods');
+                    }
+                    resolve(this.ytDlpAvailable);
+                });
+                
+                ytDlp.on('error', () => {
+                    this.ytDlpAvailable = false;
+                    console.log('⚠️ yt-dlp not found - using fallback methods');
+                    resolve(false);
+                });
+                
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    ytDlp.kill();
+                    this.ytDlpAvailable = false;
+                    resolve(false);
+                }, 5000);
+            });
+        } catch (error) {
+            this.ytDlpAvailable = false;
+            return false;
+        }
     }
 
     removeDuplicates(tracks) {
