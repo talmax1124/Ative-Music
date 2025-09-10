@@ -873,26 +873,9 @@ class SourceHandlers {
                     const directUrl = audioUrl.trim().split('\n')[0]; // Get first URL if multiple
                     console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 80)}...`);
                     
-                    // Create a proper audio resource directly from the URL
-                    try {
-                        const { createAudioResource } = require('@discordjs/voice');
-                        
-                        // Create audio resource with the direct URL
-                        const resource = createAudioResource(directUrl, {
-                            inputType: 'url',
-                            inlineVolume: true,
-                            metadata: {
-                                title: track.title || 'Unknown',
-                                url: directUrl
-                            }
-                        });
-                        
-                        console.log(`✅ yt-dlp stream created successfully`);
-                        resolve(resource);
-                    } catch (resourceError) {
-                        console.log(`❌ Failed to create audio resource: ${resourceError.message}`);
-                        reject(resourceError);
-                    }
+                    // Return the direct URL - let MusicManager create the AudioResource
+                    console.log(`✅ yt-dlp stream created successfully`);
+                    resolve(directUrl);
                 } else {
                     const errorMsg = errorOutput || `yt-dlp failed with code: ${code}`;
                     console.log(`❌ yt-dlp error: ${errorMsg}`);
