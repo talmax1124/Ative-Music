@@ -2,6 +2,37 @@
 process.env.YTDL_NO_UPDATE = 'true';
 process.env.DEBUG = '';
 
+// Polyfill File constructor for Discord.js compatibility in serverless environments
+if (typeof globalThis.File === 'undefined') {
+    const fs = require('fs');
+    globalThis.File = class File {
+        constructor(fileBits, fileName, options = {}) {
+            this.name = fileName;
+            this.size = fileBits.length || 0;
+            this.type = options.type || '';
+            this.lastModified = options.lastModified || Date.now();
+            this._bits = fileBits;
+        }
+        
+        arrayBuffer() {
+            return Promise.resolve(this._bits.buffer || this._bits);
+        }
+        
+        text() {
+            return Promise.resolve(this._bits.toString());
+        }
+        
+        stream() {
+            return new ReadableStream({
+                start(controller) {
+                    controller.enqueue(this._bits);
+                    controller.close();
+                }
+            });
+        }
+    };
+}
+
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState, demuxProbe, getVoiceConnection } = require('@discordjs/voice');
 const config = require('./config.js');

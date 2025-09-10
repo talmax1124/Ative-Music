@@ -6,6 +6,9 @@ cmds = [
     "npm ci --only=production --ignore-scripts"
 ]
 
+[variables]
+NODE_OPTIONS = "--no-warnings"
+
 [phases.build]
 cmds = ["echo 'Build phase - no build needed'"]
 
