@@ -1110,13 +1110,38 @@ class SourceHandlers {
         for (const [index, config] of clientConfigs.entries()) {
             try {
                 console.log(`🔄 Trying InnerTube client: ${config.name}`);
-                const stream = ytdl(youtubeUrl, config);
+                
+                // Add better error handling and timeout
+                const stream = await Promise.race([
+                    new Promise((resolve, reject) => {
+                        try {
+                            const ytdlStream = ytdl(youtubeUrl, {
+                                ...config,
+                                retries: 1,
+                                highWaterMark: 1 << 25
+                            });
+                            
+                            ytdlStream.on('error', reject);
+                            ytdlStream.on('response', () => resolve(ytdlStream));
+                            
+                            // If no response event in 10 seconds, resolve anyway
+                            setTimeout(() => resolve(ytdlStream), 10000);
+                        } catch (err) {
+                            reject(err);
+                        }
+                    }),
+                    new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Client timeout')), 15000)
+                    )
+                ]);
+                
                 console.log(`✅ Success with ${config.name} client`);
                 return stream;
             } catch (error) {
                 console.log(`❌ ${config.name} failed: ${error.message}`);
                 if (index === clientConfigs.length - 1) {
-                    throw error;
+                    // If all clients fail, throw a more user-friendly error
+                    throw new Error(`YouTube parsing failed - this is a known issue. Try using /play with the song name instead of URL.`);
                 }
                 continue;
             }
@@ -1794,34 +1819,50 @@ class SourceHandlers {
         
         try {
             const { spawn } = require('child_process');
+            const { exec } = require('child_process');
+            
+            // First try to check if yt-dlp is in PATH
             return new Promise((resolve) => {
-                const ytDlp = spawn('yt-dlp', ['--version']);
-                
-                ytDlp.on('close', (code) => {
-                    this.ytDlpAvailable = (code === 0);
-                    if (this.ytDlpAvailable) {
-                        console.log('✅ yt-dlp is available - using optimized streaming');
+                exec('which yt-dlp || where yt-dlp 2>/dev/null', (error, stdout) => {
+                    if (!error && stdout.trim()) {
+                        console.log(`✅ yt-dlp found at: ${stdout.trim()}`);
+                        // Test if it actually works
+                        const ytDlp = spawn('yt-dlp', ['--version']);
+                        
+                        ytDlp.on('close', (code) => {
+                            this.ytDlpAvailable = (code === 0);
+                            if (this.ytDlpAvailable) {
+                                console.log('✅ yt-dlp is available - using optimized streaming');
+                            } else {
+                                console.log('⚠️ yt-dlp found but not working - using fallback methods');
+                            }
+                            resolve(this.ytDlpAvailable);
+                        });
+                        
+                        ytDlp.on('error', () => {
+                            this.ytDlpAvailable = false;
+                            console.log('⚠️ yt-dlp found but failed to execute - using fallback methods');
+                            resolve(false);
+                        });
+                        
+                        // Timeout after 5 seconds
+                        setTimeout(() => {
+                            ytDlp.kill();
+                            this.ytDlpAvailable = false;
+                            console.log('⚠️ yt-dlp check timed out - using fallback methods');
+                            resolve(false);
+                        }, 5000);
                     } else {
-                        console.log('⚠️ yt-dlp not available - using fallback methods');
+                        // yt-dlp not found in PATH
+                        this.ytDlpAvailable = false;
+                        console.log('⚠️ yt-dlp not found in PATH - using fallback methods');
+                        resolve(false);
                     }
-                    resolve(this.ytDlpAvailable);
                 });
-                
-                ytDlp.on('error', () => {
-                    this.ytDlpAvailable = false;
-                    console.log('⚠️ yt-dlp not found - using fallback methods');
-                    resolve(false);
-                });
-                
-                // Timeout after 5 seconds
-                setTimeout(() => {
-                    ytDlp.kill();
-                    this.ytDlpAvailable = false;
-                    resolve(false);
-                }, 5000);
             });
         } catch (error) {
             this.ytDlpAvailable = false;
+            console.log('⚠️ Error checking yt-dlp availability - using fallback methods');
             return false;
         }
     }
