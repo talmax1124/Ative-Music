@@ -9,7 +9,9 @@
     "setup": "node setup.js",
     "check": "node check-system.js",
     "vps-check": "node vps-deployment-check.js",
-    "validate": "node vps-deployment-check.js"
+    "validate": "node vps-deployment-check.js",
+    "railway:deploy": "railway up",
+    "postinstall": "echo 'Dependencies installed successfully'"
   },
   "dependencies": {
     "@discordjs/voice": "^0.17.0",
@@ -35,6 +37,10 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.5"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
   "keywords": [
     "discord",
