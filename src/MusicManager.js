@@ -442,6 +442,11 @@ class MusicManager {
             // Stop playback and wait for user to manually advance
             this.isPlaying = false;
             this.isPaused = false;
+            
+            // Notify panel to show "Use /play" message when queue is empty
+            if (this.queue.length === 0 && this.onQueueEmpty) {
+                this.onQueueEmpty();
+            }
         } else if (this.autoPlayEnabled && this.continuousPlayback) {
             // Only find recommendations if auto-play is enabled and queue is empty
             this.autoPlayTimeout = setTimeout(async () => {

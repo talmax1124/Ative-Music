@@ -126,6 +126,10 @@ class AtiveMusicBot {
                 this.handleTrackEnd(guildId, track);
             };
             
+            musicManager.onQueueEmpty = () => {
+                this.handleQueueEmpty(guildId);
+            };
+            
             this.musicManagers.set(guildId, musicManager);
         }
         return this.musicManagers.get(guildId);
@@ -164,6 +168,29 @@ class AtiveMusicBot {
         console.log(`🎵 Track ended in guild ${guildId}: ${track.title}`);
         // The panel will be replaced when the next track starts
         // or can be manually controlled by users via buttons
+    }
+
+    async handleQueueEmpty(guildId) {
+        const panelInfo = this.musicPanels.get(guildId);
+        if (panelInfo && panelInfo.channel && panelInfo.messageId) {
+            try {
+                const channel = await this.client.channels.fetch(panelInfo.channel);
+                const message = await channel.messages.fetch(panelInfo.messageId);
+                
+                const embed = this.createMusicEmbed(
+                    '🎵 Queue Empty',
+                    'Use `/play` to queue your next song!',
+                    config.colors.info
+                );
+                
+                await message.edit({ 
+                    embeds: [embed], 
+                    components: [] // Remove controls when queue is empty
+                });
+            } catch (error) {
+                console.log('❌ Failed to update empty queue panel:', error.message);
+            }
+        }
     }
 
     updatePanelReference(guildId, track) {

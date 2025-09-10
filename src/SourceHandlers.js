@@ -873,25 +873,26 @@ class SourceHandlers {
                     const directUrl = audioUrl.trim().split('\n')[0]; // Get first URL if multiple
                     console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 80)}...`);
                     
-                    // Create a stream from the direct URL with better headers
-                    fetch(directUrl, {
-                        headers: {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                            'Accept': '*/*',
-                            'Accept-Language': 'en-US,en;q=0.9',
-                            'Range': 'bytes=0-',
-                            'Connection': 'keep-alive'
-                        }
-                    }).then(response => {
-                        if (response.ok) {
-                            console.log(`✅ yt-dlp stream created successfully`);
-                            resolve(response.body);
-                        } else {
-                            reject(new Error(`Direct stream failed: ${response.status} ${response.statusText}`));
-                        }
-                    }).catch(fetchError => {
-                        reject(new Error(`Fetch failed: ${fetchError.message}`));
-                    });
+                    // Create a proper audio resource directly from the URL
+                    try {
+                        const { createAudioResource } = require('@discordjs/voice');
+                        
+                        // Create audio resource with the direct URL
+                        const resource = createAudioResource(directUrl, {
+                            inputType: 'url',
+                            inlineVolume: true,
+                            metadata: {
+                                title: track.title || 'Unknown',
+                                url: directUrl
+                            }
+                        });
+                        
+                        console.log(`✅ yt-dlp stream created successfully`);
+                        resolve(resource);
+                    } catch (resourceError) {
+                        console.log(`❌ Failed to create audio resource: ${resourceError.message}`);
+                        reject(resourceError);
+                    }
                 } else {
                     const errorMsg = errorOutput || `yt-dlp failed with code: ${code}`;
                     console.log(`❌ yt-dlp error: ${errorMsg}`);
