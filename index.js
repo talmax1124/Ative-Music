@@ -269,8 +269,9 @@ class AtiveMusicBot {
     async handlePlayCommand(interaction, musicManager) {
         const query = interaction.options.getString('query');
         const member = interaction.member;
+        const voiceChannel = member.voice.channel;
         
-        if (!member.voice.channel) {
+        if (!voiceChannel) {
             return await interaction.reply({
                 embeds: [this.createErrorEmbed('You need to be in a voice channel to play music!')],
                 ephemeral: true
