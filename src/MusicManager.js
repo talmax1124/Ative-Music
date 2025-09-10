@@ -52,16 +52,29 @@ class MusicManager {
             console.log('⏸️ Player paused');
         });
 
-        this.player.on(AudioPlayerStatus.Idle, () => {
-            this.isPlaying = false;
-            this.isPaused = false;
-            console.log('💤 Player idle - track finished');
-            this.handleTrackEnd();
+        this.player.on(AudioPlayerStatus.Idle, (oldState, newState) => {
+            // Only handle track end if we were actually playing
+            if (oldState.status === AudioPlayerStatus.Playing) {
+                this.isPlaying = false;
+                this.isPaused = false;
+                console.log('💤 Player idle - track finished naturally');
+                this.handleTrackEnd();
+            } else if (oldState.status === AudioPlayerStatus.Buffering) {
+                // Stream failed during buffering - this is an error
+                this.isPlaying = false;
+                this.isPaused = false;
+                console.log('❌ Stream failed during buffering - trying next track');
+                this.handleStreamError();
+            } else {
+                console.log(`💤 Player idle from ${oldState.status} - ignoring`);
+            }
         });
 
         this.player.on('error', (error) => {
             console.error('❌ Audio player error:', error);
-            this.handleTrackEnd();
+            this.isPlaying = false;
+            this.isPaused = false;
+            this.handleStreamError();
         });
 
         this.player.on(AudioPlayerStatus.Buffering, () => {
@@ -176,7 +189,8 @@ class MusicManager {
             
             if (!stream) {
                 console.error('❌ Failed to get stream for track');
-                await this.skip();
+                // Handle as stream error, not skip
+                this.handleStreamError();
                 return false;
             }
 
@@ -707,6 +721,51 @@ class MusicManager {
             console.log(`🗑️ Cleared persisted queue for guild ${this.guildId}`);
         } catch (error) {
             // File might not exist - ignore
+        }
+    }
+    
+    async handleStreamError() {
+        console.log('❌ Handling stream error - trying next track or stopping');
+        
+        // Prevent multiple simultaneous error handling
+        if (this.isTransitioning) {
+            console.log('⚠️ Stream error ignored - already transitioning');
+            return;
+        }
+        
+        this.isTransitioning = true;
+        
+        try {
+            // Increment error count
+            this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
+            
+            // If too many errors, stop
+            if (this.consecutiveErrors > 3) {
+                console.log('🚨 Too many stream errors - stopping playback');
+                this.stop();
+                this.isTransitioning = false;
+                return;
+            }
+            
+            // Try next track if available
+            if (this.currentTrackIndex + 1 < this.queue.length) {
+                console.log('🔄 Stream error - trying next track in queue');
+                this.currentTrackIndex++;
+                
+                setTimeout(async () => {
+                    if (!this.isPlaying && !this.userStoppedPlayback) {
+                        await this.play();
+                    }
+                    this.isTransitioning = false;
+                }, 2000); // Wait a bit before trying next track
+            } else {
+                console.log('⏹️ No more tracks to try - clearing position');
+                this.clearCurrentPosition();
+                this.isTransitioning = false;
+            }
+        } catch (error) {
+            console.error('❌ Error in handleStreamError:', error);
+            this.isTransitioning = false;
         }
     }
 }
