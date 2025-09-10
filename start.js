@@ -6,8 +6,11 @@ const path = require('path');
 console.log('🎵 Starting Ative Music Bot...');
 console.log('==============================');
 
-// Check if .env file exists
-if (!fs.existsSync('.env')) {
+// Load environment variables (Railway uses environment variables directly)
+require('dotenv').config();
+
+// Check if .env file exists (not required for Railway deployment)
+if (!fs.existsSync('.env') && !process.env.RAILWAY_ENVIRONMENT) {
     console.log('❌ No .env file found!');
     console.log('🔧 Please run: node setup.js');
     console.log('📖 Or copy .env.example to .env and fill in your credentials');
@@ -22,9 +25,6 @@ for (const dir of requiredDirs) {
         fs.mkdirSync(dir, { recursive: true });
     }
 }
-
-// Load environment variables
-require('dotenv').config();
 
 // Check if Discord token is provided
 if (!process.env.DISCORD_TOKEN || process.env.DISCORD_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
