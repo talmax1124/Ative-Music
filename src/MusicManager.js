@@ -6,8 +6,9 @@ const config = require('../config.js');
 const SmartAutoPlay = require('./SmartAutoPlay.js');
 
 class MusicManager {
-    constructor(guildId, sourceHandlers) {
+    constructor(guildId, channelId, sourceHandlers) {
         this.guildId = guildId;
+        this.channelId = channelId;
         this.sourceHandlers = sourceHandlers;
         this.queue = [];
         this.currentTrack = null;
@@ -31,7 +32,7 @@ class MusicManager {
         this.autoPlayTimeout = null;
         
         this.setupPlayerEvents();
-        this.queueFile = path.join(__dirname, `../data/queue_${guildId}.json`);
+        this.queueFile = path.join(__dirname, `../data/queue_${channelId}.json`);
         this.loadQueue();
     }
 
@@ -676,7 +677,7 @@ class MusicManager {
                 savedAt: new Date().toISOString()
             };
             await fs.writeFile(this.queueFile, JSON.stringify(queueData, null, 2));
-            console.log(`💾 Queue saved for guild ${this.guildId}`);
+            console.log(`💾 Queue saved for channel ${this.channelId} (guild ${this.guildId})`);
         } catch (error) {
             console.error('❌ Failed to save queue:', error);
         }

@@ -53,7 +53,7 @@ class AtiveMusicBot {
             ]
         });
 
-        this.musicManagers = new Map();
+        this.musicManagers = new Map(); // Now maps channelId -> MusicManager
         this.sourceHandlers = new SourceHandlers();
         this.stayConnectedManager = new StayConnectedManager(this.client);
         this.videoHandler = new VideoHandler();
@@ -61,7 +61,8 @@ class AtiveMusicBot {
         this.errorHandler = new ErrorHandler();
         this.playlistManager = new PlaylistManager();
         this.searchCache = new Map();
-        this.musicPanels = new Map(); // Track music control panels by guild ID
+        this.musicPanels = new Map(); // Track music control panels by channelId
+        this.guildChannels = new Map(); // Track which channel the bot is in per guild
         
         this.setupEventListeners();
         this.registerCommands();
@@ -113,81 +114,80 @@ class AtiveMusicBot {
         });
     }
 
-    getMusicManager(guildId) {
-        if (!this.musicManagers.has(guildId)) {
-            const musicManager = new MusicManager(guildId, this.sourceHandlers);
+    getMusicManager(guildId, channelId) {
+        // Use channelId as the primary key for music managers
+        if (!this.musicManagers.has(channelId)) {
+            const musicManager = new MusicManager(guildId, channelId, this.sourceHandlers);
             
             // Set up event callbacks for panel management
             musicManager.onTrackStart = (track) => {
-                this.handleTrackStart(guildId, track);
+                this.handleTrackStart(guildId, channelId, track);
             };
             
             musicManager.onTrackEnd = (track) => {
-                this.handleTrackEnd(guildId, track);
+                this.handleTrackEnd(guildId, channelId, track);
             };
             
             musicManager.onQueueEmpty = () => {
-                this.handleQueueEmpty(guildId);
+                this.handleQueueEmpty(guildId, channelId);
             };
             
             musicManager.onQueueUpdate = (queueInfo) => {
-                this.handleQueueUpdate(guildId, queueInfo);
+                this.handleQueueUpdate(guildId, channelId, queueInfo);
             };
             
-            this.musicManagers.set(guildId, musicManager);
+            this.musicManagers.set(channelId, musicManager);
+            this.guildChannels.set(guildId, channelId); // Track current channel for guild
         }
-        return this.musicManagers.get(guildId);
+        return this.musicManagers.get(channelId);
     }
 
-    async handleTrackStart(guildId, track) {
-        console.log(`🎵 Track started in guild ${guildId}: ${track.title}`);
+    async handleTrackStart(guildId, channelId, track) {
+        console.log(`🎵 Track started in channel ${channelId} (guild ${guildId}): ${track.title}`);
         
-        // Find the appropriate channel to send the panel
+        // Find the appropriate text channel to send the panel
         const guild = this.client.guilds.cache.get(guildId);
         if (!guild) return;
         
-        // Try to find the last channel where music was used, or use a general channel
-        const panelInfo = this.musicPanels.get(guildId);
-        let channel = null;
+        // Try to find the last text channel where music was used, or use a general channel
+        const panelInfo = this.musicPanels.get(channelId);
+        let textChannel = null;
         
         if (panelInfo) {
-            channel = guild.channels.cache.get(panelInfo.channelId);
+            textChannel = guild.channels.cache.get(panelInfo.textChannelId);
         }
         
-        if (!channel) {
+        if (!textChannel) {
             // Find a general/music channel or use the first text channel
-            channel = guild.channels.cache.find(ch => 
+            textChannel = guild.channels.cache.find(ch => 
                 ch.name.includes('music') || 
                 ch.name.includes('bot') || 
                 ch.name.includes('general')
             ) || guild.channels.cache.find(ch => ch.type === 0); // 0 = GUILD_TEXT
         }
         
-        if (channel) {
-            await this.sendNewMusicPanel(channel, track, true, false);
+        if (textChannel) {
+            await this.sendNewMusicPanel(textChannel, track, channelId, true, false);
         }
     }
 
-    async handleTrackEnd(guildId, track) {
-        console.log(`🎵 Track ended in guild ${guildId}: ${track.title}`);
+    async handleTrackEnd(guildId, channelId, track) {
+        console.log(`🎵 Track ended in channel ${channelId} (guild ${guildId}): ${track.title}`);
         // The panel will be replaced when the next track starts
         // or can be manually controlled by users via buttons
     }
 
-    async handleQueueEmpty(guildId) {
-        const panelInfo = this.musicPanels.get(guildId);
-        if (panelInfo && panelInfo.channel && panelInfo.messageId) {
+    async handleQueueEmpty(guildId, channelId) {
+        const panelInfo = this.musicPanels.get(channelId);
+        if (panelInfo && panelInfo.message) {
             try {
-                const channel = await this.client.channels.fetch(panelInfo.channel);
-                const message = await channel.messages.fetch(panelInfo.messageId);
-                
                 const embed = this.createMusicEmbed(
                     '🎵 Queue Empty',
                     'Use `/play` to queue your next song!',
                     config.colors.info
                 );
                 
-                await message.edit({ 
+                await panelInfo.message.edit({ 
                     embeds: [embed], 
                     components: [] // Remove controls when queue is empty
                 });
@@ -197,11 +197,11 @@ class AtiveMusicBot {
         }
     }
 
-    updatePanelReference(guildId, track) {
-        const panelInfo = this.musicPanels.get(guildId);
+    updatePanelReference(guildId, channelId, track) {
+        const panelInfo = this.musicPanels.get(channelId);
         if (panelInfo) {
             panelInfo.track = track;
-            this.musicPanels.set(guildId, panelInfo);
+            this.musicPanels.set(channelId, panelInfo);
         }
     }
 
@@ -261,7 +261,7 @@ class AtiveMusicBot {
                 await this.handleAutoPlayCommand(interaction, musicManager);
                 break;
             case 'clear':
-                await this.handleClearCommand(interaction, musicManager);
+                await this.handleClearCommand(interaction, musicManager, voiceChannelId);
                 break;
         }
     }
@@ -280,7 +280,7 @@ class AtiveMusicBot {
         await interaction.deferReply();
 
         try {
-            const connection = await this.connectToVoiceChannel(member.voice.channel, interaction.guildId);
+            const connection = await this.connectToVoiceChannel(voiceChannel, interaction.guildId);
             musicManager.setConnection(connection);
 
             // Use optimized search limit for speed
@@ -556,7 +556,16 @@ class AtiveMusicBot {
 
     async handleButtonInteraction(interaction) {
         try {
-            const musicManager = this.getMusicManager(interaction.guildId);
+            // Find which voice channel the bot is currently in for this guild
+            const currentChannelId = this.guildChannels.get(interaction.guildId);
+            if (!currentChannelId) {
+                return await interaction.reply({
+                    content: 'No active music session found in this server!',
+                    ephemeral: true
+                });
+            }
+            
+            const musicManager = this.getMusicManager(interaction.guildId, currentChannelId);
             const userId = interaction.user.id;
             const username = interaction.user.username;
             
@@ -660,7 +669,10 @@ class AtiveMusicBot {
                             // Update the stored panel reference with the new track
                             this.updatePanelReference(interaction.guildId, nextTrack);
                             // Update queue state across all components
-                            await this.updateQueueState(interaction.guildId, musicManager);
+                            const channelId = this.guildChannels.get(interaction.guildId);
+        if (channelId) {
+            await this.updateQueueState(interaction.guildId, channelId, musicManager);
+        }
                         } catch (updateError) {
                             await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                         }
@@ -725,7 +737,10 @@ class AtiveMusicBot {
                             this.musicPanels.set(interaction.guildId, panelInfo);
                         }
                         // Update queue state across all components
-                        await this.updateQueueState(interaction.guildId, musicManager);
+                        const channelId = this.guildChannels.get(interaction.guildId);
+        if (channelId) {
+            await this.updateQueueState(interaction.guildId, channelId, musicManager);
+        }
                     } catch (updateError) {
                         await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
@@ -756,7 +771,8 @@ class AtiveMusicBot {
                 break;
                 
             case 'music_queue':
-                await this.handleQueueCommand(interaction, musicManager);
+                // Pass the current channel ID for queue command
+                await this.handleQueueCommand(interaction, musicManager, currentChannelId);
                 break;
                 
             case 'music_clear_queue':
@@ -764,7 +780,10 @@ class AtiveMusicBot {
                 musicManager.stop(true); // User initiated
                 await interaction.reply({ content: 'Queue cleared and playback stopped!', ephemeral: true });
                 // Update queue state across all components
-                await this.updateQueueState(interaction.guildId, musicManager);
+                const channelId = this.guildChannels.get(interaction.guildId);
+        if (channelId) {
+            await this.updateQueueState(interaction.guildId, channelId, musicManager);
+        }
                 break;
                 
             case 'music_video':
@@ -941,7 +960,20 @@ class AtiveMusicBot {
         }
     }
 
-    async handleQueueCommand(interaction, musicManager) {
+    async handleQueueCommand(interaction, musicManager, channelId = null) {
+        // Use the channelId parameter if provided, otherwise try to find it
+        if (!channelId) {
+            const member = interaction.member;
+            if (!member?.voice?.channel) {
+                return await interaction.reply({
+                    embeds: [this.createErrorEmbed('You need to be in a voice channel to view the queue!')],
+                    ephemeral: true
+                });
+            }
+            channelId = member.voice.channel.id;
+            musicManager = this.getMusicManager(interaction.guildId, channelId);
+        }
+        
         const queueInfo = musicManager.getQueueInfo();
         
         if (queueInfo.queue.length === 0) {
@@ -1733,7 +1765,7 @@ class AtiveMusicBot {
         }
     }
     
-    async handleClearCommand(interaction, musicManager) {
+    async handleClearCommand(interaction, musicManager, channelId) {
         const trackId = interaction.options.getString('id');
         
         if (musicManager.queue.length === 0) {
@@ -1764,7 +1796,7 @@ class AtiveMusicBot {
         });
         
         // Update any existing music panels
-        await this.updateQueueState(interaction.guildId, musicManager);
+        await this.updateQueueState(interaction.guildId, channelId, musicManager);
     }
 
     async registerCommands() {
@@ -1958,11 +1990,40 @@ class AtiveMusicBot {
     }
 
     handleVoiceStateUpdate(oldState, newState) {
-        const musicManager = this.musicManagers.get(oldState.guild.id);
-        if (!musicManager) return;
-
-        if (oldState.channelId && !newState.channelId && newState.member.user.bot) {
-            musicManager.handleDisconnect();
+        // Handle bot leaving/joining channels
+        if (newState.member.user.bot && newState.member.user.id === this.client.user.id) {
+            const guildId = newState.guild.id;
+            
+            // Bot left a channel
+            if (oldState.channelId && !newState.channelId) {
+                console.log(`🔌 Bot left voice channel ${oldState.channelId}`);
+                this.cleanupChannel(oldState.channelId, guildId);
+                return;
+            }
+            
+            // Bot joined a new channel
+            if (!oldState.channelId && newState.channelId) {
+                console.log(`🔌 Bot joined voice channel ${newState.channelId}`);
+                this.guildChannels.set(guildId, newState.channelId);
+                return;
+            }
+            
+            // Bot switched channels
+            if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+                console.log(`🔄 Bot switched from channel ${oldState.channelId} to ${newState.channelId}`);
+                this.cleanupChannel(oldState.channelId, guildId);
+                this.guildChannels.set(guildId, newState.channelId);
+                return;
+            }
+        }
+        
+        // Handle regular user voice state changes for existing music managers
+        const currentChannelId = this.guildChannels.get(oldState.guild.id);
+        if (currentChannelId) {
+            const musicManager = this.musicManagers.get(currentChannelId);
+            if (musicManager && oldState.channelId && !newState.channelId && newState.member.user.bot) {
+                musicManager.handleDisconnect();
+            }
         }
 
         if (!config.settings.stayInChannel) return;
@@ -1991,16 +2052,17 @@ class AtiveMusicBot {
     }
 
     async reconnectToChannels() {
-        for (const [guildId, musicManager] of this.musicManagers) {
+        for (const [channelId, musicManager] of this.musicManagers) {
             if (musicManager.lastChannel) {
                 try {
                     const channel = this.client.channels.cache.get(musicManager.lastChannel);
                     if (channel) {
-                        const connection = await this.connectToVoiceChannel(channel, guildId);
+                        const connection = await this.connectToVoiceChannel(channel, musicManager.guildId);
                         musicManager.setConnection(connection);
+                        this.guildChannels.set(musicManager.guildId, channelId);
                     }
                 } catch (error) {
-                    console.error(`Failed to reconnect to channel in guild ${guildId}:`, error);
+                    console.error(`Failed to reconnect to channel ${channelId}:`, error);
                 }
             }
         }
@@ -2304,7 +2366,15 @@ class AtiveMusicBot {
             }
         } else if (commandName === 'clear') {
             try {
-                const musicManager = this.getMusicManager(interaction.guildId);
+                const member = interaction.member;
+                const voiceChannelId = member?.voice?.channel?.id;
+                
+                if (!voiceChannelId) {
+                    await interaction.respond([]);
+                    return;
+                }
+                
+                const musicManager = this.getMusicManager(interaction.guildId, voiceChannelId);
                 const focusedValue = options.getFocused();
                 
                 if (musicManager.queue.length === 0) {
@@ -2397,9 +2467,32 @@ class AtiveMusicBot {
         }
     }
     
-    async updateQueueState(guildId, musicManager) {
+    cleanupChannel(channelId, guildId) {
+        console.log(`🧹 Cleaning up channel ${channelId} (guild ${guildId})`);
+        
+        // Clean up music manager for this channel
+        const musicManager = this.musicManagers.get(channelId);
+        if (musicManager) {
+            musicManager.stop();
+            musicManager.clearQueue();
+            this.musicManagers.delete(channelId);
+        }
+        
+        // Clean up music panel for this channel
+        this.musicPanels.delete(channelId);
+        
+        // Update guild channel tracking
+        const currentChannelId = this.guildChannels.get(guildId);
+        if (currentChannelId === channelId) {
+            this.guildChannels.delete(guildId);
+        }
+        
+        console.log(`✅ Channel ${channelId} cleanup completed`);
+    }
+    
+    async updateQueueState(guildId, channelId, musicManager) {
         // Update any existing music panels with new queue state
-        const panelInfo = this.musicPanels.get(guildId);
+        const panelInfo = this.musicPanels.get(channelId);
         if (panelInfo && panelInfo.message) {
             try {
                 const queueInfo = musicManager.getQueueInfo();
@@ -2441,9 +2534,9 @@ class AtiveMusicBot {
         }
     }
     
-    async handleQueueUpdate(guildId, queueInfo) {
+    async handleQueueUpdate(guildId, channelId, queueInfo) {
         // Update any existing music panels with new queue information
-        await this.updateQueueState(guildId, this.getMusicManager(guildId));
+        await this.updateQueueState(guildId, channelId, this.getMusicManager(guildId, channelId));
     }
 
     async start() {
