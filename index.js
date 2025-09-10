@@ -80,7 +80,7 @@ class AtiveMusicBot {
             // Start local video server
             try {
                 const serverUrl = await this.localVideoServer.start();
-                console.log(`📺 Video server started: ${serverUrl}`.magenta);
+                console.log(`📺 Video server started: ${serverUrl}`);
             } catch (error) {
                 console.error('❌ Failed to start video server:', error);
             }
