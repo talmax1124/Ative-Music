@@ -130,6 +130,10 @@ class AtiveMusicBot {
                 this.handleQueueEmpty(guildId);
             };
             
+            musicManager.onQueueUpdate = (queueInfo) => {
+                this.handleQueueUpdate(guildId, queueInfo);
+            };
+            
             this.musicManagers.set(guildId, musicManager);
         }
         return this.musicManagers.get(guildId);
@@ -255,6 +259,9 @@ class AtiveMusicBot {
                 break;
             case 'autoplay':
                 await this.handleAutoPlayCommand(interaction, musicManager);
+                break;
+            case 'clear':
+                await this.handleClearCommand(interaction, musicManager);
                 break;
         }
     }
@@ -550,12 +557,17 @@ class AtiveMusicBot {
     async handleButtonInteraction(interaction) {
         try {
             const musicManager = this.getMusicManager(interaction.guildId);
+            const userId = interaction.user.id;
+            const username = interaction.user.username;
             
             // Check if interaction is still valid (not expired)
             if (interaction.deferred || interaction.replied) {
                 console.log('⚠️ Interaction already handled, skipping...');
                 return;
             }
+            
+            // Log user action
+            console.log(`👤 @${username} (${userId}) clicked button: ${interaction.customId}`);
             
             // Defer the interaction immediately to prevent timeout
             await interaction.deferUpdate();
@@ -647,6 +659,8 @@ class AtiveMusicBot {
                             
                             // Update the stored panel reference with the new track
                             this.updatePanelReference(interaction.guildId, nextTrack);
+                            // Update queue state across all components
+                            await this.updateQueueState(interaction.guildId, musicManager);
                         } catch (updateError) {
                             await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                         }
@@ -710,6 +724,8 @@ class AtiveMusicBot {
                             panelInfo.track = track;
                             this.musicPanels.set(interaction.guildId, panelInfo);
                         }
+                        // Update queue state across all components
+                        await this.updateQueueState(interaction.guildId, musicManager);
                     } catch (updateError) {
                         await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
@@ -747,6 +763,8 @@ class AtiveMusicBot {
                 musicManager.clearQueue(true); // User initiated
                 musicManager.stop(true); // User initiated
                 await interaction.reply({ content: 'Queue cleared and playback stopped!', ephemeral: true });
+                // Update queue state across all components
+                await this.updateQueueState(interaction.guildId, musicManager);
                 break;
                 
             case 'music_video':
@@ -793,17 +811,27 @@ class AtiveMusicBot {
         } catch (error) {
             console.error('❌ Button interaction error:', error);
             
-            // Handle expired interactions gracefully
+            // Handle specific Discord.js errors
             if (error.code === 10062 || error.message.includes('Unknown interaction')) {
                 console.log('⚠️ Interaction expired - this is normal for longer operations');
                 return;
             }
             
+            if (error.code === 'InteractionAlreadyReplied') {
+                console.log('⚠️ Interaction already replied to - skipping error reply');
+                return;
+            }
+            
             try {
+                // Only try to reply if we haven't already replied or deferred
                 if (!interaction.replied && !interaction.deferred) {
                     await interaction.reply({ 
                         content: 'An error occurred while processing your request. Please try again.', 
                         ephemeral: true 
+                    });
+                } else if (interaction.deferred && !interaction.replied) {
+                    await interaction.editReply({ 
+                        content: 'An error occurred while processing your request. Please try again.' 
                     });
                 }
             } catch (replyError) {
@@ -937,7 +965,7 @@ class AtiveMusicBot {
         if (queueInfo.currentTrack) {
             embed.addFields([{
                 name: 'Now Playing',
-                value: `**${queueInfo.currentTrack.title}** by ${queueInfo.currentTrack.author}\nDuration: ${queueInfo.currentTrack.duration}`,
+                value: `**${queueInfo.currentTrack.title}** by ${queueInfo.currentTrack.author}\nDuration: ${queueInfo.currentTrack.duration}\nID: \`${queueInfo.currentTrack.id}\``,
                 inline: false
             }]);
         }
@@ -948,8 +976,8 @@ class AtiveMusicBot {
             const fieldValue = trackGroup.map((track, index) => {
                 const trackNumber = i + index + 1;
                 const isCurrent = (i + index) === queueInfo.currentIndex;
-                const prefix = isCurrent ? 'Playing' : `${trackNumber}`;
-                return `${prefix}. **${track.title}**\n   by ${track.author} (${track.duration})`;
+                const prefix = isCurrent ? '▶️ Playing' : `${trackNumber}`;
+                return `${prefix}. **${track.title}**\n   by ${track.author} (${track.duration})\n   ID: \`${track.id}\``;
             }).join('\n\n');
             
             const fieldTitle = i === 0 ? 'Queue' : `Queue (cont.)`;
@@ -973,6 +1001,8 @@ class AtiveMusicBot {
             { name: 'Loop Mode', value: queueInfo.loopMode, inline: true },
             { name: 'Total Duration', value: musicManager.formatDuration(queueInfo.queueDuration), inline: true }
         ]);
+        
+        embed.setFooter({ text: 'Use /clear [id] to remove a specific track from the queue' });
 
         await interaction.reply({ 
             embeds: [embed],
@@ -1702,6 +1732,40 @@ class AtiveMusicBot {
                 break;
         }
     }
+    
+    async handleClearCommand(interaction, musicManager) {
+        const trackId = interaction.options.getString('id');
+        
+        if (musicManager.queue.length === 0) {
+            return await interaction.reply({
+                embeds: [this.createErrorEmbed('The queue is empty!')],
+                ephemeral: true
+            });
+        }
+        
+        const result = musicManager.clearTrackFromQueue(trackId);
+        
+        if (!result.success) {
+            return await interaction.reply({
+                embeds: [this.createErrorEmbed(`Could not remove track: ${result.reason}`)],
+                ephemeral: true
+            });
+        }
+        
+        const embed = this.createMusicEmbed(
+            '🗑️ Track Removed from Queue',
+            `**${result.track.title}**\nBy: ${result.track.author}\nRemoved from position ${result.position}\n\nQueue now has ${result.newQueueLength} tracks`,
+            config.colors.warning
+        );
+        
+        await interaction.reply({ 
+            embeds: [embed],
+            components: result.newQueueLength > 0 ? this.createMusicControls() : []
+        });
+        
+        // Update any existing music panels
+        await this.updateQueueState(interaction.guildId, musicManager);
+    }
 
     async registerCommands() {
         const commands = [
@@ -1711,6 +1775,15 @@ class AtiveMusicBot {
                 .addStringOption(option =>
                     option.setName('query')
                         .setDescription('Song name, URL, or search query')
+                        .setRequired(true)
+                        .setAutocomplete(true)
+                ),
+            new SlashCommandBuilder()
+                .setName('clear')
+                .setDescription('Remove a specific track from the queue')
+                .addStringOption(option =>
+                    option.setName('id')
+                        .setDescription('Track ID to remove from queue')
                         .setRequired(true)
                         .setAutocomplete(true)
                 ),
@@ -2229,6 +2302,34 @@ class AtiveMusicBot {
                 console.error('Autocomplete error:', error);
                 await interaction.respond([]);
             }
+        } else if (commandName === 'clear') {
+            try {
+                const musicManager = this.getMusicManager(interaction.guildId);
+                const focusedValue = options.getFocused();
+                
+                if (musicManager.queue.length === 0) {
+                    await interaction.respond([]);
+                    return;
+                }
+                
+                // Filter tracks based on the focused value and show track info with IDs
+                const matches = musicManager.queue.filter(track => 
+                    track.title.toLowerCase().includes(focusedValue.toLowerCase()) ||
+                    track.author.toLowerCase().includes(focusedValue.toLowerCase()) ||
+                    track.id.includes(focusedValue)
+                ).slice(0, 25);
+                
+                await interaction.respond(
+                    matches.map(track => ({
+                        name: `${track.title} - ${track.author}`.substring(0, 100),
+                        value: track.id
+                    }))
+                );
+                
+            } catch (error) {
+                console.error('Clear autocomplete error:', error);
+                await interaction.respond([]);
+            }
         }
     }
 
@@ -2294,6 +2395,55 @@ class AtiveMusicBot {
         } catch (error) {
             // Silently ignore cleanup errors
         }
+    }
+    
+    async updateQueueState(guildId, musicManager) {
+        // Update any existing music panels with new queue state
+        const panelInfo = this.musicPanels.get(guildId);
+        if (panelInfo && panelInfo.message) {
+            try {
+                const queueInfo = musicManager.getQueueInfo();
+                const currentTrack = musicManager.currentTrack;
+                
+                if (currentTrack) {
+                    const embed = this.createMusicEmbed(
+                        '🎵 Now Playing',
+                        `**${currentTrack.title}**\nBy: ${currentTrack.author}\nDuration: ${currentTrack.duration}\nSource: ${currentTrack.source.toUpperCase()}`,
+                        config.colors.success,
+                        currentTrack.thumbnail
+                    );
+                    
+                    embed.addFields([
+                        { name: 'Queue Position', value: `${queueInfo.currentIndex + 1} of ${queueInfo.queue.length}`, inline: true },
+                        { name: 'Volume', value: `${musicManager.volume}%`, inline: true },
+                        { name: 'Loop', value: String(musicManager.loopMode || 'off'), inline: true }
+                    ]);
+                    
+                    await panelInfo.message.edit({
+                        embeds: [embed],
+                        components: this.createMusicControls(musicManager.isPlaying, musicManager.isPaused)
+                    });
+                } else if (queueInfo.queue.length === 0) {
+                    const embed = this.createMusicEmbed(
+                        '🎵 Queue Empty',
+                        'Use `/play` to queue your next song!',
+                        config.colors.info
+                    );
+                    
+                    await panelInfo.message.edit({ 
+                        embeds: [embed], 
+                        components: [] 
+                    });
+                }
+            } catch (error) {
+                console.log('❌ Failed to update queue state in panel:', error.message);
+            }
+        }
+    }
+    
+    async handleQueueUpdate(guildId, queueInfo) {
+        // Update any existing music panels with new queue information
+        await this.updateQueueState(guildId, this.getMusicManager(guildId));
     }
 
     async start() {

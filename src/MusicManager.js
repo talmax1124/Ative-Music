@@ -23,8 +23,11 @@ class MusicManager {
         this.smartAutoPlay = new SmartAutoPlay(sourceHandlers);
         this.autoPlayEnabled = true;
         this.continuousPlayback = false; // Disable by default - user controls progression
+        this.userStoppedPlayback = false; // Track if user manually stopped
+        this.isTransitioning = false; // Prevent multiple track transitions
         this.onTrackEnd = null;
         this.onTrackStart = null;
+        this.onQueueUpdate = null;
         this.autoPlayTimeout = null;
         
         this.setupPlayerEvents();
@@ -91,6 +94,11 @@ class MusicManager {
         // Auto-save queue after changes
         this.saveQueue();
         
+        // Emit queue update event
+        if (this.onQueueUpdate) {
+            this.onQueueUpdate(this.getQueueInfo());
+        }
+        
         return track;
     }
 
@@ -152,6 +160,15 @@ class MusicManager {
 
         this.currentTrack = this.queue[this.currentTrackIndex];
         
+        // Validate current track exists
+        if (!this.currentTrack) {
+            console.error('❌ No track found at index', this.currentTrackIndex);
+            return false;
+        }
+        
+        // Reset user stopped flag when starting playback
+        this.userStoppedPlayback = false;
+        
         try {
             console.log(`🎵 Attempting to play: ${this.currentTrack.title}`);
             
@@ -167,10 +184,10 @@ class MusicManager {
             const resource = createAudioResource(stream, {
                 inputType: StreamType.Arbitrary,
                 inlineVolume: true,
-                silencePaddingFrames: 0,  // Remove padding for faster start
+                silencePaddingFrames: 5, // Add padding for audio stability
                 metadata: {
-                    title: this.currentTrack.title,
-                    author: this.currentTrack.author
+                    title: this.currentTrack?.title || 'Unknown',
+                    author: this.currentTrack?.author || 'Unknown'
                 }
             });
 
@@ -214,7 +231,8 @@ class MusicManager {
             // Track consecutive errors
             this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
             
-            await this.skip();
+            // Don't call skip to avoid infinite loops
+            this.handleTrackEnd();
             return false;
         }
     }
@@ -298,6 +316,11 @@ class MusicManager {
         
         // Save cleared queue and clear persisted file
         this.clearPersistedQueue();
+        
+        // Emit queue update event
+        if (this.onQueueUpdate) {
+            this.onQueueUpdate(this.getQueueInfo());
+        }
     }
 
     shuffle() {
@@ -317,13 +340,39 @@ class MusicManager {
         ];
 
         console.log('🔀 Queue shuffled');
+        
+        // Emit queue update event
+        if (this.onQueueUpdate) {
+            this.onQueueUpdate(this.getQueueInfo());
+        }
+        
         return true;
     }
 
     setVolume(volume) {
         this.volume = Math.max(0, Math.min(100, volume));
         if (this.player.state.resource?.volume) {
-            this.player.state.resource.volume.setVolume(this.volume / 100);
+            // Use smooth volume transition to prevent audio artifacts
+            const targetVolume = this.volume / 100;
+            const currentVolume = this.player.state.resource.volume.volume;
+            
+            // Gradual volume change to prevent audio popping
+            const volumeStep = (targetVolume - currentVolume) / 10;
+            let step = 0;
+            
+            const volumeInterval = setInterval(() => {
+                step++;
+                const newVolume = currentVolume + (volumeStep * step);
+                
+                if (step >= 10 || Math.abs(newVolume - targetVolume) < 0.01) {
+                    if (this.player.state.resource?.volume) {
+                        this.player.state.resource.volume.setVolume(targetVolume);
+                    }
+                    clearInterval(volumeInterval);
+                } else if (this.player.state.resource?.volume) {
+                    this.player.state.resource.volume.setVolume(newVolume);
+                }
+            }, 20);
         }
         console.log(`🔊 Volume set to ${this.volume}%`);
     }
@@ -349,6 +398,12 @@ class MusicManager {
 
         const removed = this.queue.splice(index, 1)[0];
         console.log(`🗑️ Removed from queue: ${removed.title}`);
+        
+        // Emit queue update event
+        if (this.onQueueUpdate) {
+            this.onQueueUpdate(this.getQueueInfo());
+        }
+        
         return removed;
     }
 
@@ -428,6 +483,9 @@ class MusicManager {
         if (this.onTrackEnd) {
             this.onTrackEnd(this.currentTrack);
         }
+        
+        // Clear the current track position when song finishes naturally
+        this.clearCurrentPosition();
         
         // Only auto-advance if continuous playback is enabled AND there are songs in queue
         if (this.continuousPlayback && this.queue.length > this.currentTrackIndex + 1) {
@@ -524,6 +582,62 @@ class MusicManager {
         this.stop();
         this.connection = null;
         console.log('🔌 Disconnected from voice channel');
+    }
+    
+    clearCurrentPosition() {
+        // Clear any pending timeouts
+        clearTimeout(this.autoPlayTimeout);
+        this.autoPlayTimeout = null;
+        
+        this.currentTrack = null;
+        this.currentTrackIndex = -1;
+        this.isPlaying = false;
+        this.isPaused = false;
+        this.isTransitioning = false;
+        console.log('✅ Queue position cleared');
+        
+        // Save queue state after clearing position
+        this.saveQueue();
+    }
+    
+    clearTrackFromQueue(trackId) {
+        const trackIndex = this.queue.findIndex(track => track.id === trackId);
+        
+        if (trackIndex === -1) {
+            return { success: false, reason: 'Track not found in queue' };
+        }
+        
+        const track = this.queue[trackIndex];
+        
+        // If removing the currently playing track, stop and clear position
+        if (trackIndex === this.currentTrackIndex) {
+            this.stop();
+            this.clearCurrentPosition();
+            this.queue.splice(trackIndex, 1);
+            console.log(`🗑️ Removed currently playing track: ${track.title}`);
+        } else {
+            // Adjust current index if removing track before current position
+            if (trackIndex < this.currentTrackIndex) {
+                this.currentTrackIndex--;
+            }
+            this.queue.splice(trackIndex, 1);
+            console.log(`🗑️ Removed track from queue: ${track.title}`);
+        }
+        
+        // Save queue state after removal
+        this.saveQueue();
+        
+        // Emit queue update event
+        if (this.onQueueUpdate) {
+            this.onQueueUpdate(this.getQueueInfo());
+        }
+        
+        return { 
+            success: true, 
+            track: track, 
+            position: trackIndex + 1,
+            newQueueLength: this.queue.length 
+        };
     }
 
     getRecommendations(count = 5) {
