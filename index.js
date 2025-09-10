@@ -1216,7 +1216,14 @@ class AtiveMusicBot {
     async handleJoinCommand(interaction, musicManager) {
         const member = interaction.member;
         
-        if (!member.voice.channel) {
+        if (!member) {
+            return await interaction.reply({
+                embeds: [this.createErrorEmbed('This command can only be used in a server!')],
+                ephemeral: true
+            });
+        }
+        
+        if (!member.voice?.channel) {
             return await interaction.reply({
                 embeds: [this.createErrorEmbed('You need to be in a voice channel!')],
                 ephemeral: true
