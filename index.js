@@ -530,6 +530,9 @@ class AtiveMusicBot {
                 return;
             }
             
+            // Defer the interaction immediately to prevent timeout
+            await interaction.deferUpdate();
+            
             switch (interaction.customId) {
             case 'music_pause':
                 if (musicManager.pause()) {
@@ -550,15 +553,15 @@ class AtiveMusicBot {
                     ]);
                     
                     try {
-                        await interaction.update({ embeds: [embed], components: this.createMusicControls(false, true) });
+                        await interaction.editReply({ embeds: [embed], components: this.createMusicControls(false, true) });
                         
                         // Update the stored panel reference with the new state
                         this.updatePanelReference(interaction.guildId, track);
                     } catch (updateError) {
-                        await interaction.reply({ embeds: [embed], components: this.createMusicControls(false, true), ephemeral: true });
+                        await interaction.followUp({ embeds: [embed], components: this.createMusicControls(false, true), ephemeral: true });
                     }
                 } else {
-                    await interaction.reply({ content: '❌ Nothing to pause!', ephemeral: true });
+                    await interaction.followUp({ content: '❌ Nothing to pause!', ephemeral: true });
                 }
                 break;
                 
@@ -581,15 +584,15 @@ class AtiveMusicBot {
                     ]);
                     
                     try {
-                        await interaction.update({ embeds: [embed], components: this.createMusicControls(true, false) });
+                        await interaction.editReply({ embeds: [embed], components: this.createMusicControls(true, false) });
                         
                         // Update the stored panel reference with the new state
                         this.updatePanelReference(interaction.guildId, track);
                     } catch (updateError) {
-                        await interaction.reply({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
+                        await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
                 } else {
-                    await interaction.reply({ content: '❌ Nothing to resume!', ephemeral: true });
+                    await interaction.followUp({ content: '❌ Nothing to resume!', ephemeral: true });
                 }
                 break;
                 
@@ -613,23 +616,23 @@ class AtiveMusicBot {
                         ]);
                         
                         try {
-                            await interaction.update({ embeds: [embed], components: this.createMusicControls(true, false) });
+                            await interaction.editReply({ embeds: [embed], components: this.createMusicControls(true, false) });
                             
                             // Update the stored panel reference with the new track
                             this.updatePanelReference(interaction.guildId, nextTrack);
                         } catch (updateError) {
-                            await interaction.reply({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
+                            await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                         }
                     } else {
                         const embed = this.createMusicEmbed('Skipped', 'Queue finished', config.colors.info);
                         try {
-                            await interaction.update({ embeds: [embed], components: this.createMusicControls(false, false) });
+                            await interaction.editReply({ embeds: [embed], components: this.createMusicControls(false, false) });
                         } catch (updateError) {
-                            await interaction.reply({ embeds: [embed], components: this.createMusicControls(false, false), ephemeral: true });
+                            await interaction.followUp({ embeds: [embed], components: this.createMusicControls(false, false), ephemeral: true });
                         }
                     }
                 } else {
-                    await interaction.reply({ content: '❌ Nothing to skip!', ephemeral: true });
+                    await interaction.followUp({ content: '❌ Nothing to skip!', ephemeral: true });
                 }
                 break;
                 
@@ -640,7 +643,7 @@ class AtiveMusicBot {
                 
                 // Use reply instead of update to avoid timeout issues
                 try {
-                    await interaction.reply({ embeds: [embed], components: this.createMusicControls(false, false), ephemeral: true });
+                    await interaction.followUp({ embeds: [embed], components: this.createMusicControls(false, false), ephemeral: true });
                 } catch (replyError) {
                     console.log('⚠️ Could not send stop confirmation (interaction expired)');
                 }
@@ -648,7 +651,7 @@ class AtiveMusicBot {
                 
             case 'music_shuffle':
                 if (musicManager.shuffle()) {
-                    await interaction.reply({ content: `🔀 Queue shuffled (${musicManager.queue.length} tracks)`, ephemeral: true });
+                    await interaction.followUp({ content: `🔀 Queue shuffled (${musicManager.queue.length} tracks)`, ephemeral: true });
                 } else {
                     await interaction.reply({ content: '❌ Need at least 2 tracks to shuffle!', ephemeral: true });
                 }
@@ -672,7 +675,7 @@ class AtiveMusicBot {
                     ]);
                     
                     try {
-                        await interaction.update({ embeds: [embed], components: this.createMusicControls(true, false) });
+                        await interaction.editReply({ embeds: [embed], components: this.createMusicControls(true, false) });
                         
                         // Update the stored panel reference with the new track
                         const panelInfo = this.musicPanels.get(interaction.guildId);
@@ -681,7 +684,7 @@ class AtiveMusicBot {
                             this.musicPanels.set(interaction.guildId, panelInfo);
                         }
                     } catch (updateError) {
-                        await interaction.reply({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
+                        await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
                 } else {
                     await interaction.reply({ content: '❌ No previous track available!', ephemeral: true });

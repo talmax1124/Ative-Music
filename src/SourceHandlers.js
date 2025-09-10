@@ -618,16 +618,10 @@ class SourceHandlers {
                 name: 'yt-dlp-direct',
                 priority: 1,
                 method: () => this.getStreamWithYtDlp(track),
-                cooldown: 1000,
-                maxFailures: 3
-            },
-            {
-                name: 'youtube-sr-search-ytdl',
-                priority: 2,
-                method: () => this.getStreamWithYouTubeSR(track),
-                cooldown: 2000,
-                maxFailures: 2
+                cooldown: 500,
+                maxFailures: 5
             }
+            // Remove secondary methods on Railway - just use yt-dlp for consistency
         ] : [
             // Fallback methods when yt-dlp is not available
             {
