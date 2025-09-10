@@ -1812,6 +1812,13 @@ class SourceHandlers {
     }
 
     async checkYtDlpAvailable() {
+        // For Railway deployment, we know yt-dlp is installed via Nix
+        if (process.env.RAILWAY_ENVIRONMENT) {
+            this.ytDlpAvailable = true;
+            console.log('✅ Railway environment detected - yt-dlp is available via Nix');
+            return true;
+        }
+        
         // Cache the result to avoid repeated checks
         if (this.ytDlpAvailable !== undefined) {
             return this.ytDlpAvailable;
@@ -1845,13 +1852,18 @@ class SourceHandlers {
                             resolve(false);
                         });
                         
-                        // Timeout after 5 seconds
+                        // Timeout after 15 seconds (Railway might be slower)
                         setTimeout(() => {
                             ytDlp.kill();
-                            this.ytDlpAvailable = false;
-                            console.log('⚠️ yt-dlp check timed out - using fallback methods');
-                            resolve(false);
-                        }, 5000);
+                            // Don't disable yt-dlp if it was working before
+                            if (!this.ytDlpAvailable) {
+                                console.log('⚠️ yt-dlp check timed out - using fallback methods');
+                                resolve(false);
+                            } else {
+                                console.log('⚠️ yt-dlp check timed out - but keeping it available since it worked before');
+                                resolve(true);
+                            }
+                        }, 15000);
                     } else {
                         // yt-dlp not found in PATH
                         this.ytDlpAvailable = false;
