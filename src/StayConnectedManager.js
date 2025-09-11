@@ -2,8 +2,9 @@ const { joinVoiceChannel, VoiceConnectionStatus, entersState } = require('@disco
 const config = require('../config.js');
 
 class StayConnectedManager {
-    constructor(client) {
+    constructor(client, botInstance = null) {
         this.client = client;
+        this.botInstance = botInstance; // Reference to the main bot instance
         this.connections = new Map();
         this.reconnectAttempts = new Map();
         this.maxReconnectAttempts = 5;
@@ -169,7 +170,13 @@ class StayConnectedManager {
     }
 
     pauseInGuild(guildId) {
-        const musicManager = this.client.musicManagers?.get(guildId);
+        if (!this.botInstance) return;
+        
+        // Get the current channel for this guild
+        const channelId = this.botInstance.guildChannels?.get(guildId);
+        if (!channelId) return;
+        
+        const musicManager = this.botInstance.musicManagers?.get(channelId);
         if (musicManager && musicManager.isPlaying && !musicManager.isPaused) {
             musicManager.pause();
             musicManager._pausedDueToEmpty = true;
@@ -177,7 +184,13 @@ class StayConnectedManager {
     }
 
     resumeInGuild(guildId) {
-        const musicManager = this.client.musicManagers?.get(guildId);
+        if (!this.botInstance) return;
+        
+        // Get the current channel for this guild
+        const channelId = this.botInstance.guildChannels?.get(guildId);
+        if (!channelId) return;
+        
+        const musicManager = this.botInstance.musicManagers?.get(channelId);
         if (musicManager && musicManager._pausedDueToEmpty) {
             musicManager.resume();
             musicManager._pausedDueToEmpty = false;
@@ -185,7 +198,13 @@ class StayConnectedManager {
     }
 
     isPausedDueToEmpty(guildId) {
-        const musicManager = this.client.musicManagers?.get(guildId);
+        if (!this.botInstance) return false;
+        
+        // Get the current channel for this guild
+        const channelId = this.botInstance.guildChannels?.get(guildId);
+        if (!channelId) return false;
+        
+        const musicManager = this.botInstance.musicManagers?.get(channelId);
         return musicManager?._pausedDueToEmpty || false;
     }
 

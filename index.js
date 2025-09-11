@@ -55,7 +55,7 @@ class AtiveMusicBot {
 
         this.musicManagers = new Map(); // Now maps channelId -> MusicManager
         this.sourceHandlers = new SourceHandlers();
-        this.stayConnectedManager = new StayConnectedManager(this.client);
+        this.stayConnectedManager = new StayConnectedManager(this.client, this);
         this.videoHandler = new VideoHandler();
         this.localVideoServer = new LocalVideoServer(3000);
         this.errorHandler = new ErrorHandler();
@@ -63,6 +63,7 @@ class AtiveMusicBot {
         this.searchCache = new Map();
         this.musicPanels = new Map(); // Track music control panels by channelId
         this.guildChannels = new Map(); // Track which channel the bot is in per guild
+        this.musicTextChannels = new Map(); // Track which text channel music commands came from (voiceChannelId -> textChannelId)
         
         this.setupEventListeners();
         this.registerCommands();
@@ -143,22 +144,37 @@ class AtiveMusicBot {
     }
 
     async handleTrackStart(guildId, channelId, track) {
-        console.log(`🎵 Track started in channel ${channelId} (guild ${guildId}): ${track.title}`);
+        const trackTitle = track?.title || 'Unknown';
+        console.log(`🎵 Track started in channel ${channelId} (guild ${guildId}): ${trackTitle}`);
+        
+        if (!track || !track.title) {
+            console.log('🎵 Now playing: Unknown');
+            return;
+        }
         
         // Find the appropriate text channel to send the panel
         const guild = this.client.guilds.cache.get(guildId);
         if (!guild) return;
         
-        // Try to find the last text channel where music was used, or use a general channel
-        const panelInfo = this.musicPanels.get(channelId);
+        // Try to find the text channel where music commands were issued from
         let textChannel = null;
         
-        if (panelInfo) {
-            textChannel = guild.channels.cache.get(panelInfo.textChannelId);
+        // First try to get the stored text channel for this voice channel
+        const storedTextChannelId = this.musicTextChannels.get(channelId);
+        if (storedTextChannelId) {
+            textChannel = guild.channels.cache.get(storedTextChannelId);
         }
         
+        // If not found, try the last panel location
         if (!textChannel) {
-            // Find a general/music channel or use the first text channel
+            const panelInfo = this.musicPanels.get(channelId);
+            if (panelInfo) {
+                textChannel = guild.channels.cache.get(panelInfo.textChannelId);
+            }
+        }
+        
+        // Last resort: find a general/music channel or use the first text channel
+        if (!textChannel) {
             textChannel = guild.channels.cache.find(ch => 
                 ch.name.includes('music') || 
                 ch.name.includes('bot') || 
@@ -172,7 +188,8 @@ class AtiveMusicBot {
     }
 
     async handleTrackEnd(guildId, channelId, track) {
-        console.log(`🎵 Track ended in channel ${channelId} (guild ${guildId}): ${track.title}`);
+        const trackTitle = track?.title || 'Unknown';
+        console.log(`🎵 Track ended in channel ${channelId} (guild ${guildId}): ${trackTitle}`);
         // The panel will be replaced when the next track starts
         // or can be manually controlled by users via buttons
     }
@@ -279,6 +296,9 @@ class AtiveMusicBot {
         }
 
         await interaction.deferReply();
+
+        // Track which text channel this music command came from
+        this.musicTextChannels.set(voiceChannel.id, interaction.channelId);
 
         try {
             const connection = await this.connectToVoiceChannel(voiceChannel, interaction.guildId);
@@ -482,8 +502,8 @@ class AtiveMusicBot {
         }
     }
 
-    async deletePreviousPanel(guildId) {
-        const panelInfo = this.musicPanels.get(guildId);
+    async deletePreviousPanel(channelId) {
+        const panelInfo = this.musicPanels.get(channelId);
         if (panelInfo && panelInfo.message) {
             try {
                 await panelInfo.message.delete();
@@ -493,14 +513,14 @@ class AtiveMusicBot {
             }
         }
         // Always clean up the panel reference, even if deletion failed
-        this.musicPanels.delete(guildId);
+        this.musicPanels.delete(channelId);
     }
 
-    async sendNewMusicPanel(channel, track, isPlaying = true, isPaused = false) {
+    async sendNewMusicPanel(channel, track, voiceChannelId, isPlaying = true, isPaused = false) {
         const guildId = channel.guild.id;
         
         // Delete previous panel first
-        await this.deletePreviousPanel(guildId);
+        await this.deletePreviousPanel(voiceChannelId);
 
         const embed = this.createMusicEmbed(
             '🎵 Now Playing',
@@ -515,10 +535,11 @@ class AtiveMusicBot {
                 components: this.createMusicControls(isPlaying, isPaused)
             });
 
-            // Store new panel reference
-            this.musicPanels.set(guildId, {
+            // Store new panel reference using voice channel ID for proper tracking
+            this.musicPanels.set(voiceChannelId, {
                 message: message,
-                channelId: channel.id,
+                textChannelId: channel.id, // Store the text channel where panel was sent
+                guildId: guildId,
                 track: track
             });
 
@@ -557,6 +578,12 @@ class AtiveMusicBot {
 
     async handleButtonInteraction(interaction) {
         try {
+            // Check if interaction is still valid (not expired)
+            if (interaction.deferred || interaction.replied) {
+                console.log('⚠️ Interaction already handled, skipping...');
+                return;
+            }
+            
             // Find which voice channel the bot is currently in for this guild
             const currentChannelId = this.guildChannels.get(interaction.guildId);
             if (!currentChannelId) {
@@ -570,17 +597,28 @@ class AtiveMusicBot {
             const userId = interaction.user.id;
             const username = interaction.user.username;
             
-            // Check if interaction is still valid (not expired)
-            if (interaction.deferred || interaction.replied) {
-                console.log('⚠️ Interaction already handled, skipping...');
-                return;
-            }
-            
             // Log user action
             console.log(`👤 @${username} (${userId}) clicked button: ${interaction.customId}`);
             
-            // Defer the interaction immediately to prevent timeout
-            await interaction.deferUpdate();
+            // Helper function to safely respond to interaction
+            const safeReply = async (options, useUpdate = false) => {
+                try {
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.reply(options);
+                    } else if (interaction.deferred && !interaction.replied) {
+                        await interaction.editReply(options);
+                    } else if (useUpdate && !interaction.replied) {
+                        await interaction.update(options);
+                    } else {
+                        // Fallback: send as followUp if possible
+                        await interaction.followUp({...options, ephemeral: true});
+                    }
+                } catch (error) {
+                    if (error.code !== 'InteractionAlreadyReplied') {
+                        console.error(`⚠️ Could not respond to interaction: ${error.message}`);
+                    }
+                }
+            };
             
             switch (interaction.customId) {
             case 'music_pause':
@@ -694,13 +732,7 @@ class AtiveMusicBot {
                 musicManager.stop(true); // User initiated
                 musicManager.clearQueue(true); // User initiated
                 const embed = this.createMusicEmbed('Stopped', 'Music stopped and queue cleared', config.colors.warning);
-                
-                // Use reply instead of update to avoid timeout issues
-                try {
-                    await interaction.followUp({ embeds: [embed], components: this.createMusicControls(false, false), ephemeral: true });
-                } catch (replyError) {
-                    console.log('⚠️ Could not send stop confirmation (interaction expired)');
-                }
+                await safeReply({ embeds: [embed], components: this.createMusicControls(false, false), ephemeral: true });
                 break;
                 
             case 'music_shuffle':
@@ -753,13 +785,23 @@ class AtiveMusicBot {
             case 'music_volume_up':
                 const newVolumeUp = Math.min(100, musicManager.volume + 10);
                 musicManager.setVolume(newVolumeUp);
-                await interaction.reply({ content: `🔊 Volume: ${newVolumeUp}%`, ephemeral: true });
+                console.log(`🔊 Volume set to ${newVolumeUp}%`);
+                await safeReply({ content: `🔊 Volume: ${newVolumeUp}%`, ephemeral: true });
                 break;
                 
             case 'music_volume_down':
                 const newVolumeDown = Math.max(0, musicManager.volume - 10);
                 musicManager.setVolume(newVolumeDown);
-                await interaction.reply({ content: `🔉 Volume: ${newVolumeDown}%`, ephemeral: true });
+                console.log(`🔉 Volume set to ${newVolumeDown}%`);
+                try {
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.reply({ content: `🔉 Volume: ${newVolumeDown}%`, ephemeral: true });
+                    } else if (interaction.deferred && !interaction.replied) {
+                        await interaction.editReply({ content: `🔉 Volume: ${newVolumeDown}%` });
+                    }
+                } catch (error) {
+                    console.log(`⚠️ Could not respond to volume down interaction: ${error.message}`);
+                }
                 break;
                 
             case 'music_repeat':
@@ -779,12 +821,15 @@ class AtiveMusicBot {
             case 'music_clear_queue':
                 musicManager.clearQueue(true); // User initiated
                 musicManager.stop(true); // User initiated
-                await interaction.reply({ content: 'Queue cleared and playback stopped!', ephemeral: true });
+                console.log('🗑️ Queue cleared by user - auto-play disabled');
+                console.log('⏹️ Playbook stopped by user - auto-play disabled');
+                await safeReply({ content: 'Queue cleared and playback stopped!', ephemeral: true });
+                
                 // Update queue state across all components
                 const channelId = this.guildChannels.get(interaction.guildId);
-        if (channelId) {
-            await this.updateQueueState(interaction.guildId, channelId, musicManager);
-        }
+                if (channelId) {
+                    await this.updateQueueState(interaction.guildId, channelId, musicManager);
+                }
                 break;
                 
             case 'music_video':
@@ -1037,10 +1082,31 @@ class AtiveMusicBot {
         
         embed.setFooter({ text: 'Use /clear [id] to remove a specific track from the queue' });
 
-        await interaction.reply({ 
-            embeds: [embed],
-            components: this.createMusicControls()
-        });
+        // Safe reply handling for both slash commands and button interactions
+        try {
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ 
+                    embeds: [embed],
+                    components: this.createMusicControls(),
+                    ephemeral: true
+                });
+            } else if (interaction.deferred && !interaction.replied) {
+                await interaction.editReply({ 
+                    embeds: [embed],
+                    components: this.createMusicControls()
+                });
+            } else {
+                await interaction.followUp({ 
+                    embeds: [embed],
+                    components: this.createMusicControls(),
+                    ephemeral: true
+                });
+            }
+        } catch (error) {
+            if (error.code !== 'InteractionAlreadyReplied') {
+                console.error(`❌ Error responding to queue command: ${error.message}`);
+            }
+        }
     }
 
     async handleSkipCommand(interaction, musicManager) {
