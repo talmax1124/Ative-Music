@@ -77,7 +77,7 @@ class AtiveMusicBot {
             // Clean up any debug HTML files on startup
             this.cleanupDebugFiles();
             
-            this.client.user.setActivity('🎵 Ative Music | /play', { type: 'LISTENING' });
+            this.client.user.setActivity('🎵 Ative Music | /play', { type: 2 }); // 2 = ActivityType.Listening
             
             // Start local video server
             try {
@@ -214,7 +214,7 @@ class AtiveMusicBot {
         }
     }
 
-    updatePanelReference(guildId, channelId, track) {
+    updatePanelReference(channelId, track) {
         const panelInfo = this.musicPanels.get(channelId);
         if (panelInfo) {
             panelInfo.track = track;
@@ -223,7 +223,11 @@ class AtiveMusicBot {
     }
 
     async handleSlashCommand(interaction) {
-        const musicManager = this.getMusicManager(interaction.guildId);
+        const member = interaction.member;
+        const voiceChannel = member?.voice?.channel;
+        const voiceChannelId = voiceChannel?.id;
+        
+        const musicManager = voiceChannelId ? this.getMusicManager(interaction.guildId, voiceChannelId) : null;
         
         switch (interaction.commandName) {
             case 'play':
@@ -236,15 +240,39 @@ class AtiveMusicBot {
                 await this.handleQueueCommand(interaction, musicManager);
                 break;
             case 'skip':
+                if (!musicManager) {
+                    return await interaction.reply({ 
+                        embeds: [this.createErrorEmbed('You need to be in a voice channel to use this command!')], 
+                        ephemeral: true 
+                    });
+                }
                 await this.handleSkipCommand(interaction, musicManager);
                 break;
             case 'stop':
+                if (!musicManager) {
+                    return await interaction.reply({ 
+                        embeds: [this.createErrorEmbed('You need to be in a voice channel to use this command!')], 
+                        ephemeral: true 
+                    });
+                }
                 await this.handleStopCommand(interaction, musicManager);
                 break;
             case 'pause':
+                if (!musicManager) {
+                    return await interaction.reply({ 
+                        embeds: [this.createErrorEmbed('You need to be in a voice channel to use this command!')], 
+                        ephemeral: true 
+                    });
+                }
                 await this.handlePauseCommand(interaction, musicManager);
                 break;
             case 'resume':
+                if (!musicManager) {
+                    return await interaction.reply({ 
+                        embeds: [this.createErrorEmbed('You need to be in a voice channel to use this command!')], 
+                        ephemeral: true 
+                    });
+                }
                 await this.handleResumeCommand(interaction, musicManager);
                 break;
             case 'volume':
@@ -321,13 +349,14 @@ class AtiveMusicBot {
 
             await musicManager.addToQueue(selectedTrack);
 
-            // Store channel info for panel management  
-            const panelInfo = this.musicPanels.get(interaction.guildId);
-            if (!panelInfo || panelInfo.channelId !== interaction.channelId) {
+            // Store channel info for panel management using voice channel as key
+            const panelInfo = this.musicPanels.get(voiceChannel.id);
+            if (!panelInfo || panelInfo.textChannelId !== interaction.channelId) {
                 // Update or set the channel for future panels, keeping existing message if available
-                this.musicPanels.set(interaction.guildId, {
+                this.musicPanels.set(voiceChannel.id, {
                     message: panelInfo?.message || null,
-                    channelId: interaction.channelId,
+                    textChannelId: interaction.channelId,
+                    guildId: interaction.guildId,
                     track: panelInfo?.track || null
                 });
             }
@@ -398,8 +427,14 @@ class AtiveMusicBot {
 
         try {
             await entersState(connection, VoiceConnectionStatus.Ready, 30000);
+            
+            // Update guild channel mapping for session management
+            this.guildChannels.set(guildId, channel.id);
+            
+            console.log(`🔗 Connected to voice channel: ${channel.name} (${channel.id}) in guild: ${guildId}`);
             return connection;
         } catch (error) {
+            console.error(`❌ Failed to connect to voice channel: ${error.message}`);
             connection.destroy();
             throw error;
         }
@@ -479,8 +514,8 @@ class AtiveMusicBot {
         return [row1, row2];
     }
 
-    async updateMusicPanel(guildId, track, isPlaying = true, isPaused = false) {
-        const panelInfo = this.musicPanels.get(guildId);
+    async updateMusicPanel(channelId, track, isPlaying = true, isPaused = false) {
+        const panelInfo = this.musicPanels.get(channelId);
         if (!panelInfo) return;
 
         const embed = this.createMusicEmbed(
@@ -498,7 +533,7 @@ class AtiveMusicBot {
         } catch (error) {
             console.log('❌ Failed to update music panel:', error.message);
             // Remove invalid panel reference
-            this.musicPanels.delete(guildId);
+            this.musicPanels.delete(channelId);
         }
     }
 
@@ -585,12 +620,20 @@ class AtiveMusicBot {
             }
             
             // Find which voice channel the bot is currently in for this guild
-            const currentChannelId = this.guildChannels.get(interaction.guildId);
+            let currentChannelId = this.guildChannels.get(interaction.guildId);
+            
+            // If no stored channel, try to find the user's voice channel
             if (!currentChannelId) {
-                return await interaction.reply({
-                    content: 'No active music session found in this server!',
-                    ephemeral: true
-                });
+                const member = interaction.member;
+                const voiceChannel = member?.voice?.channel;
+                if (voiceChannel) {
+                    currentChannelId = voiceChannel.id;
+                } else {
+                    return await interaction.reply({
+                        content: 'No active music session found! You must be in a voice channel to use controls.',
+                        ephemeral: true
+                    });
+                }
             }
             
             const musicManager = this.getMusicManager(interaction.guildId, currentChannelId);
@@ -643,7 +686,7 @@ class AtiveMusicBot {
                         await interaction.editReply({ embeds: [embed], components: this.createMusicControls(false, true) });
                         
                         // Update the stored panel reference with the new state
-                        this.updatePanelReference(interaction.guildId, track);
+                        this.updatePanelReference(currentChannelId, track);
                     } catch (updateError) {
                         await interaction.followUp({ embeds: [embed], components: this.createMusicControls(false, true), ephemeral: true });
                     }
@@ -674,7 +717,7 @@ class AtiveMusicBot {
                         await interaction.editReply({ embeds: [embed], components: this.createMusicControls(true, false) });
                         
                         // Update the stored panel reference with the new state
-                        this.updatePanelReference(interaction.guildId, track);
+                        this.updatePanelReference(currentChannelId, track);
                     } catch (updateError) {
                         await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
@@ -706,12 +749,9 @@ class AtiveMusicBot {
                             await interaction.editReply({ embeds: [embed], components: this.createMusicControls(true, false) });
                             
                             // Update the stored panel reference with the new track
-                            this.updatePanelReference(interaction.guildId, nextTrack);
+                            this.updatePanelReference(currentChannelId, nextTrack);
                             // Update queue state across all components
-                            const channelId = this.guildChannels.get(interaction.guildId);
-        if (channelId) {
-            await this.updateQueueState(interaction.guildId, channelId, musicManager);
-        }
+                            await this.updateQueueState(interaction.guildId, currentChannelId, musicManager);
                         } catch (updateError) {
                             await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                         }
@@ -724,7 +764,7 @@ class AtiveMusicBot {
                         }
                     }
                 } else {
-                    await interaction.followUp({ content: '❌ Nothing to skip!', ephemeral: true });
+                    await safeReply({ content: '❌ Nothing to skip!', ephemeral: true });
                 }
                 break;
                 
@@ -764,21 +804,14 @@ class AtiveMusicBot {
                         await interaction.editReply({ embeds: [embed], components: this.createMusicControls(true, false) });
                         
                         // Update the stored panel reference with the new track
-                        const panelInfo = this.musicPanels.get(interaction.guildId);
-                        if (panelInfo) {
-                            panelInfo.track = track;
-                            this.musicPanels.set(interaction.guildId, panelInfo);
-                        }
+                        this.updatePanelReference(currentChannelId, track);
                         // Update queue state across all components
-                        const channelId = this.guildChannels.get(interaction.guildId);
-        if (channelId) {
-            await this.updateQueueState(interaction.guildId, channelId, musicManager);
-        }
+                        await this.updateQueueState(interaction.guildId, currentChannelId, musicManager);
                     } catch (updateError) {
                         await interaction.followUp({ embeds: [embed], components: this.createMusicControls(true, false), ephemeral: true });
                     }
                 } else {
-                    await interaction.reply({ content: '❌ No previous track available!', ephemeral: true });
+                    await safeReply({ content: '❌ No previous track available!', ephemeral: true });
                 }
                 break;
                 
@@ -793,15 +826,7 @@ class AtiveMusicBot {
                 const newVolumeDown = Math.max(0, musicManager.volume - 10);
                 musicManager.setVolume(newVolumeDown);
                 console.log(`🔉 Volume set to ${newVolumeDown}%`);
-                try {
-                    if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply({ content: `🔉 Volume: ${newVolumeDown}%`, ephemeral: true });
-                    } else if (interaction.deferred && !interaction.replied) {
-                        await interaction.editReply({ content: `🔉 Volume: ${newVolumeDown}%` });
-                    }
-                } catch (error) {
-                    console.log(`⚠️ Could not respond to volume down interaction: ${error.message}`);
-                }
+                await safeReply({ content: `🔉 Volume: ${newVolumeDown}%`, ephemeral: true });
                 break;
                 
             case 'music_repeat':
@@ -810,7 +835,7 @@ class AtiveMusicBot {
                 const nextMode = modes[(currentIndex + 1) % modes.length];
                 musicManager.setLoop(nextMode);
                 const modeEmojis = { off: '➡️', track: '🔂', queue: '🔁' };
-                await interaction.reply({ content: `${modeEmojis[nextMode]} Loop: ${nextMode}`, ephemeral: true });
+                await safeReply({ content: `${modeEmojis[nextMode]} Loop: ${nextMode}`, ephemeral: true });
                 break;
                 
             case 'music_queue':
@@ -1144,7 +1169,10 @@ class AtiveMusicBot {
         musicManager.setContinuousPlayback(false); // Disable continuous playback
         
         // Delete the current music panel since playback stopped
-        await this.deletePreviousPanel(interaction.guildId);
+        const currentChannelId = this.guildChannels.get(interaction.guildId);
+        if (currentChannelId) {
+            await this.deletePreviousPanel(currentChannelId);
+        }
 
         const embed = this.createMusicEmbed(
             '⏹️ Playback Stopped',
@@ -1326,8 +1354,21 @@ class AtiveMusicBot {
 
         musicManager.stop();
         musicManager.clearQueue();
-        musicManager.connection.destroy();
-        musicManager.connection = null;
+        
+        if (musicManager.connection) {
+            musicManager.connection.destroy();
+            musicManager.connection = null;
+        }
+        
+        // Clean up session management data
+        const voiceChannelId = this.guildChannels.get(interaction.guildId);
+        if (voiceChannelId) {
+            this.guildChannels.delete(interaction.guildId);
+            this.musicManagers.delete(voiceChannelId);
+            this.musicTextChannels.delete(voiceChannelId);
+            this.musicPanels.delete(voiceChannelId);
+            console.log(`🧹 Cleaned up session data for guild ${interaction.guildId}, channel ${voiceChannelId}`);
+        }
 
         const embed = this.createMusicEmbed(
             '👋 Left Voice Channel',
@@ -2555,13 +2596,16 @@ class AtiveMusicBot {
         // Clean up music panel for this channel
         this.musicPanels.delete(channelId);
         
+        // Clean up text channel mapping
+        this.musicTextChannels.delete(channelId);
+        
         // Update guild channel tracking
         const currentChannelId = this.guildChannels.get(guildId);
         if (currentChannelId === channelId) {
             this.guildChannels.delete(guildId);
         }
         
-        console.log(`✅ Channel ${channelId} cleanup completed`);
+        console.log(`✅ Channel cleanup completed for ${channelId}`);
     }
     
     async updateQueueState(guildId, channelId, musicManager) {
