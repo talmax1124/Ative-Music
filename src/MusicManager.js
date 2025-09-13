@@ -4,6 +4,7 @@ const { promises: fs } = require('fs');
 const path = require('path');
 const config = require('../config.js');
 const SmartAutoPlay = require('./SmartAutoPlay.js');
+const UserPreferences = require('./UserPreferences.js');
 
 class MusicManager {
     constructor(guildId, channelId, sourceHandlers) {
@@ -22,6 +23,7 @@ class MusicManager {
         this.lastChannel = null;
         this.playHistory = [];
         this.smartAutoPlay = new SmartAutoPlay(sourceHandlers);
+        this.userPreferences = new UserPreferences();
         this.autoPlayEnabled = true;
         this.continuousPlayback = false; // Disable by default - user controls progression
         this.userStoppedPlayback = false; // Track if user manually stopped
@@ -93,7 +95,7 @@ class MusicManager {
         });
     }
 
-    async addToQueue(track, position = -1) {
+    async addToQueue(track, position = -1, userContext = null) {
         track.addedAt = new Date();
         track.id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
@@ -104,6 +106,11 @@ class MusicManager {
         }
         
         console.log(`📝 Added to queue: ${track.title} (Position: ${this.queue.length})`);
+        
+        // Track user preference if user context is provided
+        if (userContext && userContext.userId && userContext.guildId) {
+            this.userPreferences.trackPlay(userContext.userId, userContext.guildId, track);
+        }
         
         // Auto-save queue after changes
         this.saveQueue();
@@ -545,7 +552,7 @@ class MusicManager {
         }
     }
 
-    async findAndPlayRecommendation(lastTrack = null) {
+    async findAndPlayRecommendation(lastTrack = null, userContext = {}) {
         try {
             // Use the last track or fall back to the most recent from play history
             const seedTrack = lastTrack || this.playHistory[this.playHistory.length - 1] || null;
@@ -557,7 +564,8 @@ class MusicManager {
             
             const recommendation = await this.smartAutoPlay.getNextRecommendation(
                 seedTrack, 
-                this.playHistory
+                this.playHistory,
+                userContext
             );
             
             if (recommendation && !this.isDuplicate(recommendation)) {
@@ -591,7 +599,7 @@ class MusicManager {
         return inQueue || recentlyPlayed;
     }
 
-    async fillQueueWithRecommendations(count = 10) {
+    async fillQueueWithRecommendations(count = 10, userContext = {}) {
         if (this.queue.length >= count) return;
 
         console.log(`🎵 Filling queue with ${count} smart recommendations...`);
@@ -599,7 +607,8 @@ class MusicManager {
         try {
             const recommendations = await this.smartAutoPlay.generateContinuousPlaylist(
                 this.currentTrack || this.playHistory[this.playHistory.length - 1],
-                count - this.queue.length
+                count - this.queue.length,
+                userContext
             );
             
             for (const recommendation of recommendations) {

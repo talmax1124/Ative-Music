@@ -1,8 +1,12 @@
+const UserPreferences = require('./UserPreferences');
+
 class SmartAutoPlay {
     constructor(sourceHandlers) {
         this.sourceHandlers = sourceHandlers;
         this.playHistory = [];
         this.currentTheme = null; // Track the current musical theme
+        this.userPreferences = new UserPreferences();
+        this.audioFeatures = new Map(); // Cache for audio analysis
         this.genres = {
             'reggaeton': ['reggaeton', 'perreo', 'dembow', 'urbano', 'latino', 'bad bunny', 'daddy yankee', 'j balvin', 'maluma', 'karol g', 'ozuna', 'anuel', 'farruko', 'nicky jam', 'wisin', 'yandel', 'plan b', 'arcangel', 'de la ghetto', 'zion', 'lennox', 'tito el bambino', 'hector el father', 'tempo', 'voltio', 'baby rasta', 'gringo', 'feid', 'rauw alejandro', 'sech', 'myke towers', 'jhay cortez', 'bryant myers', 'lenny tavarez', 'lunay', 'casper magico', 'nio garcia', 'darell', 'justin quiles', 'manuel turizo', 'rafa pabon', 'mau y ricky', 'reik', 'cnco', 'sebastian yatra', 'camilo', 'piso 21'],
             'pop': ['catchy', 'mainstream', 'radio', 'top 40', 'chart', 'hit', 'taylor swift', 'ariana grande', 'dua lipa', 'olivia rodrigo', 'billie eilish'],
@@ -36,41 +40,53 @@ class SmartAutoPlay {
         ];
     }
 
-    async getNextRecommendation(currentTrack, playHistory = [], userPreferences = {}) {
-        console.log('🤖 Smart Auto-Play: Finding next recommendation...');
+    async getNextRecommendation(currentTrack, playHistory = [], userContext = {}) {
+        console.log('🧠 Smart Auto-Play: Finding next recommendation with AI analysis...');
+        
+        const { userId, guildId } = userContext;
         
         if (!currentTrack) {
-            console.log('⚠️ No current track provided, using fallback strategy');
-            return await this.getFallbackTrack();
+            console.log('⚠️ No current track provided, using personalized fallback strategy');
+            return await this.getPersonalizedFallback(userId, guildId);
         }
         
         // Update current theme based on the track
         this.updateTheme(currentTrack);
         
+        // Get user's personalized weights and preferences
+        const personalWeights = userId && guildId 
+            ? this.userPreferences.getPersonalizedRecommendationWeights(userId, guildId)
+            : null;
+        
         try {
-            // Smart theme-based recommendation strategies with better variety
-            const strategies = [
-                { fn: () => this.getThemeBasedRecommendation(currentTrack), weight: 40 },
-                { fn: () => this.getRelatedArtistTrack(currentTrack), weight: 25 },
-                { fn: () => this.getSimilarGenreTrack(currentTrack), weight: 15 },
-                { fn: () => this.getMoodMatchingTrack(currentTrack), weight: 10 },
-                { fn: () => this.getTrendingTrack(), weight: 5 },
-                { fn: () => this.getRandomPopularTrack(), weight: 5 }
-            ];
+            // AI-powered recommendation strategies with personalization
+            let strategies;
+            
+            if (personalWeights) {
+                strategies = this.getPersonalizedStrategies(currentTrack, personalWeights);
+            } else {
+                strategies = this.getDefaultStrategies(currentTrack);
+            }
 
-            // Shuffle strategies to add variety
-            const shuffledStrategies = [...strategies].sort(() => Math.random() - 0.5);
+            // Intelligent strategy selection based on user patterns
+            const weightedStrategies = this.selectOptimalStrategies(strategies, personalWeights);
 
-            for (const strategy of shuffledStrategies) {
+            for (const strategy of weightedStrategies) {
                 try {
-                    console.log(`🎯 Trying recommendation strategy...`);
+                    console.log(`🎯 Trying ${strategy.name} strategy (weight: ${strategy.weight})...`);
                     const recommendation = await strategy.fn();
                     
-                    if (recommendation && !this.isRecentlyPlayed(recommendation, playHistory)) {
-                        console.log(`✅ Found recommendation: ${recommendation.title} by ${recommendation.author}`);
+                    if (recommendation && this.validateRecommendation(recommendation, playHistory, personalWeights)) {
+                        console.log(`✅ Found AI recommendation: ${recommendation.title} by ${recommendation.author}`);
+                        
+                        // Track the recommendation for learning
+                        if (userId && guildId) {
+                            this.userPreferences.trackPlay(userId, guildId, recommendation);
+                        }
+                        
                         return recommendation;
                     } else if (recommendation) {
-                        console.log(`⚠️ Recommendation was recently played: ${recommendation.title}`);
+                        console.log(`⚠️ Recommendation filtered out: ${recommendation.title}`);
                     }
                 } catch (error) {
                     console.log(`⚠️ Strategy failed: ${error.message}, trying next...`);
@@ -78,13 +94,13 @@ class SmartAutoPlay {
                 }
             }
 
-            // Enhanced fallback - try to get something from a different genre
-            console.log('🔄 All strategies exhausted, trying fallback with genre variety...');
-            return await this.getFallbackTrack();
+            // Enhanced personalized fallback
+            console.log('🔄 All strategies exhausted, trying personalized fallback...');
+            return await this.getPersonalizedFallback(userId, guildId);
 
         } catch (error) {
             console.error('❌ Auto-play recommendation failed:', error);
-            return await this.getFallbackTrack();
+            return await this.getPersonalizedFallback(userId, guildId);
         }
     }
 
@@ -313,7 +329,7 @@ class SmartAutoPlay {
         return seconds * 1000; // Return in milliseconds
     }
 
-    async generateContinuousPlaylist(seedTrack, count = 50) {
+    async generateContinuousPlaylist(seedTrack, count = 50, userContext = {}) {
         const playlist = [];
         let currentTrack = seedTrack;
         let attempts = 0;
@@ -324,7 +340,7 @@ class SmartAutoPlay {
         for (let i = 0; i < count && attempts < maxAttempts; i++) {
             attempts++;
             
-            const recommendation = await this.getNextRecommendation(currentTrack, playlist);
+            const recommendation = await this.getNextRecommendation(currentTrack, playlist, userContext);
             
             if (recommendation && !this.isDuplicateInPlaylist(recommendation, playlist)) {
                 playlist.push(recommendation);
@@ -531,6 +547,224 @@ class SmartAutoPlay {
         
         const targetFamily = genreFamilies[targetGenre] || [targetGenre];
         return targetFamily.includes(detectedGenre);
+    }
+
+    // New personalized recommendation methods
+
+    getPersonalizedStrategies(currentTrack, personalWeights) {
+        const { preferredGenres, preferredArtists, patterns, similarUsers } = personalWeights;
+        
+        return [
+            { 
+                name: 'user-preferred-genre', 
+                fn: () => this.getUserPreferredGenreTrack(preferredGenres), 
+                weight: 30 
+            },
+            { 
+                name: 'user-preferred-artist', 
+                fn: () => this.getUserPreferredArtistTrack(preferredArtists), 
+                weight: 25 
+            },
+            { 
+                name: 'collaborative-filtering', 
+                fn: () => this.getCollaborativeRecommendation(similarUsers), 
+                weight: 20 
+            },
+            { 
+                name: 'theme-based', 
+                fn: () => this.getThemeBasedRecommendation(currentTrack), 
+                weight: 15 
+            },
+            { 
+                name: 'pattern-matching', 
+                fn: () => this.getPatternBasedRecommendation(patterns), 
+                weight: 10 
+            }
+        ];
+    }
+
+    getDefaultStrategies(currentTrack) {
+        return [
+            { name: 'theme-based', fn: () => this.getThemeBasedRecommendation(currentTrack), weight: 40 },
+            { name: 'related-artist', fn: () => this.getRelatedArtistTrack(currentTrack), weight: 25 },
+            { name: 'similar-genre', fn: () => this.getSimilarGenreTrack(currentTrack), weight: 15 },
+            { name: 'mood-matching', fn: () => this.getMoodMatchingTrack(currentTrack), weight: 10 },
+            { name: 'trending', fn: () => this.getTrendingTrack(), weight: 5 },
+            { name: 'random-popular', fn: () => this.getRandomPopularTrack(), weight: 5 }
+        ];
+    }
+
+    selectOptimalStrategies(strategies, personalWeights) {
+        // Adjust weights based on user patterns and context
+        if (personalWeights && personalWeights.patterns.diversityScore > 0.7) {
+            // User likes variety - increase exploration strategies
+            strategies.forEach(strategy => {
+                if (['trending', 'random-popular'].includes(strategy.name)) {
+                    strategy.weight *= 1.5;
+                }
+            });
+        }
+
+        // Normalize weights and sort by adjusted weight
+        const totalWeight = strategies.reduce((sum, s) => sum + s.weight, 0);
+        return strategies
+            .map(s => ({ ...s, normalizedWeight: s.weight / totalWeight }))
+            .sort((a, b) => b.weight - a.weight);
+    }
+
+    async getUserPreferredGenreTrack(preferredGenres) {
+        if (!preferredGenres || preferredGenres.length === 0) return null;
+        
+        const genre = preferredGenres[Math.floor(Math.random() * Math.min(3, preferredGenres.length))];
+        const queries = [
+            `best ${genre} songs 2024`,
+            `${genre} hits playlist`,
+            `popular ${genre} music`
+        ];
+
+        for (const query of queries) {
+            try {
+                const results = await this.sourceHandlers.search(query, 8);
+                const filtered = results.filter(track => this.detectGenre(track) === genre);
+                if (filtered.length > 0) {
+                    return this.selectBestTrack(filtered);
+                }
+            } catch (error) {
+                continue;
+            }
+        }
+        return null;
+    }
+
+    async getUserPreferredArtistTrack(preferredArtists) {
+        if (!preferredArtists || preferredArtists.length === 0) return null;
+        
+        const artist = preferredArtists[Math.floor(Math.random() * Math.min(5, preferredArtists.length))];
+        const queries = [
+            `${artist} latest songs`,
+            `${artist} popular tracks`,
+            `similar to ${artist}`
+        ];
+
+        for (const query of queries) {
+            try {
+                const results = await this.sourceHandlers.search(query, 5);
+                if (results.length > 0) {
+                    return this.selectBestTrack(results);
+                }
+            } catch (error) {
+                continue;
+            }
+        }
+        return null;
+    }
+
+    async getCollaborativeRecommendation(similarUsers) {
+        if (!similarUsers || similarUsers.length === 0) return null;
+        
+        // Get tracks that similar users liked but current user hasn't heard
+        const recommendations = [];
+        
+        similarUsers.forEach(({ user, similarity }) => {
+            const topArtists = Object.entries(user.favoriteArtists)
+                .sort(([,a], [,b]) => b - a)
+                .slice(0, 5)
+                .map(([artist]) => artist);
+            
+            recommendations.push(...topArtists.map(artist => ({ artist, similarity })));
+        });
+
+        // Pick a random artist weighted by similarity
+        if (recommendations.length > 0) {
+            const selected = recommendations[Math.floor(Math.random() * recommendations.length)];
+            try {
+                const results = await this.sourceHandlers.search(`${selected.artist} popular`, 5);
+                return results.length > 0 ? this.selectBestTrack(results) : null;
+            } catch (error) {
+                return null;
+            }
+        }
+        
+        return null;
+    }
+
+    async getPatternBasedRecommendation(patterns) {
+        if (!patterns) return null;
+        
+        // Use listening patterns to find similar music
+        const topGenres = Object.entries(patterns.genreDistribution)
+            .sort(([,a], [,b]) => b - a)
+            .slice(0, 3)
+            .map(([genre]) => genre);
+
+        if (topGenres.length === 0) return null;
+
+        const genre = topGenres[Math.floor(Math.random() * topGenres.length)];
+        const timeSlot = this.getTimeSlot(new Date().getHours());
+        
+        const queries = [
+            `${genre} ${timeSlot} playlist`,
+            `${genre} music for ${timeSlot}`,
+            `best ${genre} ${timeSlot}`
+        ];
+
+        for (const query of queries) {
+            try {
+                const results = await this.sourceHandlers.search(query, 6);
+                if (results.length > 0) {
+                    return this.selectBestTrack(results);
+                }
+            } catch (error) {
+                continue;
+            }
+        }
+        
+        return null;
+    }
+
+    async getPersonalizedFallback(userId, guildId) {
+        if (userId && guildId) {
+            const topGenres = this.userPreferences.getUserTopGenres(userId, guildId, 3);
+            if (topGenres.length > 0) {
+                return await this.getUserPreferredGenreTrack(topGenres);
+            }
+        }
+        
+        return await this.getFallbackTrack();
+    }
+
+    validateRecommendation(track, playHistory, personalWeights) {
+        // Check if recently played
+        if (this.isRecentlyPlayed(track, playHistory)) {
+            return false;
+        }
+
+        // Check against user's anti-recommendations
+        if (personalWeights && personalWeights.avoid) {
+            const trackGenre = this.detectGenre(track);
+            if (personalWeights.avoid.genres.includes(trackGenre)) {
+                console.log(`🚫 Avoiding genre: ${trackGenre}`);
+                return false;
+            }
+            if (personalWeights.avoid.artists.includes(track.author)) {
+                console.log(`🚫 Avoiding artist: ${track.author}`);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    getTimeSlot(hour) {
+        if (hour >= 6 && hour < 12) return 'morning';
+        if (hour >= 12 && hour < 17) return 'afternoon';
+        if (hour >= 17 && hour < 22) return 'evening';
+        return 'night';
+    }
+
+    // Enhanced genre detection using the UserPreferences method
+    detectGenre(track) {
+        return this.userPreferences.detectGenre(track);
     }
 
     async getSimilarGenreTrack(currentTrack) {

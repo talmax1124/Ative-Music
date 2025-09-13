@@ -347,7 +347,10 @@ class AtiveMusicBot {
                                  searchResults[0];
             console.log(`✅ Selected track: ${selectedTrack.title} from ${selectedTrack.source}`);
 
-            await musicManager.addToQueue(selectedTrack);
+            await musicManager.addToQueue(selectedTrack, -1, { 
+                userId: interaction.user.id, 
+                guildId: interaction.guild.id 
+            });
 
             // Store channel info for panel management using voice channel as key
             const panelInfo = this.musicPanels.get(voiceChannel.id);
@@ -741,7 +744,7 @@ class AtiveMusicBot {
                         
                         embed.addFields([
                             { name: 'Queue Position', value: `${queueInfo.currentIndex + 1} of ${queueInfo.queue.length}`, inline: true },
-                            { name: 'Duration', value: nextTrack.duration || 'Unknown', inline: true },
+                            { name: 'Duration', value: String(nextTrack.duration) || 'Unknown', inline: true },
                             { name: 'Source', value: nextTrack.source?.toUpperCase() || 'Unknown', inline: true }
                         ]);
                         
@@ -796,7 +799,7 @@ class AtiveMusicBot {
                     
                     embed.addFields([
                         { name: 'Queue Position', value: `${queueInfo.currentIndex + 1} of ${queueInfo.queue.length}`, inline: true },
-                        { name: 'Duration', value: track.duration || 'Unknown', inline: true },
+                        { name: 'Duration', value: String(track.duration) || 'Unknown', inline: true },
                         { name: 'Source', value: track.source?.toUpperCase() || 'Unknown', inline: true }
                     ]);
                     
@@ -958,7 +961,10 @@ class AtiveMusicBot {
             musicManager.setConnection(connection);
 
             const track = cachedResults[trackIndex];
-            await musicManager.addToQueue(track);
+            await musicManager.addToQueue(track, -1, { 
+                userId: interaction.user.id, 
+                guildId: interaction.guild.id 
+            });
 
             const embed = this.createMusicEmbed(
                 '🎵 Added to Queue',
@@ -1414,7 +1420,7 @@ class AtiveMusicBot {
                 .setThumbnail(track.thumbnail)
                 .addFields([
                     { name: '🎬 Video URL', value: `[Watch on YouTube](${track.url})`, inline: true },
-                    { name: '⏱️ Duration', value: track.duration, inline: true },
+                    { name: '⏱️ Duration', value: String(track.duration), inline: true },
                     { name: '📊 Quality', value: videoInfo.qualities?.[0]?.quality || 'HD', inline: true }
                 ])
                 .setFooter({ text: '💡 Use screen share to watch together!' });
@@ -1814,7 +1820,10 @@ class AtiveMusicBot {
                 
                 // Start filling queue immediately
                 setTimeout(() => {
-                    musicManager.fillQueueWithRecommendations(20);
+                    musicManager.fillQueueWithRecommendations(20, { 
+                        userId: interaction.user.id, 
+                        guildId: interaction.guild.id 
+                    });
                 }, 2000);
                 break;
                 
@@ -1867,7 +1876,10 @@ class AtiveMusicBot {
                 
                 await interaction.deferReply();
                 
-                await musicManager.fillQueueWithRecommendations(fillCount);
+                await musicManager.fillQueueWithRecommendations(fillCount, { 
+                    userId: interaction.user.id, 
+                    guildId: interaction.guild.id 
+                });
                 
                 const fillEmbed = this.createMusicEmbed(
                     '🎵 Queue Filled',
@@ -2303,7 +2315,10 @@ class AtiveMusicBot {
         
         // Add all tracks to queue
         for (const track of playlist.tracks) {
-            await musicManager.addToQueue(track);
+            await musicManager.addToQueue(track, -1, { 
+                userId: interaction.user.id, 
+                guildId: interaction.guild.id 
+            });
         }
         
         // Increment play count
