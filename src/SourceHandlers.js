@@ -841,12 +841,13 @@ class SourceHandlers {
         return new Promise((resolve, reject) => {
             // Enhanced yt-dlp options for better mobile audio quality
             const ytDlpArgs = [
-                '--format', 'bestaudio[acodec^=opus]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+                '--format', 'bestaudio[ext=m4a][protocol!*=m3u8]/bestaudio[ext=webm][protocol!*=m3u8]/bestaudio[protocol!*=m3u8]/best[height<=480]',
                 '--audio-quality', '0',  // Best audio quality
                 '--no-playlist',
                 '--no-warnings', 
                 '--quiet',
                 '--get-url',
+                '--prefer-ffmpeg',  // Prefer ffmpeg over built-in extractors
                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 '--add-header', 'Accept:*/*',
                 '--add-header', 'Accept-Language:en-US,en;q=0.9',

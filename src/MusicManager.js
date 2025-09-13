@@ -42,6 +42,7 @@ class MusicManager {
         this.player.on(AudioPlayerStatus.Playing, () => {
             this.isPlaying = true;
             this.isPaused = false;
+            this.trackStartTime = Date.now(); // Track when playback actually starts
             console.log(`🎵 Now playing: ${this.currentTrack?.title || 'Unknown'}`);
             
             // Emit track start event for UI updates
@@ -60,8 +61,16 @@ class MusicManager {
             if (oldState.status === AudioPlayerStatus.Playing) {
                 this.isPlaying = false;
                 this.isPaused = false;
-                console.log('💤 Player idle - track finished naturally');
-                this.handleTrackEnd();
+                
+                // Check if track ended too quickly (less than 5 seconds) - likely a stream error
+                const playDuration = Date.now() - (this.trackStartTime || 0);
+                if (playDuration < 5000 && this.trackStartTime) {
+                    console.log(`❌ Track ended too quickly (${playDuration}ms) - likely stream error`);
+                    this.handleStreamError();
+                } else {
+                    console.log('💤 Player idle - track finished naturally');
+                    this.handleTrackEnd();
+                }
             } else if (oldState.status === AudioPlayerStatus.Buffering) {
                 // Stream failed during buffering - this is an error
                 this.isPlaying = false;
