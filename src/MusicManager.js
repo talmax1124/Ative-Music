@@ -492,65 +492,103 @@ class MusicManager {
     async handleTrackEnd() {
         console.log('🎵 Track ended, determining next action...');
         
+        // Prevent multiple simultaneous track end handling
+        if (this.isTransitioning) {
+            console.log('⚠️ Track end ignored - already transitioning');
+            return;
+        }
+        
+        this.isTransitioning = true;
         clearTimeout(this.autoPlayTimeout);
+        
+        // Store current track before clearing for recommendation purposes
+        const lastTrack = this.currentTrack;
         
         // Emit track end event for UI updates
         if (this.onTrackEnd) {
-            this.onTrackEnd(this.currentTrack);
+            this.onTrackEnd(lastTrack);
         }
         
-        // Clear the current track position when song finishes naturally
-        this.clearCurrentPosition();
+        // Determine next action based on queue state and settings
+        const hasNextInQueue = this.currentTrackIndex + 1 < this.queue.length;
         
-        // Only auto-advance if continuous playback is enabled AND there are songs in queue
-        if (this.continuousPlayback && this.queue.length > this.currentTrackIndex + 1) {
+        if (hasNextInQueue && this.continuousPlayback) {
+            // Advance to next track in queue
+            console.log('🔄 Auto-advancing to next track in queue...');
+            this.currentTrackIndex++;
             this.autoPlayTimeout = setTimeout(async () => {
-                if (!this.isPlaying) {
-                    console.log('🔄 Auto-advancing to next track in queue...');
-                    await this.skip();
+                if (!this.isPlaying && !this.userStoppedPlayback) {
+                    await this.play();
                 }
-            }, 2000); // 2 second delay
-        } else if (!this.continuousPlayback) {
-            console.log('⏸️ Track ended - waiting for user action (continuous playback disabled)');
-            // Stop playback and wait for user to manually advance
-            this.isPlaying = false;
-            this.isPaused = false;
+                this.isTransitioning = false;
+            }, 1000);
+        } else if (!hasNextInQueue && this.autoPlayEnabled && this.continuousPlayback) {
+            // Queue is empty, try to find recommendations
+            console.log('🤖 Queue empty, finding smart recommendation...');
+            this.clearCurrentPosition();
+            this.autoPlayTimeout = setTimeout(async () => {
+                if (!this.isPlaying && !this.userStoppedPlayback) {
+                    await this.findAndPlayRecommendation(lastTrack);
+                }
+                this.isTransitioning = false;
+            }, 1500);
+        } else {
+            // Stop playback - either continuous playback disabled or auto-play disabled
+            console.log('⏸️ Track ended - stopping playback (continuous/auto-play disabled)');
+            this.clearCurrentPosition();
             
             // Notify panel to show "Use /play" message when queue is empty
             if (this.queue.length === 0 && this.onQueueEmpty) {
                 this.onQueueEmpty();
             }
-        } else if (this.autoPlayEnabled && this.continuousPlayback) {
-            // Only find recommendations if auto-play is enabled and queue is empty
-            this.autoPlayTimeout = setTimeout(async () => {
-                if (!this.isPlaying) {
-                    console.log('🤖 Queue empty, finding smart recommendation...');
-                    await this.findAndPlayRecommendation();
-                }
-            }, 2000);
+            this.isTransitioning = false;
         }
     }
 
-    async findAndPlayRecommendation() {
+    async findAndPlayRecommendation(lastTrack = null) {
         try {
+            // Use the last track or fall back to the most recent from play history
+            const seedTrack = lastTrack || this.playHistory[this.playHistory.length - 1] || null;
+            
+            if (!seedTrack) {
+                console.log('❌ No seed track available for recommendations');
+                return false;
+            }
+            
             const recommendation = await this.smartAutoPlay.getNextRecommendation(
-                this.currentTrack, 
+                seedTrack, 
                 this.playHistory
             );
             
-            if (recommendation) {
+            if (recommendation && !this.isDuplicate(recommendation)) {
                 console.log(`🎵 Auto-playing: ${recommendation.title} by ${recommendation.author}`);
                 await this.addToQueue(recommendation);
                 await this.play();
                 return true;
             } else {
-                console.log('❌ No recommendation found');
+                console.log('❌ No valid recommendation found or duplicate detected');
                 return false;
             }
         } catch (error) {
             console.error('❌ Auto-play recommendation failed:', error);
             return false;
         }
+    }
+    
+    isDuplicate(track) {
+        // Check if track is already in queue
+        const inQueue = this.queue.some(queueTrack => 
+            queueTrack.title.toLowerCase() === track.title.toLowerCase() &&
+            queueTrack.author.toLowerCase() === track.author.toLowerCase()
+        );
+        
+        // Check if track was played recently
+        const recentlyPlayed = this.playHistory.slice(-10).some(historyTrack => 
+            historyTrack.title.toLowerCase() === track.title.toLowerCase() &&
+            historyTrack.author.toLowerCase() === track.author.toLowerCase()
+        );
+        
+        return inQueue || recentlyPlayed;
     }
 
     async fillQueueWithRecommendations(count = 10) {
@@ -604,11 +642,15 @@ class MusicManager {
         clearTimeout(this.autoPlayTimeout);
         this.autoPlayTimeout = null;
         
-        this.currentTrack = null;
-        this.currentTrackIndex = -1;
-        this.isPlaying = false;
+        // Only clear if not currently playing
+        if (!this.isPlaying) {
+            this.currentTrack = null;
+            this.currentTrackIndex = -1;
+        }
+        
         this.isPaused = false;
         this.isTransitioning = false;
+        this.userStoppedPlayback = false; // Reset user stop flag
         console.log('✅ Queue position cleared');
         
         // Save queue state after clearing position
@@ -758,7 +800,18 @@ class MusicManager {
                         await this.play();
                     }
                     this.isTransitioning = false;
-                }, 2000); // Wait a bit before trying next track
+                }, 2000);
+            } else if (this.autoPlayEnabled && this.continuousPlayback) {
+                // No more tracks in queue, try to find recommendation
+                console.log('🤖 Queue empty after error - finding recommendation');
+                const lastTrack = this.currentTrack || this.playHistory[this.playHistory.length - 1];
+                
+                setTimeout(async () => {
+                    if (!this.isPlaying && !this.userStoppedPlayback) {
+                        await this.findAndPlayRecommendation(lastTrack);
+                    }
+                    this.isTransitioning = false;
+                }, 2000);
             } else {
                 console.log('⏹️ No more tracks to try - clearing position');
                 this.clearCurrentPosition();

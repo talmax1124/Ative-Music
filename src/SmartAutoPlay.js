@@ -39,35 +39,47 @@ class SmartAutoPlay {
     async getNextRecommendation(currentTrack, playHistory = [], userPreferences = {}) {
         console.log('🤖 Smart Auto-Play: Finding next recommendation...');
         
+        if (!currentTrack) {
+            console.log('⚠️ No current track provided, using fallback strategy');
+            return await this.getFallbackTrack();
+        }
+        
         // Update current theme based on the track
         this.updateTheme(currentTrack);
         
         try {
-            // Smart theme-based recommendation strategies
+            // Smart theme-based recommendation strategies with better variety
             const strategies = [
-                () => this.getThemeBasedRecommendation(currentTrack),
-                () => this.getRelatedArtistTrack(currentTrack),
-                () => this.getSimilarGenreTrack(currentTrack),
-                () => this.getMoodMatchingTrack(currentTrack),
-                () => this.getGenreBasedRecommendation(currentTrack),
-                () => this.getTrendingTrack(),
-                () => this.getRandomPopularTrack()
+                { fn: () => this.getThemeBasedRecommendation(currentTrack), weight: 40 },
+                { fn: () => this.getRelatedArtistTrack(currentTrack), weight: 25 },
+                { fn: () => this.getSimilarGenreTrack(currentTrack), weight: 15 },
+                { fn: () => this.getMoodMatchingTrack(currentTrack), weight: 10 },
+                { fn: () => this.getTrendingTrack(), weight: 5 },
+                { fn: () => this.getRandomPopularTrack(), weight: 5 }
             ];
 
-            for (const strategy of strategies) {
+            // Shuffle strategies to add variety
+            const shuffledStrategies = [...strategies].sort(() => Math.random() - 0.5);
+
+            for (const strategy of shuffledStrategies) {
                 try {
-                    const recommendation = await strategy();
+                    console.log(`🎯 Trying recommendation strategy...`);
+                    const recommendation = await strategy.fn();
+                    
                     if (recommendation && !this.isRecentlyPlayed(recommendation, playHistory)) {
                         console.log(`✅ Found recommendation: ${recommendation.title} by ${recommendation.author}`);
                         return recommendation;
+                    } else if (recommendation) {
+                        console.log(`⚠️ Recommendation was recently played: ${recommendation.title}`);
                     }
                 } catch (error) {
-                    console.log(`⚠️ Strategy failed, trying next...`);
+                    console.log(`⚠️ Strategy failed: ${error.message}, trying next...`);
                     continue;
                 }
             }
 
-            // Fallback to a guaranteed track
+            // Enhanced fallback - try to get something from a different genre
+            console.log('🔄 All strategies exhausted, trying fallback with genre variety...');
             return await this.getFallbackTrack();
 
         } catch (error) {
@@ -105,8 +117,9 @@ class SmartAutoPlay {
         return null;
     }
 
-    async getGenreBasedRecommendation(currentTrack) {
-        const randomGenre = this.genres[Math.floor(Math.random() * this.genres.length)];
+    async getGenreBasedRecommendation(currentTrack, specificGenre = null) {
+        const genreKeys = Object.keys(this.genres);
+        const randomGenre = specificGenre || genreKeys[Math.floor(Math.random() * genreKeys.length)];
         const queries = [
             `${randomGenre} music 2024`,
             `best ${randomGenre} songs`,
@@ -269,11 +282,19 @@ class SmartAutoPlay {
     }
 
     isRecentlyPlayed(track, playHistory) {
-        const recentTracks = playHistory.slice(-20); // Check last 20 tracks
-        return recentTracks.some(historyTrack => 
-            historyTrack.title.toLowerCase() === track.title.toLowerCase() &&
-            historyTrack.author.toLowerCase() === track.author.toLowerCase()
-        );
+        if (!track || !playHistory) return false;
+        
+        // Check last 15 tracks to prevent immediate repeats but allow some variety
+        const recentTracks = playHistory.slice(-15);
+        return recentTracks.some(historyTrack => {
+            if (!historyTrack) return false;
+            
+            // Exact match check
+            const titleMatch = historyTrack.title?.toLowerCase() === track.title?.toLowerCase();
+            const authorMatch = historyTrack.author?.toLowerCase() === track.author?.toLowerCase();
+            
+            return titleMatch && authorMatch;
+        });
     }
 
     parseDuration(duration) {
@@ -295,29 +316,60 @@ class SmartAutoPlay {
     async generateContinuousPlaylist(seedTrack, count = 50) {
         const playlist = [];
         let currentTrack = seedTrack;
+        let attempts = 0;
+        const maxAttempts = count * 3; // Prevent infinite loops
 
         console.log(`🎵 Generating continuous playlist with ${count} tracks...`);
 
-        for (let i = 0; i < count; i++) {
+        for (let i = 0; i < count && attempts < maxAttempts; i++) {
+            attempts++;
+            
             const recommendation = await this.getNextRecommendation(currentTrack, playlist);
-            if (recommendation) {
+            
+            if (recommendation && !this.isDuplicateInPlaylist(recommendation, playlist)) {
                 playlist.push(recommendation);
                 currentTrack = recommendation;
                 
-                // Add some variety every 10 tracks
+                // Add variety every 10 tracks by switching to a different genre
                 if (i % 10 === 9) {
-                    currentTrack = null; // Force genre/mood change
+                    const randomGenreKeys = Object.keys(this.genres);
+                    const randomGenre = randomGenreKeys[Math.floor(Math.random() * randomGenreKeys.length)];
+                    console.log(`🎨 Switching to ${randomGenre} genre for variety...`);
+                    
+                    const genreTrack = await this.getGenreBasedRecommendation(null, randomGenre);
+                    if (genreTrack && !this.isDuplicateInPlaylist(genreTrack, playlist)) {
+                        currentTrack = genreTrack;
+                    }
+                }
+                
+                // Reset attempts on successful addition
+                attempts = Math.max(0, attempts - 1);
+            } else {
+                console.log(`⚠️ Failed to find unique recommendation (attempt ${attempts})`);
+                
+                // If we can't find recommendations, try switching to a completely different approach
+                if (attempts % 10 === 0) {
+                    currentTrack = await this.getTrendingTrack();
                 }
             }
 
             // Small delay to avoid rate limiting
-            if (i % 5 === 4) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
+            if (i % 3 === 2) {
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
         }
 
-        console.log(`✅ Generated playlist with ${playlist.length} tracks`);
+        console.log(`✅ Generated playlist with ${playlist.length} tracks (${attempts} attempts)`);
         return playlist;
+    }
+    
+    isDuplicateInPlaylist(track, playlist) {
+        if (!track || !playlist) return false;
+        
+        return playlist.some(playlistTrack => 
+            playlistTrack.title?.toLowerCase() === track.title?.toLowerCase() &&
+            playlistTrack.author?.toLowerCase() === track.author?.toLowerCase()
+        );
     }
 
     updateTheme(track) {
