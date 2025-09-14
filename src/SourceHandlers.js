@@ -841,7 +841,7 @@ class SourceHandlers {
         return new Promise((resolve, reject) => {
             // Enhanced yt-dlp options for better mobile audio quality
             const ytDlpArgs = [
-                '--format', 'bestaudio[ext=m4a][protocol!*=m3u8]/bestaudio[ext=webm][protocol!*=m3u8]/bestaudio[protocol!*=m3u8]/best[height<=480]',
+                '--format', 'bestaudio/best[height<=480]',
                 '--audio-quality', '0',  // Best audio quality
                 '--no-playlist',
                 '--no-warnings', 
