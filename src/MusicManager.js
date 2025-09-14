@@ -121,6 +121,15 @@ class MusicManager {
             this.userPreferences.trackPlay(userContext.userId, userContext.guildId, track);
         }
         
+        // Auto-queue recommendations if only one song and auto-play is enabled
+        if (this.queue.length === 1 && this.autoPlayEnabled) {
+            console.log('🤖 Auto-queuing recommendations since only one song in queue...');
+            // Small delay to ensure the current track is properly set
+            setTimeout(() => {
+                this.fillQueueWithRecommendations(3, userContext);
+            }, 2000);
+        }
+        
         // Auto-save queue after changes
         this.saveQueue();
         
@@ -580,6 +589,8 @@ class MusicManager {
             if (recommendation && !this.isDuplicate(recommendation)) {
                 console.log(`🎵 Auto-playing: ${recommendation.title} by ${recommendation.author}`);
                 await this.addToQueue(recommendation);
+                // Set the current track index to the new recommendation (last item in queue)
+                this.currentTrackIndex = this.queue.length - 1;
                 await this.play();
                 return true;
             } else {

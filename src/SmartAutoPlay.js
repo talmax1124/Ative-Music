@@ -50,6 +50,9 @@ class SmartAutoPlay {
             return await this.getPersonalizedFallback(userId, guildId);
         }
         
+        // Get list of recently played artists to promote diversity
+        const recentArtists = playHistory.slice(-8).map(track => track.author?.toLowerCase()).filter(Boolean);
+        
         // Update current theme based on the track
         this.updateTheme(currentTrack);
         
@@ -63,9 +66,9 @@ class SmartAutoPlay {
             let strategies;
             
             if (personalWeights) {
-                strategies = this.getPersonalizedStrategies(currentTrack, personalWeights);
+                strategies = this.getPersonalizedStrategies(currentTrack, personalWeights, recentArtists);
             } else {
-                strategies = this.getDefaultStrategies(currentTrack);
+                strategies = this.getDefaultStrategies(currentTrack, recentArtists);
             }
 
             // Intelligent strategy selection based on user patterns
@@ -76,7 +79,7 @@ class SmartAutoPlay {
                     console.log(`🎯 Trying ${strategy.name} strategy (weight: ${strategy.weight})...`);
                     const recommendation = await strategy.fn();
                     
-                    if (recommendation && this.validateRecommendation(recommendation, playHistory, personalWeights)) {
+                    if (recommendation && this.validateRecommendation(recommendation, playHistory, personalWeights, recentArtists)) {
                         console.log(`✅ Found AI recommendation: ${recommendation.title} by ${recommendation.author}`);
                         
                         // Track the recommendation for learning
@@ -86,7 +89,7 @@ class SmartAutoPlay {
                         
                         return recommendation;
                     } else if (recommendation) {
-                        console.log(`⚠️ Recommendation filtered out: ${recommendation.title}`);
+                        console.log(`⚠️ Recommendation filtered out: ${recommendation.title} by ${recommendation.author}`);
                     }
                 } catch (error) {
                     console.log(`⚠️ Strategy failed: ${error.message}, trying next...`);
@@ -104,21 +107,24 @@ class SmartAutoPlay {
         }
     }
 
-    async getRelatedArtistTrack(currentTrack) {
+    async getRelatedArtistTrack(currentTrack, avoidArtists = []) {
         if (!currentTrack) return null;
 
+        // Add current artist to avoid list
+        const artistsToAvoid = [...avoidArtists, currentTrack.author.toLowerCase()];
+
         const queries = [
-            `${currentTrack.author} popular songs`,
-            `${currentTrack.author} best hits`,
             `similar to ${currentTrack.author}`,
-            `artists like ${currentTrack.author}`
+            `artists like ${currentTrack.author}`,
+            `${this.detectGenre(currentTrack)} artists similar ${currentTrack.author}`,
+            `music like ${currentTrack.author} different artists`
         ];
 
         for (const query of queries) {
             try {
-                const results = await this.sourceHandlers.search(query, 5);
+                const results = await this.sourceHandlers.search(query, 8);
                 const filtered = results.filter(track => 
-                    track.author.toLowerCase() !== currentTrack.author.toLowerCase() &&
+                    !artistsToAvoid.includes(track.author.toLowerCase()) &&
                     track.title.toLowerCase() !== currentTrack.title.toLowerCase()
                 );
                 
@@ -196,8 +202,18 @@ class SmartAutoPlay {
         }
     }
 
-    async getRandomPopularTrack() {
-        const randomArtist = this.popularArtists[Math.floor(Math.random() * this.popularArtists.length)];
+    async getRandomPopularTrack(avoidArtists = []) {
+        // Filter out recently played artists
+        const availableArtists = this.popularArtists.filter(artist => 
+            !avoidArtists.includes(artist.toLowerCase())
+        );
+        
+        if (availableArtists.length === 0) {
+            // If all popular artists are recently played, use any popular artist
+            availableArtists.push(...this.popularArtists);
+        }
+        
+        const randomArtist = availableArtists[Math.floor(Math.random() * availableArtists.length)];
         const queries = [
             `${randomArtist} popular`,
             `${randomArtist} hits`,
@@ -208,7 +224,10 @@ class SmartAutoPlay {
         
         try {
             const results = await this.sourceHandlers.search(query, 5);
-            return this.selectBestTrack(results);
+            const filtered = results.filter(track => 
+                !avoidArtists.includes(track.author?.toLowerCase())
+            );
+            return this.selectBestTrack(filtered.length > 0 ? filtered : results);
         } catch (error) {
             return null;
         }
@@ -583,14 +602,14 @@ class SmartAutoPlay {
         ];
     }
 
-    getDefaultStrategies(currentTrack) {
+    getDefaultStrategies(currentTrack, recentArtists = []) {
         return [
-            { name: 'theme-based', fn: () => this.getThemeBasedRecommendation(currentTrack), weight: 40 },
-            { name: 'related-artist', fn: () => this.getRelatedArtistTrack(currentTrack), weight: 25 },
-            { name: 'similar-genre', fn: () => this.getSimilarGenreTrack(currentTrack), weight: 15 },
-            { name: 'mood-matching', fn: () => this.getMoodMatchingTrack(currentTrack), weight: 10 },
+            { name: 'theme-based', fn: () => this.getThemeBasedRecommendation(currentTrack, recentArtists), weight: 40 },
+            { name: 'related-artist', fn: () => this.getRelatedArtistTrack(currentTrack, recentArtists), weight: 25 },
+            { name: 'similar-genre', fn: () => this.getSimilarGenreTrack(currentTrack, recentArtists), weight: 15 },
+            { name: 'mood-matching', fn: () => this.getMoodMatchingTrack(currentTrack, recentArtists), weight: 10 },
             { name: 'trending', fn: () => this.getTrendingTrack(), weight: 5 },
-            { name: 'random-popular', fn: () => this.getRandomPopularTrack(), weight: 5 }
+            { name: 'random-popular', fn: () => this.getRandomPopularTrack(recentArtists), weight: 5 }
         ];
     }
 
@@ -733,9 +752,16 @@ class SmartAutoPlay {
         return await this.getFallbackTrack();
     }
 
-    validateRecommendation(track, playHistory, personalWeights) {
+    validateRecommendation(track, playHistory, personalWeights, recentArtists = []) {
         // Check if recently played
         if (this.isRecentlyPlayed(track, playHistory)) {
+            console.log(`🚫 Avoiding recently played: ${track.title}`);
+            return false;
+        }
+
+        // Check if artist was played recently (promote diversity)
+        if (recentArtists.includes(track.author?.toLowerCase())) {
+            console.log(`🚫 Avoiding recent artist for diversity: ${track.author}`);
             return false;
         }
 

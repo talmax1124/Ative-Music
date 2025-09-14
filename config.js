@@ -18,11 +18,16 @@ module.exports = {
     },
     
     colors: {
-        success: 0x00ff00,
-        error: 0xff0000,
-        info: 0x0099ff,
-        warning: 0xffff00,
-        music: 0x9f00ff
+        success: 0x57F287,      // Discord Green
+        error: 0xED4245,        // Discord Red
+        info: 0x5865F2,         // Discord Blurple
+        warning: 0xFEE75C,      // Discord Yellow
+        music: 0xEB459E,        // Discord Pink/Music
+        playing: 0x57F287,      // Green for playing
+        paused: 0xFEE75C,       // Yellow for paused
+        stopped: 0x747F8D,      // Gray for stopped
+        queue: 0x5865F2,        // Blurple for queue
+        premium: 0xF1C40F       // Gold for premium features
     },
     
     emojis: {
