@@ -220,16 +220,45 @@ class MusicManager {
                 return false;
             }
 
-            // Enhanced audio resource for better mobile compatibility
-            const resource = createAudioResource(stream, {
-                inputType: StreamType.Arbitrary,
-                inlineVolume: true,
-                silencePaddingFrames: 5, // Add padding for audio stability
-                metadata: {
-                    title: this.currentTrack?.title || 'Unknown',
-                    author: this.currentTrack?.author || 'Unknown'
-                }
+            // Validate stream before creating audio resource
+            if (!stream.readable || stream.destroyed) {
+                console.error('❌ Stream is not readable or already destroyed');
+                this.handleStreamError();
+                return false;
+            }
+
+            // Add stream error handlers
+            stream.on('error', (error) => {
+                console.error('❌ Stream error:', error.message);
+                this.handleStreamError();
             });
+
+            // Probe the stream for format detection
+            let resource;
+            try {
+                const probe = await demuxProbe(stream);
+                resource = createAudioResource(probe.stream, {
+                    inputType: probe.type,
+                    inlineVolume: true,
+                    silencePaddingFrames: 5, // Add padding for audio stability
+                    metadata: {
+                        title: this.currentTrack?.title || 'Unknown',
+                        author: this.currentTrack?.author || 'Unknown'
+                    }
+                });
+            } catch (probeError) {
+                console.log('⚠️ Audio probing failed, using fallback:', probeError.message);
+                // Fallback to arbitrary input type
+                resource = createAudioResource(stream, {
+                    inputType: StreamType.Arbitrary,
+                    inlineVolume: true,
+                    silencePaddingFrames: 5,
+                    metadata: {
+                        title: this.currentTrack?.title || 'Unknown',
+                        author: this.currentTrack?.author || 'Unknown'
+                    }
+                });
+            }
 
             resource.volume?.setVolume(this.volume / 100);
 

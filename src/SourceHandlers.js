@@ -875,13 +875,74 @@ class SourceHandlers {
                     console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 80)}...`);
                     
                     try {
-                        // Fetch the URL and return the readable stream
-                        const response = await fetch(directUrl);
+                        // Enhanced HTTP request with timeout and headers
+                        const response = await fetch(directUrl, {
+                            method: 'GET',
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                'Accept': 'audio/*,*/*;q=0.8',
+                                'Accept-Encoding': 'identity',
+                                'Range': 'bytes=0-'  // Request range to help with streaming
+                            },
+                            timeout: 15000  // 15 second timeout
+                        });
+                        
                         if (!response.ok) {
-                            throw new Error(`Stream fetch failed: ${response.status}`);
+                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                         }
-                        console.log(`✅ yt-dlp stream created successfully`);
-                        resolve(response.body);
+                        
+                        // Check content type
+                        const contentType = response.headers.get('content-type');
+                        if (contentType && !contentType.includes('audio') && !contentType.includes('video') && !contentType.includes('octet-stream')) {
+                            console.log(`⚠️ Unexpected content type: ${contentType}`);
+                        }
+                        
+                        // Add error handling to the stream
+                        const stream = response.body;
+                        if (!stream) {
+                            throw new Error('No response body received');
+                        }
+                        
+                        // Create a buffered passthrough stream for stability
+                        const { PassThrough } = require('stream');
+                        const bufferedStream = new PassThrough({
+                            highWaterMark: 1024 * 1024, // 1MB buffer
+                        });
+                        
+                        // Add error handling to both streams
+                        stream.on('error', (streamError) => {
+                            console.error('❌ HTTP stream error:', streamError.message);
+                            bufferedStream.destroy(streamError);
+                        });
+                        
+                        bufferedStream.on('error', (streamError) => {
+                            console.error('❌ Buffered stream error:', streamError.message);
+                        });
+                        
+                        // Pipe the response through the buffer
+                        stream.pipe(bufferedStream);
+                        
+                        // Wait for initial buffering before resolving
+                        let bufferedBytes = 0;
+                        const minBufferSize = 64 * 1024; // Wait for 64KB minimum
+                        
+                        bufferedStream.on('data', (chunk) => {
+                            bufferedBytes += chunk.length;
+                        });
+                        
+                        // Wait for sufficient buffering or timeout
+                        const bufferTimeout = setTimeout(() => {
+                            console.log(`⚠️ Stream buffer timeout, proceeding with ${bufferedBytes} bytes buffered`);
+                            resolve(bufferedStream);
+                        }, 3000);
+                        
+                        bufferedStream.on('readable', () => {
+                            if (bufferedBytes >= minBufferSize) {
+                                clearTimeout(bufferTimeout);
+                                console.log(`✅ yt-dlp stream buffered (${bufferedBytes} bytes) and ready`);
+                                resolve(bufferedStream);
+                            }
+                        });
                     } catch (fetchError) {
                         console.log(`❌ Failed to fetch yt-dlp stream: ${fetchError.message}`);
                         reject(new Error(`Stream fetch failed: ${fetchError.message}`));
