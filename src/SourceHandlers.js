@@ -869,14 +869,23 @@ class SourceHandlers {
                 errorOutput += data.toString();
             });
             
-            ytDlp.on('close', (code) => {
+            ytDlp.on('close', async (code) => {
                 if (code === 0 && audioUrl.trim()) {
                     const directUrl = audioUrl.trim().split('\n')[0]; // Get first URL if multiple
                     console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 80)}...`);
                     
-                    // Return the direct URL - let MusicManager create the AudioResource
-                    console.log(`✅ yt-dlp stream created successfully`);
-                    resolve(directUrl);
+                    try {
+                        // Fetch the URL and return the readable stream
+                        const response = await fetch(directUrl);
+                        if (!response.ok) {
+                            throw new Error(`Stream fetch failed: ${response.status}`);
+                        }
+                        console.log(`✅ yt-dlp stream created successfully`);
+                        resolve(response.body);
+                    } catch (fetchError) {
+                        console.log(`❌ Failed to fetch yt-dlp stream: ${fetchError.message}`);
+                        reject(new Error(`Stream fetch failed: ${fetchError.message}`));
+                    }
                 } else {
                     const errorMsg = errorOutput || `yt-dlp failed with code: ${code}`;
                     console.log(`❌ yt-dlp error: ${errorMsg}`);
