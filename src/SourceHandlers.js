@@ -1406,21 +1406,12 @@ class SourceHandlers {
             }
         ];
         
-        // Validate URL for play-dl compatibility
-        if (!youtubeUrl || !ytdl.validateURL(youtubeUrl)) {
-            throw new Error(`Invalid YouTube URL for play-dl: ${youtubeUrl}`);
+        // Basic URL validation for play-dl
+        if (!youtubeUrl || typeof youtubeUrl !== 'string') {
+            throw new Error(`Invalid URL provided to play-dl: ${youtubeUrl}`);
         }
 
-        // Check if play-dl can validate this URL
-        try {
-            const isValid = await play.validate(youtubeUrl);
-            if (!isValid) {
-                throw new Error(`play-dl cannot validate URL: ${youtubeUrl}`);
-            }
-        } catch (validateError) {
-            console.log(`⚠️ play-dl URL validation failed: ${validateError.message}`);
-            throw new Error(`URL validation failed: ${validateError.message}`);
-        }
+        // Skip play-dl validation as it's too restrictive - let play.stream handle the validation
 
         for (const [index, streamOptions] of streamConfigs.entries()) {
             try {
@@ -1451,19 +1442,34 @@ class SourceHandlers {
             youtubeUrl = searchResults[0].url;
         }
         
-        // Simplified approach with basic options
+        // Enhanced options to avoid 403 errors
         const basicOptions = {
             filter: 'audioonly',
             quality: 'lowestaudio',
             requestOptions: {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Cache-Control': 'max-age=0'
                 }
             }
         };
         
         try {
             console.log(`🔄 ytdl-core basic attempt for: ${youtubeUrl}`);
+            
+            // Add small delay to avoid hitting rate limits
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
             const stream = ytdl(youtubeUrl, basicOptions);
             
             // Wait for stream to be ready and validate it
@@ -1520,14 +1526,13 @@ class SourceHandlers {
     async findAlternativeYouTubeVideo(originalTrack) {
         console.log(`🔍 Finding alternative YouTube video for: ${originalTrack.title}`);
         
-        // Try different search strategies
+        // Try different search strategies with better filtering
         const searchStrategies = [
-            `${originalTrack.title} ${originalTrack.author} official audio`,
-            `${originalTrack.title} ${originalTrack.author} lyrics`,
-            `${originalTrack.title} ${originalTrack.author} music video`,
-            `${originalTrack.title} audio only`,
-            `${originalTrack.title} cover`,
-            `${originalTrack.author} ${originalTrack.title.split(' ')[0]}` // First word of title
+            `${originalTrack.title} ${originalTrack.author} audio`,
+            `${originalTrack.title} ${originalTrack.author} song`,
+            `${originalTrack.title} ${originalTrack.author} official`,
+            `"${originalTrack.title}" ${originalTrack.author}`, // Exact title match
+            `${originalTrack.author} - ${originalTrack.title}`, // Artist - Song format
         ];
         
         for (const searchQuery of searchStrategies) {
@@ -1538,11 +1543,19 @@ class SourceHandlers {
                 for (const result of results) {
                     // Skip the original URL to avoid infinite loops
                     if (result.url !== originalTrack.url) {
-                        console.log(`✅ Found alternative: ${result.title}`);
-                        return {
-                            ...result,
-                            source: 'youtube'
-                        };
+                        // Basic relevance check to avoid completely unrelated videos
+                        const titleSimilarity = this.checkTitleSimilarity(originalTrack.title, result.title);
+                        const authorSimilarity = this.checkAuthorSimilarity(originalTrack.author, result.author);
+                        
+                        if (titleSimilarity > 0.3 || authorSimilarity > 0.5) {
+                            console.log(`✅ Found relevant alternative: ${result.title} by ${result.author} (title: ${titleSimilarity.toFixed(2)}, author: ${authorSimilarity.toFixed(2)})`);
+                            return {
+                                ...result,
+                                source: 'youtube'
+                            };
+                        } else {
+                            console.log(`⚠️ Skipping unrelated result: ${result.title} by ${result.author}`);
+                        }
                     }
                 }
             } catch (searchError) {
@@ -1552,6 +1565,53 @@ class SourceHandlers {
         }
         
         return null;
+    }
+
+    checkTitleSimilarity(originalTitle, resultTitle) {
+        if (!originalTitle || !resultTitle) return 0;
+        
+        const orig = originalTitle.toLowerCase().replace(/[^\w\s]/g, '');
+        const result = resultTitle.toLowerCase().replace(/[^\w\s]/g, '');
+        
+        // Check for common words
+        const origWords = orig.split(/\s+/).filter(w => w.length > 2);
+        const resultWords = result.split(/\s+/).filter(w => w.length > 2);
+        
+        if (origWords.length === 0) return 0;
+        
+        let matches = 0;
+        for (const word of origWords) {
+            if (resultWords.some(rw => rw.includes(word) || word.includes(rw))) {
+                matches++;
+            }
+        }
+        
+        return matches / origWords.length;
+    }
+
+    checkAuthorSimilarity(originalAuthor, resultAuthor) {
+        if (!originalAuthor || !resultAuthor) return 0;
+        
+        const orig = originalAuthor.toLowerCase().replace(/[^\w\s]/g, '');
+        const result = resultAuthor.toLowerCase().replace(/[^\w\s]/g, '');
+        
+        if (orig === result) return 1.0;
+        if (result.includes(orig) || orig.includes(result)) return 0.8;
+        
+        // Check for common words in artist names
+        const origWords = orig.split(/\s+/).filter(w => w.length > 1);
+        const resultWords = result.split(/\s+/).filter(w => w.length > 1);
+        
+        if (origWords.length === 0) return 0;
+        
+        let matches = 0;
+        for (const word of origWords) {
+            if (resultWords.includes(word)) {
+                matches++;
+            }
+        }
+        
+        return matches / origWords.length;
     }
 
     async createMinimalAudioStream(track) {
