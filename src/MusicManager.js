@@ -19,6 +19,7 @@ class MusicManager {
         this.volume = config.settings.defaultVolume;
         this.loopMode = 'off'; // 'off', 'track', 'queue'
         this.connection = null;
+        this.connectionHealthy = true; // Track connection health for EPIPE prevention
         this.player = createAudioPlayer();
         this.lastChannel = null;
         this.playHistory = [];
@@ -99,8 +100,24 @@ class MusicManager {
         this.connection.subscribe(this.player);
         this.lastChannel = connection.joinConfig.channelId;
         
+        // Enhanced connection state handling with EPIPE protection
         this.connection.on('stateChange', (oldState, newState) => {
             console.log(`🔗 Connection state changed: ${oldState.status} -> ${newState.status}`);
+            
+            // Handle connection drops that could cause EPIPE
+            if (newState.status === 'disconnected' || newState.status === 'destroyed') {
+                console.log('⚠️ Voice connection dropped - stopping current playback to prevent EPIPE');
+                this.handleConnectionDrop();
+            }
+        });
+        
+        // Handle connection errors including EPIPE
+        this.connection.on('error', (error) => {
+            console.error('🔗 Voice connection error:', error.message);
+            if (error.code === 'EPIPE' || error.message.includes('EPIPE')) {
+                console.log('🔧 EPIPE error detected - attempting connection recovery');
+                this.handleEPIPEError();
+            }
         });
     }
 
@@ -211,6 +228,13 @@ class MusicManager {
         try {
             console.log(`🎵 Attempting to play: ${this.currentTrack.title}`);
             
+            // Check connection health before attempting stream
+            if (!this.connectionHealthy || !this.connection) {
+                console.log('⚠️ Connection not healthy - aborting playback to prevent EPIPE');
+                this.handleStreamError();
+                return false;
+            }
+            
             const stream = await this.sourceHandlers.getStream(this.currentTrack);
             
             if (!stream) {
@@ -227,10 +251,24 @@ class MusicManager {
                 return false;
             }
 
-            // Add stream error handlers
+            // Enhanced stream error handlers including EPIPE protection
             stream.on('error', (error) => {
                 console.error('❌ Stream error:', error.message);
-                this.handleStreamError();
+                if (error.code === 'EPIPE' || error.message.includes('EPIPE')) {
+                    console.log('🔧 Stream EPIPE error - connection issue detected');
+                    this.handleEPIPEError();
+                } else {
+                    this.handleStreamError();
+                }
+            });
+            
+            // Monitor stream health to prevent EPIPE
+            stream.on('close', () => {
+                console.log('📡 Stream closed');
+            });
+            
+            stream.on('end', () => {
+                console.log('📡 Stream ended normally');
             });
 
             // Probe the stream for format detection
@@ -823,6 +861,39 @@ class MusicManager {
         } catch (error) {
             // File might not exist - ignore
         }
+    }
+    
+    async handleEPIPEError() {
+        console.log('🔧 Handling EPIPE error - connection pipe broken');
+        
+        // Stop current audio to prevent further EPIPE errors
+        if (this.player && this.player.state.status !== 'Idle') {
+            this.player.stop(true);
+        }
+        
+        // Mark connection as potentially broken
+        this.connectionHealthy = false;
+        
+        // Wait before attempting recovery
+        setTimeout(() => {
+            console.log('🔧 Attempting EPIPE recovery by restarting current track');
+            this.connectionHealthy = true;
+            if (this.currentTrack && !this.userStoppedPlayback) {
+                this.play();
+            }
+        }, 2000);
+    }
+    
+    handleConnectionDrop() {
+        console.log('📡 Handling voice connection drop');
+        
+        // Stop playback cleanly
+        if (this.player && this.player.state.status !== 'Idle') {
+            this.player.stop(true);
+        }
+        
+        this.connectionHealthy = false;
+        this.isTransitioning = false;
     }
     
     async handleStreamError() {

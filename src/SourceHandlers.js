@@ -7,7 +7,9 @@ const cheerio = require('cheerio');
 const config = require('../config.js');
 const play = require('play-dl');
 const { spawn } = require('child_process');
-const { Readable } = require('stream');
+const { Readable, PassThrough } = require('stream');
+const https = require('https');
+const http = require('http');
 
 class SourceHandlers {
     constructor() {
@@ -820,47 +822,70 @@ class SourceHandlers {
         // Check if yt-dlp is available first
         const hasYtDlp = await this.checkYtDlpAvailable();
         
-        // Define streaming methods with multiple options to avoid HLS issues
+        // Define streaming methods with Spotify integration and HLS support
         const streamingMethods = hasYtDlp ? [
-            // Try play-dl first as it may handle HLS better
+            // Spotify preview/enhanced search as first attempt for Spotify tracks
             {
-                name: 'play-dl-enhanced',
+                name: 'spotify-enhanced',
                 priority: 1,
-                method: () => this.getStreamWithPlayDl(track),
-                cooldown: 2000,
-                maxFailures: 3
+                method: () => this.getStreamWithSpotifyFallback(track),
+                cooldown: 1000,
+                maxFailures: 2
             },
-            // yt-dlp as secondary with improved format selection
+            // ytdl-core with enhanced HTML parsing protection
             {
-                name: 'yt-dlp-direct',
+                name: 'ytdl-core-enhanced',
                 priority: 2,
-                method: () => this.getStreamWithYtDlp(track),
+                method: () => this.getStreamWithYtdlCore(track),
                 cooldown: 1000,
                 maxFailures: 3
             },
-            // ytdl-core as final fallback
+            // HLS stream handler for when direct streams fail
             {
-                name: 'ytdl-core-innertube',
+                name: 'hls-stream',
                 priority: 3,
-                method: () => this.getStreamWithYtdlCore(track),
-                cooldown: 3000,
+                method: () => this.getStreamWithHLS(track),
+                cooldown: 2000,
+                maxFailures: 3
+            },
+            // yt-dlp as backup
+            {
+                name: 'yt-dlp-direct',
+                priority: 4,
+                method: () => this.getStreamWithYtDlp(track),
+                cooldown: 1500,
+                maxFailures: 3
+            },
+            // robust fallback as final method
+            {
+                name: 'robust-fallback',
+                priority: 5,
+                method: () => this.getStreamWithRobustFallback(track),
+                cooldown: 2000,
                 maxFailures: 2
             }
         ] : [
             // Fallback methods when yt-dlp is not available
             {
-                name: 'play-dl-enhanced',
+                name: 'spotify-enhanced',
                 priority: 1,
-                method: () => this.getStreamWithPlayDl(track),
-                cooldown: 3000,
+                method: () => this.getStreamWithSpotifyFallback(track),
+                cooldown: 1000,
                 maxFailures: 2
             },
             {
-                name: 'ytdl-core-innertube',
+                name: 'ytdl-core-enhanced',
                 priority: 2,
                 method: () => this.getStreamWithYtdlCore(track),
-                cooldown: 5000,
+                cooldown: 2000,
                 maxFailures: 2
+            },
+            {
+                name: 'play-dl-legacy',
+                priority: 3,
+                method: () => this.getStreamWithPlayDl(track),
+                cooldown: 3000,
+                maxFailures: 1
             }
         ];
         
@@ -1268,17 +1293,21 @@ class SourceHandlers {
             if (code === 0 && audioUrl.trim()) {
                 const directUrl = audioUrl.trim().split('\n')[0];
                 
-                // Check if URL is HLS manifest before proceeding
-                if (directUrl.includes('m3u8') || directUrl.includes('hls_playlist') || directUrl.includes('manifest')) {
-                    console.log(`❌ yt-dlp fallback returned HLS manifest, rejecting: ${directUrl.substring(0, 80)}...`);
-                    // Try alternative method
-                    this.getStreamWithPlayDl({...this.tempTrackRef}).then(resolve).catch(() => {
-                        reject(new Error('All streaming methods failed - only HLS available'));
-                    });
-                    return;
-                }
+                console.log(`✅ yt-dlp fallback found URL: ${directUrl.substring(0, 80)}...`);
                 
-                console.log(`✅ yt-dlp fallback found direct URL: ${directUrl.substring(0, 80)}...`);
+                // Handle HLS manifests properly instead of rejecting them
+                if (directUrl.includes('m3u8') || directUrl.includes('hls_playlist') || directUrl.includes('manifest')) {
+                    console.log(`🔄 yt-dlp returned HLS manifest - using HLS handler`);
+                    try {
+                        const hlsStream = await this.createHLSStream(directUrl);
+                        resolve(hlsStream);
+                        return;
+                    } catch (hlsError) {
+                        console.log(`❌ HLS handling failed: ${hlsError.message}`);
+                        reject(hlsError);
+                        return;
+                    }
+                }
                 
                 try {
                     const response = await fetch(directUrl, {
@@ -1329,6 +1358,78 @@ class SourceHandlers {
             ytDlp.kill('SIGTERM');
             reject(new Error('yt-dlp fallback timeout after 30 seconds'));
         }, 30000);
+    }
+    
+    async getStreamWithRobustFallback(track) {
+        console.log(`⚡ Trying robust fallback streaming for: ${track.title}`);
+        
+        let youtubeUrl = track.url;
+        if (track.source === 'spotify') {
+            const searchQuery = `${track.title} ${track.author} audio`;
+            const searchResults = await this.searchYouTube(searchQuery, 1);
+            if (searchResults.length === 0) {
+                throw new Error('No YouTube equivalent found');
+            }
+            youtubeUrl = searchResults[0].url;
+        }
+        
+        // Direct yt-dlp streaming without intermediate steps
+        return new Promise((resolve, reject) => {
+            const ytDlpArgs = [
+                '--format', 'bestaudio[ext=m4a]/bestaudio[acodec=aac]/bestaudio/best',
+                '--output', '-',
+                '--quiet',
+                '--no-warnings',
+                '--extract-flat',
+                '--no-playlist',
+                youtubeUrl
+            ];
+            
+            console.log(`🔄 Robust fallback: yt-dlp ${ytDlpArgs.join(' ')}`);
+            const ytDlp = spawn('yt-dlp', ytDlpArgs);
+            
+            // Create a PassThrough stream for the audio data
+            const audioStream = new PassThrough();
+            
+            ytDlp.stdout.pipe(audioStream);
+            
+            let hasData = false;
+            ytDlp.stdout.on('data', (chunk) => {
+                if (!hasData) {
+                    hasData = true;
+                    console.log('✅ Robust fallback streaming data received');
+                    resolve(audioStream);
+                }
+            });
+            
+            ytDlp.stderr.on('data', (data) => {
+                const error = data.toString();
+                if (!hasData && error.includes('ERROR')) {
+                    console.log(`❌ Robust fallback error: ${error}`);
+                    reject(new Error(`Robust fallback failed: ${error}`));
+                }
+            });
+            
+            ytDlp.on('close', (code) => {
+                if (!hasData) {
+                    console.log(`❌ Robust fallback closed without data, code: ${code}`);
+                    reject(new Error(`Robust fallback failed with code: ${code}`));
+                }
+            });
+            
+            ytDlp.on('error', (error) => {
+                console.log(`❌ Robust fallback spawn error: ${error.message}`);
+                reject(new Error(`Robust fallback process error: ${error.message}`));
+            });
+            
+            // Add timeout
+            setTimeout(() => {
+                if (!hasData) {
+                    ytDlp.kill();
+                    reject(new Error('Robust fallback timeout after 20 seconds'));
+                }
+            }, 20000);
+        });
     }
     
     async getStreamWithPlayDl(track) {
@@ -1430,7 +1531,7 @@ class SourceHandlers {
     }
     
     async getStreamWithYtdlCore(track) {
-        console.log(`⚡ Trying ytdl-core with simplified approach for: ${track.title}`);
+        console.log(`⚡ Trying ytdl-core with enhanced configuration for: ${track.title}`);
         
         let youtubeUrl = track.url;
         if (track.source === 'spotify') {
@@ -1442,59 +1543,370 @@ class SourceHandlers {
             youtubeUrl = searchResults[0].url;
         }
         
-        // Enhanced options to avoid 403 errors
-        const basicOptions = {
-            filter: 'audioonly',
-            quality: 'lowestaudio',
-            requestOptions: {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Cache-Control': 'max-age=0'
+        // Multiple configuration attempts to handle YouTube changes
+        const configOptions = [
+            // Primary: Latest Chrome with Innertube
+            {
+                filter: 'audioonly',
+                quality: 'lowestaudio',
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Sec-Fetch-Dest': 'empty',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'cross-site'
+                    }
+                }
+            },
+            // Fallback: Mobile user agent
+            {
+                filter: 'audioonly',
+                quality: 'lowestaudio',  
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                    }
+                }
+            },
+            // Final fallback: Basic configuration
+            {
+                filter: 'audioonly',
+                quality: 'lowestaudio'
+            }
+        ];
+        
+        for (let i = 0; i < configOptions.length; i++) {
+            try {
+                console.log(`🔄 ytdl-core attempt ${i + 1}/${configOptions.length} for: ${youtubeUrl}`);
+                
+                const stream = ytdl(youtubeUrl, configOptions[i]);
+                
+                // Wait for stream to be ready with shorter timeout
+                const result = await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        stream.destroy();
+                        reject(new Error(`ytdl-core timeout on attempt ${i + 1}`));
+                    }, 10000);
+                    
+                    stream.on('info', (info) => {
+                        clearTimeout(timeout);
+                        console.log(`✅ ytdl-core success on attempt ${i + 1}: ${info.videoDetails.title}`);
+                        resolve(stream);
+                    });
+                    
+                    stream.on('error', (error) => {
+                        clearTimeout(timeout);
+                        reject(error);
+                    });
+                });
+                
+                return result;
+                
+            } catch (error) {
+                console.log(`❌ ytdl-core attempt ${i + 1} failed: ${error.message}`);
+                if (i === configOptions.length - 1) {
+                    // All attempts failed, try HLS fallback
+                    console.log('🔄 All ytdl-core attempts failed, trying HLS fallback');
+                    return await this.getStreamWithHLS(track);
+                }
+                // Wait before next attempt
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+    }
+
+    async getStreamWithHLS(track) {
+        console.log(`⚡ Trying HLS stream handler for: ${track.title}`);
+        
+        let youtubeUrl = track.url;
+        if (track.source === 'spotify') {
+            const searchQuery = `${track.title} ${track.author} audio`;
+            const searchResults = await this.searchYouTube(searchQuery, 1);
+            if (searchResults.length === 0) {
+                throw new Error('No YouTube equivalent found');
+            }
+            youtubeUrl = searchResults[0].url;
+        }
+        
+        // Use yt-dlp to get HLS manifest and convert it to a streamable format
+        return new Promise((resolve, reject) => {
+            const ytDlpArgs = [
+                '--format', 'bestaudio[ext=m4a]/bestaudio/best',
+                '--get-url',
+                '--no-playlist',
+                '--quiet',
+                youtubeUrl
+            ];
+            
+            console.log(`🔄 HLS handler: yt-dlp ${ytDlpArgs.join(' ')}`);
+            const ytDlp = spawn('yt-dlp', ytDlpArgs);
+            
+            let directUrl = '';
+            let errorOutput = '';
+            
+            ytDlp.stdout.on('data', (data) => {
+                directUrl += data.toString();
+            });
+            
+            ytDlp.stderr.on('data', (data) => {
+                errorOutput += data.toString();
+            });
+            
+            ytDlp.on('close', async (code) => {
+                if (code === 0 && directUrl.trim()) {
+                    const url = directUrl.trim();
+                    console.log(`✅ HLS handler got direct URL: ${url.substring(0, 80)}...`);
+                    
+                    try {
+                        // Create a streaming pipeline for HLS content
+                        const hlsStream = await this.createHLSStream(url);
+                        resolve(hlsStream);
+                    } catch (streamError) {
+                        console.log(`❌ HLS stream creation failed: ${streamError.message}`);
+                        reject(streamError);
+                    }
+                } else {
+                    const errorMsg = errorOutput || `HLS handler failed with code: ${code}`;
+                    console.log(`❌ HLS handler error: ${errorMsg}`);
+                    reject(new Error(errorMsg));
+                }
+            });
+            
+            ytDlp.on('error', (error) => {
+                console.log(`❌ HLS handler spawn error: ${error.message}`);
+                reject(new Error(`HLS handler process error: ${error.message}`));
+            });
+            
+            // Add timeout
+            setTimeout(() => {
+                ytDlp.kill();
+                reject(new Error('HLS handler timeout after 30 seconds'));
+            }, 30000);
+        });
+    }
+    
+    async createHLSStream(url) {
+        console.log(`🔄 Creating HLS stream from: ${url.substring(0, 80)}...`);
+        
+        // Use fetch to get the stream with proper headers
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Range': 'bytes=0-'
+            },
+            timeout: 10000
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HLS fetch failed: ${response.status} ${response.statusText}`);
+        }
+        
+        console.log(`✅ HLS stream response received: ${response.status}`);
+        
+        // Create a PassThrough stream for better control
+        const passThrough = new PassThrough();
+        
+        // Handle response body
+        response.body.pipe(passThrough);
+        
+        // Add error handling
+        response.body.on('error', (error) => {
+            console.error('❌ HLS response body error:', error.message);
+            passThrough.destroy(error);
+        });
+        
+        passThrough.on('error', (error) => {
+            console.error('❌ HLS PassThrough error:', error.message);
+        });
+        
+        return passThrough;
+    }
+
+    async getStreamWithSpotifyFallback(track) {
+        console.log(`⚡ Trying Spotify enhanced fallback for: ${track.title}`);
+        
+        // For Spotify tracks, use enhanced search techniques
+        if (track.source === 'spotify') {
+            console.log('🎵 Spotify track detected - using enhanced YouTube search');
+            
+            try {
+                // Try multiple search strategies for better matches
+                const searchStrategies = [
+                    // Strategy 1: Exact title + artist
+                    `"${track.title}" "${track.author}"`,
+                    // Strategy 2: Title + artist + audio
+                    `${track.title} ${track.author} audio`,
+                    // Strategy 3: Title + artist + official
+                    `${track.title} ${track.author} official`,
+                    // Strategy 4: Title + artist + lyrics
+                    `${track.title} ${track.author} lyrics`,
+                    // Strategy 5: Just title + artist (basic)
+                    `${track.title} ${track.author}`
+                ];
+                
+                for (const [index, searchQuery] of searchStrategies.entries()) {
+                    try {
+                        console.log(`🔍 Spotify strategy ${index + 1}: "${searchQuery}"`);
+                        
+                        const searchResults = await this.searchYouTube(searchQuery, 3);
+                        if (searchResults.length === 0) {
+                            continue;
+                        }
+                        
+                        // Filter and rank results based on title similarity and duration
+                        const bestMatch = this.findBestSpotifyMatch(track, searchResults);
+                        if (bestMatch) {
+                            console.log(`✅ Found good Spotify match: ${bestMatch.title}`);
+                            
+                            // Try to stream the best match
+                            const enhancedTrack = {
+                                ...track,
+                                url: bestMatch.url,
+                                youtubeTitle: bestMatch.title,
+                                source: 'youtube' // Convert to YouTube source for streaming
+                            };
+                            
+                            return await this.getStreamWithYtdlCore(enhancedTrack);
+                        }
+                        
+                    } catch (searchError) {
+                        console.log(`❌ Spotify search strategy ${index + 1} failed: ${searchError.message}`);
+                        continue;
+                    }
+                }
+                
+                // If all enhanced search fails, fall back to basic search
+                console.log('🔄 Enhanced search failed, trying basic YouTube search');
+                const basicResults = await this.searchYouTube(`${track.title} ${track.author}`, 1);
+                if (basicResults.length > 0) {
+                    const basicTrack = {
+                        ...track,
+                        url: basicResults[0].url,
+                        source: 'youtube'
+                    };
+                    return await this.getStreamWithYtdlCore(basicTrack);
+                }
+                
+            } catch (error) {
+                console.log(`❌ Spotify fallback error: ${error.message}`);
+                throw error;
+            }
+        }
+        
+        // For non-Spotify tracks, just use regular streaming
+        return await this.getStreamWithYtdlCore(track);
+    }
+    
+    findBestSpotifyMatch(originalTrack, searchResults) {
+        console.log(`🎯 Finding best match for: "${originalTrack.title}" by "${originalTrack.author}"`);
+        
+        let bestMatch = null;
+        let highestScore = 0;
+        
+        for (const result of searchResults) {
+            let score = 0;
+            
+            // Title similarity (most important)
+            const titleSimilarity = this.checkTitleSimilarity(originalTrack.title, result.title);
+            score += titleSimilarity * 40;
+            
+            // Author similarity
+            if (originalTrack.author && result.author) {
+                const authorSimilarity = this.checkTitleSimilarity(originalTrack.author, result.author);
+                score += authorSimilarity * 30;
+            }
+            
+            // Duration similarity (if available)
+            if (originalTrack.duration && result.duration) {
+                const originalDuration = this.parseDuration(originalTrack.duration);
+                const resultDuration = this.parseDuration(result.duration);
+                
+                if (originalDuration && resultDuration) {
+                    const durationDiff = Math.abs(originalDuration - resultDuration);
+                    const durationSimilarity = Math.max(0, 1 - (durationDiff / Math.max(originalDuration, resultDuration)));
+                    score += durationSimilarity * 20;
                 }
             }
-        };
-        
-        try {
-            console.log(`🔄 ytdl-core basic attempt for: ${youtubeUrl}`);
             
-            // Add small delay to avoid hitting rate limits
-            await new Promise(resolve => setTimeout(resolve, 500));
+            // Prefer official/verified sources
+            if (result.title.toLowerCase().includes('official')) {
+                score += 5;
+            }
             
-            const stream = ytdl(youtubeUrl, basicOptions);
+            // Prefer higher quality indicators
+            if (result.title.toLowerCase().includes('hd') || result.title.toLowerCase().includes('hq')) {
+                score += 3;
+            }
             
-            // Wait for stream to be ready and validate it
-            return new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    stream.destroy();
-                    reject(new Error('ytdl-core stream timeout'));
-                }, 15000);
-                
-                stream.on('info', (info) => {
-                    clearTimeout(timeout);
-                    console.log(`✅ ytdl-core found stream: ${info.videoDetails.title}`);
-                    resolve(stream);
-                });
-                
-                stream.on('error', (error) => {
-                    clearTimeout(timeout);
-                    console.log(`❌ ytdl-core error: ${error.message}`);
-                    reject(error);
-                });
-            });
-        } catch (error) {
-            console.log(`❌ ytdl-core failed: ${error.message}`);
-            throw error;
+            // Avoid remixes, covers, live versions for original tracks
+            const avoidTerms = ['remix', 'cover', 'live', 'karaoke', 'instrumental'];
+            const hasAvoidTerm = avoidTerms.some(term => 
+                result.title.toLowerCase().includes(term) && 
+                !originalTrack.title.toLowerCase().includes(term)
+            );
+            if (hasAvoidTerm) {
+                score -= 15;
+            }
+            
+            console.log(`📊 "${result.title}": Score ${score.toFixed(2)}`);
+            
+            if (score > highestScore && score > 30) { // Minimum threshold
+                highestScore = score;
+                bestMatch = result;
+            }
         }
+        
+        if (bestMatch) {
+            console.log(`🎯 Best match selected: "${bestMatch.title}" (Score: ${highestScore.toFixed(2)})`);
+        } else {
+            console.log('❌ No suitable match found above threshold');
+        }
+        
+        return bestMatch;
+    }
+
+    async getSpotifyStream(track) {
+        console.log(`⚡ Trying Spotify direct stream for: ${track.title}`);
+        
+        // Note: Spotify Web API only provides 30-second previews due to licensing
+        // This method serves as a fallback that tries to get better YouTube matches
+        
+        if (track.previewUrl) {
+            console.log('🎵 Spotify preview URL available - streaming 30s preview');
+            
+            try {
+                const response = await fetch(track.previewUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    timeout: 10000
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Preview fetch failed: ${response.status}`);
+                }
+                
+                console.log('✅ Spotify preview stream created (30s)');
+                
+                // Create a PassThrough stream for the preview
+                const passThrough = new PassThrough();
+                response.body.pipe(passThrough);
+                
+                return passThrough;
+                
+            } catch (error) {
+                console.log(`❌ Spotify preview failed: ${error.message}`);
+                // Fall through to enhanced search
+            }
+        }
+        
+        // If no preview or preview failed, use enhanced search
+        console.log('🔄 No preview available, using enhanced YouTube search');
+        return await this.getStreamWithSpotifyFallback(track);
     }
 
     // Additional methods for other streaming sources can be added here
