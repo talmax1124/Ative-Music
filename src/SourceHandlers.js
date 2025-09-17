@@ -611,17 +611,32 @@ class SourceHandlers {
         // Check if yt-dlp is available first
         const hasYtDlp = await this.checkYtDlpAvailable();
         
-        // Define streaming methods - prioritize working methods only
+        // Define streaming methods with multiple options to avoid HLS issues
         const streamingMethods = hasYtDlp ? [
-            // If yt-dlp is available, use only reliable methods
+            // Try play-dl first as it may handle HLS better
+            {
+                name: 'play-dl-enhanced',
+                priority: 1,
+                method: () => this.getStreamWithPlayDl(track),
+                cooldown: 2000,
+                maxFailures: 3
+            },
+            // yt-dlp as secondary with improved format selection
             {
                 name: 'yt-dlp-direct',
-                priority: 1,
+                priority: 2,
                 method: () => this.getStreamWithYtDlp(track),
-                cooldown: 500,
-                maxFailures: 5
+                cooldown: 1000,
+                maxFailures: 3
+            },
+            // ytdl-core as final fallback
+            {
+                name: 'ytdl-core-innertube',
+                priority: 3,
+                method: () => this.getStreamWithYtdlCore(track),
+                cooldown: 3000,
+                maxFailures: 2
             }
-            // Remove secondary methods on Railway - just use yt-dlp for consistency
         ] : [
             // Fallback methods when yt-dlp is not available
             {
@@ -838,11 +853,14 @@ class SourceHandlers {
             }
         }
         
+        // Store track reference for fallback methods
+        this.tempTrackRef = track;
+        
         // First, get format info to avoid HLS streams
         return new Promise((resolve, reject) => {
-            // Step 1: Get format information to identify best direct stream
+            // Step 1: Get format information to identify best direct stream (avoid HLS completely)
             const formatArgs = [
-                '--format', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[protocol^=http][protocol!=m3u8]',
+                '--format', 'bestaudio[protocol!=m3u8][protocol!=hls][ext=m4a]/bestaudio[protocol!=m3u8][protocol!=hls][ext=webm]/bestaudio[protocol!=m3u8][protocol!=hls]/best[protocol!=m3u8][protocol!=hls][height<=480]',
                 '--no-playlist',
                 '--no-warnings',
                 '--quiet',
@@ -871,7 +889,7 @@ class SourceHandlers {
                         const formatInfo = JSON.parse(formatOutput.trim());
                         
                         // Check if we have a direct URL (not HLS)
-                        if (formatInfo.url && !formatInfo.url.includes('m3u8') && !formatInfo.protocol?.includes('m3u8')) {
+                        if (formatInfo.url && !formatInfo.url.includes('m3u8') && !formatInfo.url.includes('hls_playlist') && !formatInfo.url.includes('manifest') && !formatInfo.protocol?.includes('m3u8') && !formatInfo.protocol?.includes('hls')) {
                             console.log(`✅ yt-dlp found direct audio URL (${formatInfo.ext || 'unknown'}): ${formatInfo.url.substring(0, 80)}...`);
                             
                             try {
@@ -979,7 +997,7 @@ class SourceHandlers {
     // Fallback method for yt-dlp URL extraction
     getYtDlpUrlFallback(youtubeUrl, resolve, reject) {
         const ytDlpArgs = [
-            '--format', 'bestaudio/best[height<=480]',
+            '--format', 'bestaudio[protocol!=m3u8][protocol!=hls]/best[protocol!=m3u8][protocol!=hls][height<=480]',
             '--audio-quality', '0',
             '--no-playlist',
             '--no-warnings', 
@@ -1010,7 +1028,18 @@ class SourceHandlers {
         ytDlp.on('close', async (code) => {
             if (code === 0 && audioUrl.trim()) {
                 const directUrl = audioUrl.trim().split('\n')[0];
-                console.log(`✅ yt-dlp fallback found URL: ${directUrl.substring(0, 80)}...`);
+                
+                // Check if URL is HLS manifest before proceeding
+                if (directUrl.includes('m3u8') || directUrl.includes('hls_playlist') || directUrl.includes('manifest')) {
+                    console.log(`❌ yt-dlp fallback returned HLS manifest, rejecting: ${directUrl.substring(0, 80)}...`);
+                    // Try alternative method
+                    this.getStreamWithPlayDl({...this.tempTrackRef}).then(resolve).catch(() => {
+                        reject(new Error('All streaming methods failed - only HLS available'));
+                    });
+                    return;
+                }
+                
+                console.log(`✅ yt-dlp fallback found direct URL: ${directUrl.substring(0, 80)}...`);
                 
                 try {
                     const response = await fetch(directUrl, {
@@ -1027,16 +1056,28 @@ class SourceHandlers {
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
                     
+                    // Check response content type
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('mpegurl')) {
+                        throw new Error('Response is HLS manifest, not direct audio');
+                    }
+                    
                     console.log(`✅ yt-dlp fallback stream created successfully`);
                     resolve(response.body);
                 } catch (fetchError) {
                     console.log(`❌ Failed to fetch fallback stream: ${fetchError.message}`);
-                    reject(new Error(`Fallback stream fetch failed: ${fetchError.message}`));
+                    // Try alternative method
+                    this.getStreamWithPlayDl({...this.tempTrackRef}).then(resolve).catch(() => {
+                        reject(new Error(`Fallback stream fetch failed: ${fetchError.message}`));
+                    });
                 }
             } else {
                 const errorMsg = errorOutput || `yt-dlp fallback failed with code: ${code}`;
                 console.log(`❌ yt-dlp fallback error: ${errorMsg}`);
-                reject(new Error(errorMsg));
+                // Try alternative method
+                this.getStreamWithPlayDl({...this.tempTrackRef}).then(resolve).catch(() => {
+                    reject(new Error(errorMsg));
+                });
             }
         });
         
