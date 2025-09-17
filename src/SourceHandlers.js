@@ -50,6 +50,143 @@ class SourceHandlers {
         }
     }
 
+    isURL(str) {
+        try {
+            // Check if it's a valid URL
+            new URL(str);
+            return true;
+        } catch {
+            // Check common URL patterns without protocol
+            const urlPattern = /^(https?:\/\/)?([\da-z\.-]+)\.([a-z\.]{2,6})([\/\w \.-]*)*\/?$/i;
+            const youtubePattern = /^(youtube\.com|youtu\.be|music\.youtube\.com)/i;
+            const spotifyPattern = /^(spotify\.com|open\.spotify\.com)/i;
+            const soundcloudPattern = /^(soundcloud\.com)/i;
+            
+            return urlPattern.test(str) || youtubePattern.test(str) || spotifyPattern.test(str) || soundcloudPattern.test(str);
+        }
+    }
+
+    async handleURL(url) {
+        try {
+            console.log(`🔗 Processing URL: ${url}`);
+            
+            // Normalize URL
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                url = 'https://' + url;
+            }
+            
+            const urlObj = new URL(url);
+            const hostname = urlObj.hostname.toLowerCase();
+            
+            if (hostname.includes('youtube.com') || hostname.includes('youtu.be') || hostname.includes('music.youtube.com')) {
+                return await this.handleYouTubeURL(url);
+            } else if (hostname.includes('spotify.com')) {
+                return await this.handleSpotifyURL(url);
+            } else if (hostname.includes('soundcloud.com')) {
+                return await this.handleSoundCloudURL(url);
+            } else {
+                console.log(`⚠️ Unsupported URL platform: ${hostname}`);
+                return null;
+            }
+        } catch (error) {
+            console.error(`❌ Error handling URL ${url}:`, error.message);
+            return null;
+        }
+    }
+
+    async handleYouTubeURL(url) {
+        try {
+            // Extract video ID from various YouTube URL formats
+            const videoId = this.extractYouTubeVideoId(url);
+            if (!videoId) {
+                throw new Error('Could not extract video ID from YouTube URL');
+            }
+            
+            // Use YouTube-SR to get video info
+            const video = await YouTube.getVideo(`https://www.youtube.com/watch?v=${videoId}`);
+            
+            return {
+                title: video.title,
+                author: video.channel?.name || 'Unknown',
+                duration: video.duration || '0:00',
+                url: video.url,
+                thumbnail: video.thumbnail?.displayThumbnailURL(),
+                source: 'youtube',
+                type: 'video'
+            };
+        } catch (error) {
+            console.error(`❌ Error handling YouTube URL:`, error.message);
+            return null;
+        }
+    }
+
+    async handleSpotifyURL(url) {
+        try {
+            // Extract Spotify track ID
+            const trackMatch = url.match(/track\/([a-zA-Z0-9]+)/);
+            if (!trackMatch) {
+                throw new Error('Could not extract track ID from Spotify URL');
+            }
+            
+            const trackId = trackMatch[1];
+            const track = await this.spotify.getTrack(trackId);
+            
+            return {
+                title: track.body.name,
+                author: track.body.artists.map(artist => artist.name).join(', '),
+                duration: this.formatDuration(track.body.duration_ms),
+                url: track.body.external_urls.spotify,
+                thumbnail: track.body.album.images[0]?.url,
+                source: 'spotify',
+                type: 'track'
+            };
+        } catch (error) {
+            console.error(`❌ Error handling Spotify URL:`, error.message);
+            return null;
+        }
+    }
+
+    async handleSoundCloudURL(url) {
+        try {
+            // Basic SoundCloud URL handling
+            return {
+                title: 'SoundCloud Track',
+                author: 'Unknown',
+                duration: '0:00',
+                url: url,
+                thumbnail: null,
+                source: 'soundcloud',
+                type: 'track'
+            };
+        } catch (error) {
+            console.error(`❌ Error handling SoundCloud URL:`, error.message);
+            return null;
+        }
+    }
+
+    extractYouTubeVideoId(url) {
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+            /youtube\.com\/v\/([^&\n?#]+)/,
+            /youtube\.com\/watch\?.*v=([^&\n?#]+)/
+        ];
+        
+        for (const pattern of patterns) {
+            const match = url.match(pattern);
+            if (match) {
+                return match[1];
+            }
+        }
+        
+        return null;
+    }
+
+    formatDuration(durationMs) {
+        const minutes = Math.floor(durationMs / 60000);
+        const seconds = Math.floor((durationMs % 60000) / 1000);
+        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+
     async search(query, limit = 10) {
         const results = [];
         
@@ -57,17 +194,31 @@ class SourceHandlers {
             const track = await this.handleURL(query);
             if (track) results.push(track);
         } else {
-            // Search Spotify, YouTube, and SoundCloud
+            // Search Spotify, YouTube, and SoundCloud with network error handling
+            console.log(`🔍 Starting search for: ${query}`);
             const searches = await Promise.allSettled([
                 this.searchSpotify(query, limit),
                 this.searchYouTube(query, limit),
                 this.searchSoundCloud(query, limit)
             ]);
 
+            let hasNetworkErrors = false;
             for (const search of searches) {
                 if (search.status === 'fulfilled' && search.value) {
                     results.push(...search.value);
+                } else if (search.status === 'rejected') {
+                    const error = search.reason;
+                    if (error.code === 'ENOTFOUND' || error.code === 'ECONNRESET' || 
+                        error.message.includes('network') || error.message.includes('timeout')) {
+                        hasNetworkErrors = true;
+                    }
+                    console.log(`⚠️ Search method failed: ${error.message}`);
                 }
+            }
+            
+            // If we have network errors and no results, throw a specific network error
+            if (hasNetworkErrors && results.length === 0) {
+                throw new Error('NETWORK_ERROR: Unable to connect to music services. This is usually temporary - please try again in a moment.');
             }
         }
 
@@ -76,15 +227,65 @@ class SourceHandlers {
         return this.removeDuplicates(rankedResults).slice(0, limit);
     }
 
+    rankSearchResults(results, query) {
+        const queryLower = query.toLowerCase();
+        
+        return results.map(result => {
+            let score = 0;
+            const titleLower = result.title.toLowerCase();
+            const authorLower = result.author.toLowerCase();
+            
+            // Exact title match
+            if (titleLower === queryLower) score += 100;
+            else if (titleLower.includes(queryLower)) score += 50;
+            
+            // Author relevance
+            if (authorLower.includes(queryLower)) score += 30;
+            
+            // Source preference (YouTube > Spotify > SoundCloud)
+            if (result.source === 'youtube') score += 20;
+            else if (result.source === 'spotify') score += 15;
+            else if (result.source === 'soundcloud') score += 10;
+            
+            // View count bonus for YouTube
+            if (result.viewCount) {
+                score += Math.min(result.viewCount / 1000000, 10); // Max 10 points for views
+            }
+            
+            return { ...result, relevanceScore: score };
+        }).sort((a, b) => b.relevanceScore - a.relevanceScore);
+    }
+
+    removeDuplicates(results) {
+        const seen = new Set();
+        return results.filter(result => {
+            const key = `${result.title.toLowerCase()}-${result.author.toLowerCase()}`;
+            if (seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
+    }
+
     async searchYouTube(query, limit = 5) {
         try {
-            // Try YouTube-SR first for better bot detection avoidance
+            // Try YouTube-SR first with timeout and retry logic
             console.log(`🔍 YouTube-SR search for: ${query}`);
-            const youtubeResults = await YouTube.search(query, { 
+            
+            const searchPromise = YouTube.search(query, { 
                 limit: limit,
                 type: 'video',
                 safeSearch: false
             });
+            
+            // Add timeout to prevent hanging
+            const youtubeResults = await Promise.race([
+                searchPromise,
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('YouTube search timeout after 10 seconds')), 10000)
+                )
+            ]);
             
             if (youtubeResults && youtubeResults.length > 0) {
                 console.log(`✅ YouTube-SR found ${youtubeResults.length} results`);
@@ -126,7 +327,15 @@ class SourceHandlers {
                 id: video.videoId
             }));
         } catch (error) {
-            console.error('❌ All YouTube search methods failed:', error);
+            if (error.message.includes('timeout') || error.code === 'ETIMEDOUT') {
+                console.log(`⏱️ YouTube search timed out for: ${query} - this is usually temporary`);
+            } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNRESET' || error.message.includes('network')) {
+                console.log(`🌐 Network connectivity issue during YouTube search: ${error.message}`);
+            } else if (error.message.includes('429') || error.message.includes('rate limit')) {
+                console.log(`🚫 YouTube rate limit hit - searches may be temporarily restricted`);
+            } else {
+                console.error('❌ All YouTube search methods failed:', error.message);
+            }
             return [];
         }
     }
