@@ -232,7 +232,43 @@ class AtiveMusicBot {
         const voiceChannel = member?.voice?.channel;
         const voiceChannelId = voiceChannel?.id;
         
-        const musicManager = voiceChannelId ? this.getMusicManager(interaction.guildId, voiceChannelId) : null;
+        let musicManager = voiceChannelId ? this.getMusicManager(interaction.guildId, voiceChannelId) : null;
+        
+        // Check if user switched channels and there's an existing session to transfer
+        if (voiceChannelId) {
+            const activeChannels = this.guildChannels.get(interaction.guildId);
+            if (activeChannels && activeChannels.size > 0) {
+                const botCurrentChannel = activeChannels.values().next().value;
+                if (botCurrentChannel !== voiceChannelId) {
+                    // User switched channels - check if there's an existing session to transfer
+                    const existingMusicManager = this.musicManagers.get(botCurrentChannel);
+                    if (existingMusicManager && (existingMusicManager.queue.length > 0 || existingMusicManager.isPlaying)) {
+                        console.log(`🔄 Command: User switched channels: bot in ${botCurrentChannel}, user in ${voiceChannelId}`);
+                        try {
+                            const connection = await this.connectToVoiceChannel(voiceChannel, interaction.guildId);
+                            
+                            // Transfer the existing music manager to new channel
+                            this.musicManagers.delete(botCurrentChannel);
+                            this.musicManagers.set(voiceChannelId, existingMusicManager);
+                            existingMusicManager.channelId = voiceChannelId;
+                            existingMusicManager.setConnection(connection);
+                            
+                            // Update guild channels tracking
+                            this.cleanupChannel(botCurrentChannel, interaction.guildId);
+                            if (!this.guildChannels.has(interaction.guildId)) {
+                                this.guildChannels.set(interaction.guildId, new Set());
+                            }
+                            this.guildChannels.get(interaction.guildId).add(voiceChannelId);
+                            
+                            musicManager = existingMusicManager;
+                            console.log(`🎵 Moved music session to ${voiceChannel.name} via command`);
+                        } catch (error) {
+                            console.error(`❌ Failed to move to new channel: ${error.message}`);
+                        }
+                    }
+                }
+            }
+        }
         
         switch (interaction.commandName) {
             case 'play':
@@ -792,27 +828,56 @@ class AtiveMusicBot {
             }
             
             // Find which voice channel to use - prefer user's current channel
-            let currentChannelId = member.voice?.channel?.id;
+            let currentChannelId = interaction.member.voice?.channel?.id;
+            let existingMusicManager = null;
             
-            // If user is not in a voice channel, get any active channel for this guild
+            // Check if user is in a voice channel
             if (!currentChannelId) {
+                // User is not in a voice channel, try to find existing active session
                 const activeChannels = this.guildChannels.get(interaction.guildId);
                 if (activeChannels && activeChannels.size > 0) {
                     currentChannelId = activeChannels.values().next().value;
-                }
-            }
-            
-            // If still no channel available
-            if (!currentChannelId) {
-                const member = interaction.member;
-                const voiceChannel = member?.voice?.channel;
-                if (voiceChannel) {
-                    currentChannelId = voiceChannel.id;
                 } else {
                     return await interaction.reply({
-                        content: 'No active music session found! You must be in a voice channel to use controls.',
+                        content: 'You must be in a voice channel to use music controls!',
                         ephemeral: true
                     });
+                }
+            } else {
+                // User is in a voice channel - check if bot needs to switch
+                const activeChannels = this.guildChannels.get(interaction.guildId);
+                if (activeChannels && activeChannels.size > 0) {
+                    const botCurrentChannel = activeChannels.values().next().value;
+                    if (botCurrentChannel !== currentChannelId) {
+                        // User switched channels - get existing music manager and transfer
+                        existingMusicManager = this.musicManagers.get(botCurrentChannel);
+                        console.log(`🔄 User switched channels: bot in ${botCurrentChannel}, user in ${currentChannelId}`);
+                        
+                        // Transfer the session to the new channel
+                        if (existingMusicManager && (existingMusicManager.queue.length > 0 || existingMusicManager.isPlaying)) {
+                            try {
+                                const voiceChannel = interaction.member.voice.channel;
+                                const connection = await this.connectToVoiceChannel(voiceChannel, interaction.guildId);
+                                
+                                // Transfer the existing music manager to new channel
+                                this.musicManagers.delete(botCurrentChannel);
+                                this.musicManagers.set(currentChannelId, existingMusicManager);
+                                existingMusicManager.channelId = currentChannelId;
+                                existingMusicManager.setConnection(connection);
+                                
+                                // Update guild channels tracking
+                                this.cleanupChannel(botCurrentChannel, interaction.guildId);
+                                if (!this.guildChannels.has(interaction.guildId)) {
+                                    this.guildChannels.set(interaction.guildId, new Set());
+                                }
+                                this.guildChannels.get(interaction.guildId).add(currentChannelId);
+                                
+                                console.log(`🎵 Moved music session to ${voiceChannel.name}`);
+                            } catch (error) {
+                                console.error(`❌ Failed to move to new channel: ${error.message}`);
+                            }
+                        }
+                    }
                 }
             }
             
@@ -2362,7 +2427,10 @@ class AtiveMusicBot {
                 const updatedMembers = updatedChannel?.members.filter(member => !member.user.bot);
                 
                 if (!updatedMembers || updatedMembers.size === 0) {
-                    musicManager.pause();
+                    const musicManager = this.musicManagers.get(voiceChannel.id);
+                    if (musicManager) {
+                        musicManager.pause();
+                    }
                 }
             }, 30000);
         }
