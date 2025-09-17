@@ -838,133 +838,217 @@ class SourceHandlers {
             }
         }
         
+        // First, get format info to avoid HLS streams
         return new Promise((resolve, reject) => {
-            // Enhanced yt-dlp options for better mobile audio quality
-            const ytDlpArgs = [
-                '--format', 'bestaudio/best[height<=480]',
-                '--audio-quality', '0',  // Best audio quality
+            // Step 1: Get format information to identify best direct stream
+            const formatArgs = [
+                '--format', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[protocol^=http][protocol!=m3u8]',
                 '--no-playlist',
-                '--no-warnings', 
+                '--no-warnings',
                 '--quiet',
-                '--get-url',
-                '--prefer-ffmpeg',  // Prefer ffmpeg over built-in extractors
+                '--dump-json',
                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                '--add-header', 'Accept:*/*',
-                '--add-header', 'Accept-Language:en-US,en;q=0.9',
-                '--add-header', 'Accept-Encoding:gzip, deflate, br',
                 youtubeUrl
             ];
             
-            console.log(`🔄 yt-dlp command: yt-dlp ${ytDlpArgs.join(' ')}`);
-            const ytDlp = spawn('yt-dlp', ytDlpArgs);
+            console.log(`🔄 yt-dlp format check: yt-dlp ${formatArgs.join(' ')}`);
+            const formatCheck = spawn('yt-dlp', formatArgs);
             
-            let audioUrl = '';
-            let errorOutput = '';
+            let formatOutput = '';
+            let formatError = '';
             
-            ytDlp.stdout.on('data', (data) => {
-                audioUrl += data.toString();
+            formatCheck.stdout.on('data', (data) => {
+                formatOutput += data.toString();
             });
             
-            ytDlp.stderr.on('data', (data) => {
-                errorOutput += data.toString();
+            formatCheck.stderr.on('data', (data) => {
+                formatError += data.toString();
             });
             
-            ytDlp.on('close', async (code) => {
-                if (code === 0 && audioUrl.trim()) {
-                    const directUrl = audioUrl.trim().split('\n')[0]; // Get first URL if multiple
-                    console.log(`✅ yt-dlp found direct audio URL: ${directUrl.substring(0, 80)}...`);
-                    
+            formatCheck.on('close', async (code) => {
+                if (code === 0 && formatOutput.trim()) {
                     try {
-                        // Enhanced HTTP request with timeout and headers
-                        const response = await fetch(directUrl, {
-                            method: 'GET',
-                            headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                                'Accept': 'audio/*,*/*;q=0.8',
-                                'Accept-Encoding': 'identity',
-                                'Range': 'bytes=0-'  // Request range to help with streaming
-                            },
-                            timeout: 15000  // 15 second timeout
-                        });
+                        const formatInfo = JSON.parse(formatOutput.trim());
                         
-                        if (!response.ok) {
-                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                        }
-                        
-                        // Check content type
-                        const contentType = response.headers.get('content-type');
-                        if (contentType && !contentType.includes('audio') && !contentType.includes('video') && !contentType.includes('octet-stream')) {
-                            console.log(`⚠️ Unexpected content type: ${contentType}`);
-                        }
-                        
-                        // Add error handling to the stream
-                        const stream = response.body;
-                        if (!stream) {
-                            throw new Error('No response body received');
-                        }
-                        
-                        // Create a buffered passthrough stream for stability
-                        const { PassThrough } = require('stream');
-                        const bufferedStream = new PassThrough({
-                            highWaterMark: 1024 * 1024, // 1MB buffer
-                        });
-                        
-                        // Add error handling to both streams
-                        stream.on('error', (streamError) => {
-                            console.error('❌ HTTP stream error:', streamError.message);
-                            bufferedStream.destroy(streamError);
-                        });
-                        
-                        bufferedStream.on('error', (streamError) => {
-                            console.error('❌ Buffered stream error:', streamError.message);
-                        });
-                        
-                        // Pipe the response through the buffer
-                        stream.pipe(bufferedStream);
-                        
-                        // Wait for initial buffering before resolving
-                        let bufferedBytes = 0;
-                        const minBufferSize = 64 * 1024; // Wait for 64KB minimum
-                        
-                        bufferedStream.on('data', (chunk) => {
-                            bufferedBytes += chunk.length;
-                        });
-                        
-                        // Wait for sufficient buffering or timeout
-                        const bufferTimeout = setTimeout(() => {
-                            console.log(`⚠️ Stream buffer timeout, proceeding with ${bufferedBytes} bytes buffered`);
-                            resolve(bufferedStream);
-                        }, 3000);
-                        
-                        bufferedStream.on('readable', () => {
-                            if (bufferedBytes >= minBufferSize) {
-                                clearTimeout(bufferTimeout);
-                                console.log(`✅ yt-dlp stream buffered (${bufferedBytes} bytes) and ready`);
-                                resolve(bufferedStream);
+                        // Check if we have a direct URL (not HLS)
+                        if (formatInfo.url && !formatInfo.url.includes('m3u8') && !formatInfo.protocol?.includes('m3u8')) {
+                            console.log(`✅ yt-dlp found direct audio URL (${formatInfo.ext || 'unknown'}): ${formatInfo.url.substring(0, 80)}...`);
+                            
+                            try {
+                                // Enhanced HTTP request with timeout and headers
+                                const response = await fetch(formatInfo.url, {
+                                    method: 'GET',
+                                    headers: {
+                                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                        'Accept': 'audio/*,*/*;q=0.8',
+                                        'Accept-Encoding': 'identity',
+                                        'Range': 'bytes=0-'  // Request range to help with streaming
+                                    },
+                                    timeout: 15000  // 15 second timeout
+                                });
+                                
+                                if (!response.ok) {
+                                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                                }
+                                
+                                // Check content type
+                                const contentType = response.headers.get('content-type');
+                                if (contentType && contentType.includes('mpegurl')) {
+                                    throw new Error('Received HLS playlist instead of direct stream');
+                                }
+                                
+                                // Add error handling to the stream
+                                const stream = response.body;
+                                if (!stream) {
+                                    throw new Error('No response body received');
+                                }
+                                
+                                // Create a buffered passthrough stream for stability
+                                const { PassThrough } = require('stream');
+                                const bufferedStream = new PassThrough({
+                                    highWaterMark: 1024 * 1024, // 1MB buffer
+                                });
+                                
+                                // Add error handling to both streams
+                                stream.on('error', (streamError) => {
+                                    console.error('❌ HTTP stream error:', streamError.message);
+                                    bufferedStream.destroy(streamError);
+                                });
+                                
+                                bufferedStream.on('error', (streamError) => {
+                                    console.error('❌ Buffered stream error:', streamError.message);
+                                });
+                                
+                                // Pipe the response through the buffer
+                                stream.pipe(bufferedStream);
+                                
+                                // Wait for initial buffering before resolving
+                                let bufferedBytes = 0;
+                                const minBufferSize = 64 * 1024; // Wait for 64KB minimum
+                                
+                                bufferedStream.on('data', (chunk) => {
+                                    bufferedBytes += chunk.length;
+                                });
+                                
+                                // Wait for sufficient buffering or timeout
+                                const bufferTimeout = setTimeout(() => {
+                                    console.log(`⚠️ Stream buffer timeout, proceeding with ${bufferedBytes} bytes buffered`);
+                                    resolve(bufferedStream);
+                                }, 3000);
+                                
+                                bufferedStream.on('readable', () => {
+                                    if (bufferedBytes >= minBufferSize) {
+                                        clearTimeout(bufferTimeout);
+                                        console.log(`✅ yt-dlp stream buffered (${bufferedBytes} bytes) and ready`);
+                                        resolve(bufferedStream);
+                                    }
+                                });
+                            } catch (fetchError) {
+                                console.log(`❌ Failed to fetch yt-dlp stream: ${fetchError.message}`);
+                                reject(new Error(`Stream fetch failed: ${fetchError.message}`));
                             }
-                        });
-                    } catch (fetchError) {
-                        console.log(`❌ Failed to fetch yt-dlp stream: ${fetchError.message}`);
-                        reject(new Error(`Stream fetch failed: ${fetchError.message}`));
+                        } else {
+                            // Fallback: No direct URL found, try getting URL separately
+                            console.log('⚠️ No direct URL in format info, trying fallback method');
+                            this.getYtDlpUrlFallback(youtubeUrl, resolve, reject);
+                        }
+                    } catch (parseError) {
+                        console.log('⚠️ Failed to parse format info, trying fallback method');
+                        this.getYtDlpUrlFallback(youtubeUrl, resolve, reject);
                     }
                 } else {
-                    const errorMsg = errorOutput || `yt-dlp failed with code: ${code}`;
-                    console.log(`❌ yt-dlp error: ${errorMsg}`);
-                    reject(new Error(errorMsg));
+                    console.log('⚠️ Format check failed, trying fallback method');
+                    this.getYtDlpUrlFallback(youtubeUrl, resolve, reject);
                 }
             });
             
-            ytDlp.on('error', (error) => {
-                console.log(`❌ yt-dlp spawn error: ${error.message}`);
-                reject(new Error(`yt-dlp process error: ${error.message}`));
+            formatCheck.on('error', (error) => {
+                console.log(`❌ yt-dlp format check spawn error: ${error.message}`);
+                this.getYtDlpUrlFallback(youtubeUrl, resolve, reject);
             });
             
-            // Add timeout for yt-dlp process
+            // Add timeout for yt-dlp format check
             setTimeout(() => {
-                ytDlp.kill('SIGTERM');
-                reject(new Error('yt-dlp timeout after 30 seconds'));
-            }, 30000);
+                formatCheck.kill('SIGTERM');
+                console.log('⚠️ Format check timeout, trying fallback method');
+                this.getYtDlpUrlFallback(youtubeUrl, resolve, reject);
+            }, 20000);
         });
+    }
+    
+    // Fallback method for yt-dlp URL extraction
+    getYtDlpUrlFallback(youtubeUrl, resolve, reject) {
+        const ytDlpArgs = [
+            '--format', 'bestaudio/best[height<=480]',
+            '--audio-quality', '0',
+            '--no-playlist',
+            '--no-warnings', 
+            '--quiet',
+            '--get-url',
+            '--prefer-ffmpeg',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            '--add-header', 'Accept:*/*',
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept-Encoding:gzip, deflate, br',
+            youtubeUrl
+        ];
+        
+        console.log(`🔄 yt-dlp fallback: yt-dlp ${ytDlpArgs.join(' ')}`);
+        const ytDlp = spawn('yt-dlp', ytDlpArgs);
+        
+        let audioUrl = '';
+        let errorOutput = '';
+        
+        ytDlp.stdout.on('data', (data) => {
+            audioUrl += data.toString();
+        });
+        
+        ytDlp.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+        
+        ytDlp.on('close', async (code) => {
+            if (code === 0 && audioUrl.trim()) {
+                const directUrl = audioUrl.trim().split('\n')[0];
+                console.log(`✅ yt-dlp fallback found URL: ${directUrl.substring(0, 80)}...`);
+                
+                try {
+                    const response = await fetch(directUrl, {
+                        method: 'GET',
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Accept': 'audio/*,*/*;q=0.8',
+                            'Accept-Encoding': 'identity'
+                        },
+                        timeout: 15000
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    console.log(`✅ yt-dlp fallback stream created successfully`);
+                    resolve(response.body);
+                } catch (fetchError) {
+                    console.log(`❌ Failed to fetch fallback stream: ${fetchError.message}`);
+                    reject(new Error(`Fallback stream fetch failed: ${fetchError.message}`));
+                }
+            } else {
+                const errorMsg = errorOutput || `yt-dlp fallback failed with code: ${code}`;
+                console.log(`❌ yt-dlp fallback error: ${errorMsg}`);
+                reject(new Error(errorMsg));
+            }
+        });
+        
+        ytDlp.on('error', (error) => {
+            console.log(`❌ yt-dlp fallback spawn error: ${error.message}`);
+            reject(new Error(`yt-dlp fallback process error: ${error.message}`));
+        });
+        
+        setTimeout(() => {
+            ytDlp.kill('SIGTERM');
+            reject(new Error('yt-dlp fallback timeout after 30 seconds'));
+        }, 30000);
     }
     
     async getStreamWithPlayDl(track) {
