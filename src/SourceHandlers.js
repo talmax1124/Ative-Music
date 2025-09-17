@@ -1407,29 +1407,43 @@ class SourceHandlers {
             // Create a PassThrough stream for the audio data
             const audioStream = new PassThrough();
             
-            ytDlp.stdout.pipe(audioStream);
-            
             let hasData = false;
+            let dataReceived = 0;
+            
             ytDlp.stdout.on('data', (chunk) => {
+                dataReceived += chunk.length;
                 if (!hasData) {
                     hasData = true;
                     console.log('✅ Robust fallback streaming data received');
                     resolve(audioStream);
                 }
+                audioStream.write(chunk);
+            });
+            
+            ytDlp.stdout.on('end', () => {
+                console.log(`📡 Robust fallback stream ended after ${dataReceived} bytes`);
+                audioStream.end();
             });
             
             ytDlp.stderr.on('data', (data) => {
                 const error = data.toString();
-                if (!hasData && error.includes('ERROR')) {
-                    console.log(`❌ Robust fallback error: ${error}`);
-                    reject(new Error(`Robust fallback failed: ${error}`));
+                // Only log errors, don't reject on warnings
+                if (error.includes('ERROR') || error.includes('403')) {
+                    console.log(`❌ Robust fallback error: ${error.substring(0, 150)}...`);
+                    if (!hasData) {
+                        reject(new Error(`Robust fallback failed: ${error}`));
+                    }
+                } else if (error.includes('WARNING')) {
+                    console.log(`⚠️ Robust fallback warning: ${error.substring(0, 100)}...`);
                 }
             });
             
             ytDlp.on('close', (code) => {
-                if (!hasData) {
+                if (!hasData && code !== 0) {
                     console.log(`❌ Robust fallback closed without data, code: ${code}`);
                     reject(new Error(`Robust fallback failed with code: ${code}`));
+                } else if (code === 0 && hasData) {
+                    console.log(`✅ Robust fallback completed successfully`);
                 }
             });
             
@@ -1738,7 +1752,77 @@ class SourceHandlers {
     async createHLSStream(url) {
         console.log(`🔄 Creating HLS stream from: ${url.substring(0, 80)}...`);
         
-        // Multiple request attempts with different headers to avoid 403
+        // Check if this is an HLS manifest URL
+        if (url.includes('manifest') || url.includes('m3u8')) {
+            console.log('🔄 Detected HLS manifest - using yt-dlp direct streaming instead');
+            
+            // For HLS manifests, use yt-dlp to handle the streaming directly
+            return new Promise((resolve, reject) => {
+                const ytDlpArgs = [
+                    '--format', 'bestaudio',
+                    '--output', '-',
+                    '--quiet',
+                    '--no-warnings',
+                    '--user-agent', this.getRandomUserAgent(),
+                    '--referer', 'https://www.youtube.com/',
+                    url // Use the manifest URL directly
+                ];
+                
+                console.log(`🔄 HLS direct streaming: yt-dlp ${ytDlpArgs.slice(0, 4).join(' ')} [manifest-url]`);
+                const ytDlp = spawn('yt-dlp', ytDlpArgs);
+                
+                // Create PassThrough stream for the audio data
+                const audioStream = new PassThrough();
+                
+                let hasData = false;
+                let dataReceived = 0;
+                
+                ytDlp.stdout.on('data', (chunk) => {
+                    dataReceived += chunk.length;
+                    if (!hasData) {
+                        hasData = true;
+                        console.log('✅ HLS stream data flowing');
+                        resolve(audioStream);
+                    }
+                    audioStream.write(chunk);
+                });
+                
+                ytDlp.stdout.on('end', () => {
+                    console.log(`📡 HLS stream ended after ${dataReceived} bytes`);
+                    audioStream.end();
+                });
+                
+                ytDlp.stderr.on('data', (data) => {
+                    const error = data.toString();
+                    if (!hasData && (error.includes('ERROR') || error.includes('403'))) {
+                        console.log(`❌ HLS stream error: ${error.substring(0, 100)}...`);
+                        reject(new Error(`HLS streaming failed: ${error}`));
+                    }
+                });
+                
+                ytDlp.on('close', (code) => {
+                    if (!hasData && code !== 0) {
+                        console.log(`❌ HLS stream closed without data, code: ${code}`);
+                        reject(new Error(`HLS streaming failed with code: ${code}`));
+                    }
+                });
+                
+                ytDlp.on('error', (error) => {
+                    console.log(`❌ HLS stream spawn error: ${error.message}`);
+                    reject(new Error(`HLS process error: ${error.message}`));
+                });
+                
+                // Longer timeout for HLS streams
+                setTimeout(() => {
+                    if (!hasData) {
+                        ytDlp.kill();
+                        reject(new Error('HLS stream timeout after 30 seconds'));
+                    }
+                }, 30000);
+            });
+        }
+        
+        // For direct URLs, use the original fetch approach with anti-403 measures
         const requestConfigs = [
             {
                 headers: {
@@ -1757,23 +1841,12 @@ class SourceHandlers {
                     'Accept': 'audio/*,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.8'
                 }
-            },
-            {
-                headers: {
-                    'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-                    'Accept': '*/*'
-                }
             }
         ];
         
         for (let i = 0; i < requestConfigs.length; i++) {
             try {
-                console.log(`🔄 HLS request attempt ${i + 1}/${requestConfigs.length}`);
-                
-                // Add small delay between attempts
-                if (i > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
+                console.log(`🔄 Direct stream attempt ${i + 1}/${requestConfigs.length}`);
                 
                 const response = await fetch(url, {
                     ...requestConfigs[i],
@@ -1781,36 +1854,28 @@ class SourceHandlers {
                 });
                 
                 if (response.status === 403) {
-                    console.log(`❌ HLS attempt ${i + 1} got 403 - trying next config`);
+                    console.log(`❌ Direct stream attempt ${i + 1} got 403`);
                     continue;
                 }
                 
                 if (!response.ok) {
-                    throw new Error(`HLS fetch failed: ${response.status} ${response.statusText}`);
+                    throw new Error(`Direct stream fetch failed: ${response.status}`);
                 }
                 
-                console.log(`✅ HLS stream response received: ${response.status}`);
+                console.log(`✅ Direct stream response received: ${response.status}`);
                 
-                // Create a PassThrough stream for better control
                 const passThrough = new PassThrough();
-                
-                // Handle response body
                 response.body.pipe(passThrough);
                 
-                // Add error handling
                 response.body.on('error', (error) => {
-                    console.error('❌ HLS response body error:', error.message);
+                    console.error('❌ Direct stream body error:', error.message);
                     passThrough.destroy(error);
-                });
-                
-                passThrough.on('error', (error) => {
-                    console.error('❌ HLS PassThrough error:', error.message);
                 });
                 
                 return passThrough;
                 
             } catch (error) {
-                console.log(`❌ HLS attempt ${i + 1} failed: ${error.message}`);
+                console.log(`❌ Direct stream attempt ${i + 1} failed: ${error.message}`);
                 if (i === requestConfigs.length - 1) {
                     throw error;
                 }
