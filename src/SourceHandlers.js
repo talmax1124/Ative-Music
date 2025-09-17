@@ -30,6 +30,19 @@ class SourceHandlers {
         this.ytDlpAvailable = undefined;
         
         this.setupSpotify();
+        
+        // User agent rotation for anti-detection
+        this.userAgents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        ];
+    }
+    
+    getRandomUserAgent() {
+        return this.userAgents[Math.floor(Math.random() * this.userAgents.length)];
     }
 
     async setupSpotify() {
@@ -822,46 +835,46 @@ class SourceHandlers {
         // Check if yt-dlp is available first
         const hasYtDlp = await this.checkYtDlpAvailable();
         
-        // Define streaming methods with Spotify integration and HLS support
+        // Define streaming methods prioritizing anti-403 methods
         const streamingMethods = hasYtDlp ? [
-            // Spotify preview/enhanced search as first attempt for Spotify tracks
-            {
-                name: 'spotify-enhanced',
-                priority: 1,
-                method: () => this.getStreamWithSpotifyFallback(track),
-                cooldown: 1000,
-                maxFailures: 2
-            },
-            // ytdl-core with enhanced HTML parsing protection
-            {
-                name: 'ytdl-core-enhanced',
-                priority: 2,
-                method: () => this.getStreamWithYtdlCore(track),
-                cooldown: 1000,
-                maxFailures: 3
-            },
-            // HLS stream handler for when direct streams fail
+            // HLS stream handler as primary method (less likely to get 403)
             {
                 name: 'hls-stream',
-                priority: 3,
+                priority: 1,
                 method: () => this.getStreamWithHLS(track),
                 cooldown: 2000,
                 maxFailures: 3
             },
-            // yt-dlp as backup
+            // Robust fallback using direct yt-dlp streaming
+            {
+                name: 'robust-fallback',
+                priority: 2,
+                method: () => this.getStreamWithRobustFallback(track),
+                cooldown: 1500,
+                maxFailures: 3
+            },
+            // yt-dlp direct method
             {
                 name: 'yt-dlp-direct',
-                priority: 4,
+                priority: 3,
                 method: () => this.getStreamWithYtDlp(track),
                 cooldown: 1500,
                 maxFailures: 3
             },
-            // robust fallback as final method
+            // Spotify enhanced search (better for Spotify tracks)
             {
-                name: 'robust-fallback',
+                name: 'spotify-enhanced',
+                priority: 4,
+                method: () => this.getStreamWithSpotifyFallback(track),
+                cooldown: 1000,
+                maxFailures: 2
+            },
+            // ytdl-core as last resort (most likely to get 403)
+            {
+                name: 'ytdl-core-enhanced',
                 priority: 5,
-                method: () => this.getStreamWithRobustFallback(track),
-                cooldown: 2000,
+                method: () => this.getStreamWithYtdlCore(track),
+                cooldown: 3000,
                 maxFailures: 2
             }
         ] : [
@@ -1373,15 +1386,18 @@ class SourceHandlers {
             youtubeUrl = searchResults[0].url;
         }
         
-        // Direct yt-dlp streaming without intermediate steps
+        // Direct yt-dlp streaming with anti-403 options
         return new Promise((resolve, reject) => {
             const ytDlpArgs = [
                 '--format', 'bestaudio[ext=m4a]/bestaudio[acodec=aac]/bestaudio/best',
                 '--output', '-',
                 '--quiet',
                 '--no-warnings',
-                '--extract-flat',
                 '--no-playlist',
+                '--user-agent', this.getRandomUserAgent(),
+                '--referer', 'https://www.youtube.com/',
+                '--add-header', 'Accept:*/*',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
                 youtubeUrl
             ];
             
@@ -1543,30 +1559,54 @@ class SourceHandlers {
             youtubeUrl = searchResults[0].url;
         }
         
-        // Multiple configuration attempts to handle YouTube changes
+        // Multiple configuration attempts with aggressive anti-detection
         const configOptions = [
-            // Primary: Latest Chrome with Innertube
+            // Primary: Randomized modern Chrome with full headers
             {
                 filter: 'audioonly',
                 quality: 'lowestaudio',
                 requestOptions: {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                        'Accept': '*/*',
+                        'User-Agent': this.getRandomUserAgent(),
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                         'Accept-Language': 'en-US,en;q=0.9',
-                        'Sec-Fetch-Dest': 'empty',
-                        'Sec-Fetch-Mode': 'cors',
-                        'Sec-Fetch-Site': 'cross-site'
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1',
+                        'Cache-Control': 'max-age=0',
+                        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                        'sec-ch-ua-mobile': '?0',
+                        'sec-ch-ua-platform': '"Windows"'
                     }
                 }
             },
-            // Fallback: Mobile user agent
+            // Fallback: Different Chrome version
             {
                 filter: 'audioonly',
                 quality: 'lowestaudio',  
                 requestOptions: {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                        'Accept': '*/*',
+                        'Accept-Language': 'en-US,en;q=0.8',
+                        'Referer': 'https://www.youtube.com/',
+                        'Origin': 'https://www.youtube.com'
+                    }
+                }
+            },
+            // Mobile fallback
+            {
+                filter: 'audioonly',
+                quality: 'lowestaudio',  
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                     }
                 }
             },
@@ -1580,6 +1620,10 @@ class SourceHandlers {
         for (let i = 0; i < configOptions.length; i++) {
             try {
                 console.log(`🔄 ytdl-core attempt ${i + 1}/${configOptions.length} for: ${youtubeUrl}`);
+                
+                // Add random delay to avoid detection (500-2000ms)
+                const delay = 500 + Math.random() * 1500;
+                await new Promise(resolve => setTimeout(resolve, delay));
                 
                 const stream = ytdl(youtubeUrl, configOptions[i]);
                 
@@ -1637,6 +1681,10 @@ class SourceHandlers {
                 '--get-url',
                 '--no-playlist',
                 '--quiet',
+                '--user-agent', this.getRandomUserAgent(),
+                '--referer', 'https://www.youtube.com/',
+                '--add-header', 'Accept:*/*',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
                 youtubeUrl
             ];
             
@@ -1690,40 +1738,84 @@ class SourceHandlers {
     async createHLSStream(url) {
         console.log(`🔄 Creating HLS stream from: ${url.substring(0, 80)}...`);
         
-        // Use fetch to get the stream with proper headers
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Range': 'bytes=0-'
+        // Multiple request attempts with different headers to avoid 403
+        const requestConfigs = [
+            {
+                headers: {
+                    'User-Agent': this.getRandomUserAgent(),
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'identity',
+                    'Range': 'bytes=0-',
+                    'Referer': 'https://www.youtube.com/',
+                    'Origin': 'https://www.youtube.com'
+                }
             },
-            timeout: 10000
-        });
+            {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                    'Accept': 'audio/*,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.8'
+                }
+            },
+            {
+                headers: {
+                    'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+                    'Accept': '*/*'
+                }
+            }
+        ];
         
-        if (!response.ok) {
-            throw new Error(`HLS fetch failed: ${response.status} ${response.statusText}`);
+        for (let i = 0; i < requestConfigs.length; i++) {
+            try {
+                console.log(`🔄 HLS request attempt ${i + 1}/${requestConfigs.length}`);
+                
+                // Add small delay between attempts
+                if (i > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+                const response = await fetch(url, {
+                    ...requestConfigs[i],
+                    timeout: 15000
+                });
+                
+                if (response.status === 403) {
+                    console.log(`❌ HLS attempt ${i + 1} got 403 - trying next config`);
+                    continue;
+                }
+                
+                if (!response.ok) {
+                    throw new Error(`HLS fetch failed: ${response.status} ${response.statusText}`);
+                }
+                
+                console.log(`✅ HLS stream response received: ${response.status}`);
+                
+                // Create a PassThrough stream for better control
+                const passThrough = new PassThrough();
+                
+                // Handle response body
+                response.body.pipe(passThrough);
+                
+                // Add error handling
+                response.body.on('error', (error) => {
+                    console.error('❌ HLS response body error:', error.message);
+                    passThrough.destroy(error);
+                });
+                
+                passThrough.on('error', (error) => {
+                    console.error('❌ HLS PassThrough error:', error.message);
+                });
+                
+                return passThrough;
+                
+            } catch (error) {
+                console.log(`❌ HLS attempt ${i + 1} failed: ${error.message}`);
+                if (i === requestConfigs.length - 1) {
+                    throw error;
+                }
+            }
         }
-        
-        console.log(`✅ HLS stream response received: ${response.status}`);
-        
-        // Create a PassThrough stream for better control
-        const passThrough = new PassThrough();
-        
-        // Handle response body
-        response.body.pipe(passThrough);
-        
-        // Add error handling
-        response.body.on('error', (error) => {
-            console.error('❌ HLS response body error:', error.message);
-            passThrough.destroy(error);
-        });
-        
-        passThrough.on('error', (error) => {
-            console.error('❌ HLS PassThrough error:', error.message);
-        });
-        
-        return passThrough;
     }
 
     async getStreamWithSpotifyFallback(track) {
