@@ -46,6 +46,12 @@ class MusicManager {
             this.trackStartTime = Date.now(); // Track when playback actually starts
             console.log(`🎵 Now playing: ${this.currentTrack?.title || 'Unknown'}`);
             
+            // Reset error counters on successful playback
+            this.consecutiveErrors = 0;
+            if (this.trackErrors && this.currentTrack?.url) {
+                this.trackErrors.delete(this.currentTrack.url);
+            }
+            
             // Emit track start event for UI updates
             if (this.onTrackStart) {
                 this.onTrackStart(this.currentTrack);
@@ -897,7 +903,7 @@ class MusicManager {
     }
     
     async handleStreamError() {
-        console.log('❌ Handling stream error - trying next track or stopping');
+        console.log('❌ Handling stream error - trying to recover');
         
         // Prevent multiple simultaneous error handling
         if (this.isTransitioning) {
@@ -908,43 +914,68 @@ class MusicManager {
         this.isTransitioning = true;
         
         try {
-            // Increment error count
+            // Track errors per track
+            const trackId = this.currentTrack?.url || 'unknown';
+            this.trackErrors = this.trackErrors || new Map();
+            const trackErrorCount = (this.trackErrors.get(trackId) || 0) + 1;
+            this.trackErrors.set(trackId, trackErrorCount);
+            
+            // Global consecutive error count
             this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
             
-            // If too many errors, stop
-            if (this.consecutiveErrors > 3) {
-                console.log('🚨 Too many stream errors - stopping playback');
+            // If too many global errors, stop completely
+            if (this.consecutiveErrors > 5) {
+                console.log('🚨 Too many consecutive stream errors - stopping playback');
                 this.stop();
                 this.isTransitioning = false;
                 return;
             }
             
-            // Try next track if available
-            if (this.currentTrackIndex + 1 < this.queue.length) {
-                console.log('🔄 Stream error - trying next track in queue');
-                this.currentTrackIndex++;
+            // If this specific track has failed too many times, skip it
+            if (trackErrorCount >= 3) {
+                console.log(`🔄 Track "${this.currentTrack?.title}" failed ${trackErrorCount} times - skipping to next`);
+                
+                // Try next track if available
+                if (this.currentTrackIndex + 1 < this.queue.length) {
+                    console.log('🔄 Moving to next track in queue');
+                    this.currentTrackIndex++;
+                    
+                    setTimeout(async () => {
+                        if (!this.isPlaying && !this.userStoppedPlayback) {
+                            await this.play();
+                        }
+                        this.isTransitioning = false;
+                    }, 2000);
+                } else if (this.autoPlayEnabled && this.continuousPlayback) {
+                    // No more tracks in queue, try to find recommendation
+                    console.log('🤖 Queue empty after error - finding recommendation');
+                    const lastTrack = this.currentTrack || this.playHistory[this.playHistory.length - 1];
+                    
+                    setTimeout(async () => {
+                        if (!this.isPlaying && !this.userStoppedPlayback) {
+                            await this.findAndPlayRecommendation(lastTrack);
+                        }
+                        this.isTransitioning = false;
+                    }, 2000);
+                } else {
+                    console.log('⏹️ No more tracks to try - clearing position');
+                    this.clearCurrentPosition();
+                    this.isTransitioning = false;
+                }
+            } else {
+                // Retry the current track with fallback methods
+                console.log(`🔄 Retrying current track (attempt ${trackErrorCount + 1}/3)`);
                 
                 setTimeout(async () => {
                     if (!this.isPlaying && !this.userStoppedPlayback) {
+                        // Force sourceHandlers to use different methods by clearing cache
+                        if (this.sourceHandlers.clearStreamCache) {
+                            this.sourceHandlers.clearStreamCache(trackId);
+                        }
                         await this.play();
                     }
                     this.isTransitioning = false;
-                }, 2000);
-            } else if (this.autoPlayEnabled && this.continuousPlayback) {
-                // No more tracks in queue, try to find recommendation
-                console.log('🤖 Queue empty after error - finding recommendation');
-                const lastTrack = this.currentTrack || this.playHistory[this.playHistory.length - 1];
-                
-                setTimeout(async () => {
-                    if (!this.isPlaying && !this.userStoppedPlayback) {
-                        await this.findAndPlayRecommendation(lastTrack);
-                    }
-                    this.isTransitioning = false;
-                }, 2000);
-            } else {
-                console.log('⏹️ No more tracks to try - clearing position');
-                this.clearCurrentPosition();
-                this.isTransitioning = false;
+                }, 1000 * trackErrorCount); // Exponential backoff
             }
         } catch (error) {
             console.error('❌ Error in handleStreamError:', error);

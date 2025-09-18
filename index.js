@@ -843,7 +843,7 @@ class AtiveMusicBot {
                 if (activeChannels && activeChannels.size > 0) {
                     currentChannelId = activeChannels.values().next().value;
                 } else {
-                    return await interaction.reply({
+                    return await safeReply({
                         content: 'You must be in a voice channel to use music controls!',
                         ephemeral: true
                     });
@@ -893,21 +893,30 @@ class AtiveMusicBot {
             // Log user action
             console.log(`👤 @${username} (${userId}) clicked button: ${interaction.customId}`);
             
+            // Defer the interaction immediately to prevent timeouts
+            if (!interaction.deferred && !interaction.replied) {
+                try {
+                    await interaction.deferReply({ ephemeral: true });
+                } catch (deferError) {
+                    if (deferError.code !== 'InteractionAlreadyReplied') {
+                        console.error(`⚠️ Could not defer interaction: ${deferError.message}`);
+                    }
+                }
+            }
+            
             // Helper function to safely respond to interaction
             const safeReply = async (options, useUpdate = false) => {
                 try {
-                    if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply(options);
-                    } else if (interaction.deferred && !interaction.replied) {
+                    if (interaction.deferred && !interaction.replied) {
                         await interaction.editReply(options);
-                    } else if (useUpdate && !interaction.replied) {
-                        await interaction.update(options);
+                    } else if (!interaction.replied && !interaction.deferred) {
+                        await interaction.reply(options);
                     } else {
                         // Fallback: send as followUp if possible
                         await interaction.followUp({...options, ephemeral: true});
                     }
                 } catch (error) {
-                    if (error.code !== 'InteractionAlreadyReplied') {
+                    if (error.code !== 'InteractionAlreadyReplied' && error.code !== 10062) {
                         console.error(`⚠️ Could not respond to interaction: ${error.message}`);
                     }
                 }
@@ -929,7 +938,7 @@ class AtiveMusicBot {
                         await interaction.followUp({ embeds: [embed], components: controls, ephemeral: true });
                     }
                 } else {
-                    await interaction.followUp({ content: '❌ Nothing to pause!', ephemeral: true });
+                    await safeReply({ content: '❌ Nothing to pause!', ephemeral: true });
                 }
                 break;
                 
@@ -948,7 +957,7 @@ class AtiveMusicBot {
                         await interaction.followUp({ embeds: [embed], components: controls, ephemeral: true });
                     }
                 } else {
-                    await interaction.followUp({ content: '❌ Nothing to resume!', ephemeral: true });
+                    await safeReply({ content: '❌ Nothing to resume!', ephemeral: true });
                 }
                 break;
                 

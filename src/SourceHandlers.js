@@ -1679,8 +1679,11 @@ class SourceHandlers {
                     
                     // Try to find alternative videos for the same track
                     try {
-                        const alternativeTrack = await this.findAlternativeYouTubeVideo(track);
-                        if (alternativeTrack && alternativeTrack.url !== track.url) {
+                        const searchQuery = `${track.title} ${track.author} alternative`;
+                        const alternativeResults = await this.searchYouTube(searchQuery, 3);
+                        const alternativeTrack = alternativeResults.find(alt => alt.url !== track.url);
+                        
+                        if (alternativeTrack) {
                             console.log(`🔄 Attempting with alternative video: ${alternativeTrack.title}`);
                             return await this.getStreamWithYtdlCore(alternativeTrack);
                         }
@@ -2328,7 +2331,6 @@ class SourceHandlers {
                 '--quiet',
                 '--no-warnings',
                 '--no-playlist',
-                '--extract-flat', 'false',
                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 '--referer', 'https://www.youtube.com/',
                 '--add-header', 'Accept:*/*',
@@ -2502,6 +2504,30 @@ class SourceHandlers {
                 continue;
             }
         }
+    }
+
+    clearStreamCache(trackId) {
+        console.log(`🗑️ Clearing stream cache for track: ${trackId}`);
+        // This forces the next stream request to use different fallback methods
+        if (this.streamCache) {
+            this.streamCache.delete(trackId);
+        }
+        
+        // Reset any failure tracking for this track
+        if (this.failedMethods) {
+            delete this.failedMethods[trackId];
+        }
+    }
+
+    getRandomUserAgent() {
+        const userAgents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15'
+        ];
+        return userAgents[Math.floor(Math.random() * userAgents.length)];
     }
 }
 
