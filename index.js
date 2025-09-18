@@ -1715,7 +1715,10 @@ class AtiveMusicBot {
     }
 
     async handleLeaveCommand(interaction, musicManager) {
-        if (!musicManager.connection) {
+        // Check for existing voice connection in guild, even if musicManager doesn't have it
+        const existingConnection = getVoiceConnection(interaction.guildId);
+        
+        if (!musicManager.connection && !existingConnection) {
             return await interaction.reply({
                 embeds: [this.createErrorEmbed('Not connected to a voice channel!')],
                 ephemeral: true
@@ -1725,9 +1728,16 @@ class AtiveMusicBot {
         musicManager.stop();
         musicManager.clearQueue();
         
+        // Disconnect from musicManager connection if exists
         if (musicManager.connection) {
             musicManager.connection.destroy();
             musicManager.connection = null;
+        }
+        
+        // Also disconnect any existing guild connection (handles crash recovery)
+        if (existingConnection) {
+            console.log('🔧 Force disconnecting existing voice connection after crash recovery');
+            existingConnection.destroy();
         }
         
         // Clean up session management data for all channels in this guild

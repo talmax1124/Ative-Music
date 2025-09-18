@@ -105,6 +105,7 @@ class MusicManager {
         this.connection = connection;
         this.connection.subscribe(this.player);
         this.lastChannel = connection.joinConfig.channelId;
+        this.connectionHealthy = true; // Reset connection health when new connection is set
         
         // Enhanced connection state handling with EPIPE protection
         this.connection.on('stateChange', (oldState, newState) => {
@@ -705,7 +706,12 @@ class MusicManager {
             );
             
             for (const recommendation of recommendations) {
-                await this.addToQueue(recommendation);
+                // Check for duplicates before adding to queue
+                if (!this.isDuplicate(recommendation)) {
+                    await this.addToQueue(recommendation);
+                } else {
+                    console.log(`🚫 Skipping duplicate recommendation: ${recommendation.title} by ${recommendation.author}`);
+                }
             }
             
             console.log(`✅ Added ${recommendations.length} tracks to queue`);

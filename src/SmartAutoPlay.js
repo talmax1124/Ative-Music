@@ -503,13 +503,14 @@ class SmartAutoPlay {
         
         const { genre, mood, artist } = this.currentTheme;
         
-        // More specific search queries for better genre matching
+        // More specific search queries for better genre matching - focus on actual songs
         const searchQueries = [
-            `${artist} similar artists`,  // Same artist style first
-            `${genre} music 2024`,       // Recent tracks in same genre
-            `best ${genre} songs`,       // Popular tracks in genre
-            `${genre} playlist`,         // Genre playlists
-            `${genre} ${mood}`          // Genre + mood combination
+            `${artist} songs`,           // Same artist's other songs
+            `${artist} music`,           // Same artist's music
+            `${genre} songs`,            // Songs in same genre
+            `${genre} music`,            // Music in same genre
+            `popular ${genre} artists`,  // Popular artists in genre
+            `${genre} artists songs`     // Songs by genre artists
         ];
         
         for (const query of searchQueries) {
@@ -636,9 +637,9 @@ class SmartAutoPlay {
         
         const genre = preferredGenres[Math.floor(Math.random() * Math.min(3, preferredGenres.length))];
         const queries = [
-            `best ${genre} songs 2024`,
-            `${genre} hits playlist`,
-            `popular ${genre} music`
+            `${genre} songs`,
+            `${genre} music`,
+            `popular ${genre} artists songs`
         ];
 
         for (const query of queries) {
@@ -753,6 +754,12 @@ class SmartAutoPlay {
     }
 
     validateRecommendation(track, playHistory, personalWeights, recentArtists = []) {
+        // Filter out non-music content
+        if (!this.isMusicContent(track)) {
+            console.log(`🚫 Filtered out non-music content: ${track.title}`);
+            return false;
+        }
+
         // Check if recently played
         if (this.isRecentlyPlayed(track, playHistory)) {
             console.log(`🚫 Avoiding recently played: ${track.title}`);
@@ -779,6 +786,80 @@ class SmartAutoPlay {
         }
 
         return true;
+    }
+
+    isMusicContent(track) {
+        if (!track || !track.title) return false;
+        
+        const title = track.title.toLowerCase();
+        const author = track.author?.toLowerCase() || '';
+        
+        // Filter out non-music content patterns
+        const nonMusicPatterns = [
+            'overrated or underrated',
+            'celebrities last words',
+            'the art i make vs',
+            'ai vs artists',
+            'does youtube know',
+            'is taxi music worth',
+            'the style of jack kirby',
+            'strip panel naked',
+            'similar artists',
+            'opportunity or threat',
+            'fyp', 'fypp', 'viralvideo', 'viralshorts',
+            'trend', 'tiktok songs with lyrics',
+            'playlist hits',
+            'reaction', 'reacts to',
+            'interview', 'talking about',
+            'behind the scenes', 'making of',
+            'tutorial', 'how to',
+            'review', 'breakdown',
+            'explained', 'analysis',
+            // Generic playlists that aren't specific songs
+            'top hits 2024 playlist',
+            'best songs 2024 updated weekly',
+            'trending music 2024',
+            'playlist',
+            'mix',
+            'compilation',
+            'collection',
+            '~ trending',
+            'updated weekly',
+            'weekly hits'
+        ];
+        
+        // Check if title contains non-music patterns
+        for (const pattern of nonMusicPatterns) {
+            if (title.includes(pattern)) {
+                return false;
+            }
+        }
+        
+        // Ensure it has proper duration (music tracks should be 30s-20min)
+        if (track.duration) {
+            const duration = this.parseDuration(track.duration);
+            if (duration < 30000 || duration > 1200000) { // 30s to 20min
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    parseDuration(duration) {
+        if (typeof duration === 'number') return duration;
+        if (!duration) return 0;
+
+        const parts = duration.split(':').reverse();
+        let seconds = 0;
+        let multiplier = 1;
+
+        for (const part of parts) {
+            seconds += parseInt(part) * multiplier;
+            multiplier *= 60;
+        }
+
+        return seconds * 1000;
     }
 
     getTimeSlot(hour) {
