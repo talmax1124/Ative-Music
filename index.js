@@ -43,6 +43,7 @@ const VideoHandler = require('./src/VideoHandler.js');
 const LocalVideoServer = require('./src/LocalVideoServer.js');
 const ErrorHandler = require('./src/ErrorHandler.js');
 const PlaylistManager = require('./src/PlaylistManager.js');
+const LyricsHandler = require('./src/LyricsHandler.js');
 
 class AtiveMusicBot {
     constructor() {
@@ -60,6 +61,7 @@ class AtiveMusicBot {
         this.localVideoServer = new LocalVideoServer(3000);
         this.errorHandler = new ErrorHandler();
         this.playlistManager = new PlaylistManager();
+        this.lyricsHandler = new LyricsHandler();
         this.searchCache = new Map();
         this.musicPanels = new Map(); // Track music control panels by channelId
         this.guildChannels = new Map(); // Track active channels per guild (guildId -> Set<channelId>)
@@ -348,6 +350,9 @@ class AtiveMusicBot {
                 break;
             case 'clear':
                 await this.handleClearCommand(interaction, musicManager, voiceChannelId);
+                break;
+            case 'lyrics':
+                await this.handleLyricsCommand(interaction, musicManager);
                 break;
         }
     }
@@ -1126,7 +1131,12 @@ class AtiveMusicBot {
                 break;
                 
             default:
-                await interaction.reply({ content: 'Unknown button action!', ephemeral: true });
+                // Handle lyrics buttons
+                if (interaction.customId.startsWith('lyrics_play_')) {
+                    await this.handleLyricsPlayButton(interaction, musicManager);
+                } else {
+                    await interaction.reply({ content: 'Unknown button action!', ephemeral: true });
+                }
                 break;
         }
         
@@ -1159,6 +1169,106 @@ class AtiveMusicBot {
             } catch (replyError) {
                 console.error('❌ Failed to send error reply:', replyError);
             }
+        }
+    }
+
+    async handleLyricsPlayButton(interaction, musicManager) {
+        try {
+            await interaction.deferReply({ ephemeral: true });
+            
+            // Parse the button ID to extract song and artist information
+            const customIdParts = interaction.customId.split('_');
+            
+            if (customIdParts.length < 3) {
+                throw new Error('Invalid button format');
+            }
+            
+            let songTitle = '';
+            let artistName = '';
+            
+            if (customIdParts[0] === 'lyrics' && customIdParts[1] === 'play') {
+                if (customIdParts[2] === 'song') {
+                    // Format: lyrics_play_song_{title}_{artist}
+                    if (customIdParts.length >= 5) {
+                        songTitle = customIdParts[3];
+                        artistName = customIdParts[4];
+                    }
+                } else {
+                    // Format: lyrics_play_{index}_{title}_{artist}
+                    if (customIdParts.length >= 5) {
+                        songTitle = customIdParts[3];
+                        artistName = customIdParts[4];
+                    }
+                }
+            }
+            
+            if (!songTitle) {
+                throw new Error('Could not extract song information from button');
+            }
+            
+            // Create a search query for the song
+            const searchQuery = artistName ? `${songTitle} ${artistName}` : songTitle;
+            console.log(`🎵 Playing song from lyrics: "${searchQuery}"`);
+            
+            // Check if user is in a voice channel
+            const member = interaction.member;
+            const voiceChannel = member.voice.channel;
+            
+            if (!voiceChannel) {
+                return await interaction.editReply({
+                    content: 'You need to be in a voice channel to play music!'
+                });
+            }
+            
+            // Connect to voice channel if needed
+            const connection = await this.connectToVoiceChannel(voiceChannel, interaction.guildId);
+            musicManager.setConnection(connection);
+            
+            // Search for and play the song
+            const searchResults = await this.sourceHandlers.search(searchQuery, 3);
+            
+            if (searchResults.length === 0) {
+                return await interaction.editReply({
+                    content: `Could not find "${searchQuery}" to play. Try searching manually with \`/play ${searchQuery}\``
+                });
+            }
+            
+            // Use the best match
+            const track = searchResults[0];
+            
+            // Add to queue
+            const addResult = musicManager.addTrackToQueue(track, {
+                requestedBy: interaction.user.username,
+                requestedById: interaction.user.id,
+                addedAt: Date.now()
+            });
+            
+            if (addResult.success) {
+                // Start playing if not already playing
+                if (!musicManager.isPlaying) {
+                    await musicManager.play();
+                }
+                
+                const positionText = addResult.position === 1 ? 'Now playing' : `Added to queue (position ${addResult.position})`;
+                
+                await interaction.editReply({
+                    content: `🎵 **${positionText}:** ${track.title} by ${track.author}\nRequested from lyrics search`
+                });
+                
+                // Update queue state
+                await this.updateQueueState(interaction.guildId, voiceChannel.id, musicManager);
+                
+            } else {
+                await interaction.editReply({
+                    content: `Failed to add song to queue: ${addResult.reason}`
+                });
+            }
+            
+        } catch (error) {
+            console.error('❌ Lyrics play button error:', error);
+            await interaction.editReply({
+                content: `Error playing song: ${error.message}`
+            });
         }
     }
 
@@ -1722,6 +1832,7 @@ class AtiveMusicBot {
                     name: '🎵 **Core Music Commands**',
                     value: '`/play <song/url>` - Play from YouTube, Spotify, SoundCloud\n' +
                            '`/search <query>` - Smart search across all platforms\n' +
+                           '`/lyrics <song>` - Get lyrics or search by lyrics\n' +
                            '`/queue` - Beautiful queue display with controls\n' +
                            '`/nowplaying` - Detailed current track info\n' +
                            '`/skip` • `/pause` • `/resume` • `/stop`',
@@ -2173,6 +2284,126 @@ class AtiveMusicBot {
         await this.updateQueueState(interaction.guildId, channelId, musicManager);
     }
 
+    async handleLyricsCommand(interaction, musicManager) {
+        const query = interaction.options.getString('query');
+        const searchType = interaction.options.getString('type') || 'song';
+
+        await interaction.deferReply();
+
+        try {
+            if (searchType === 'lyrics') {
+                // Search songs by lyrics fragment
+                console.log(`🔍 Searching songs by lyrics: "${query}"`);
+                const songs = await this.lyricsHandler.searchByLyrics(query, 5);
+
+                if (songs.length === 0) {
+                    return await interaction.editReply({
+                        embeds: [this.createErrorEmbed('No songs found matching those lyrics!')]
+                    });
+                }
+
+                // Create embed with search results
+                const embed = new EmbedBuilder()
+                    .setTitle('🎵 Songs Found by Lyrics')
+                    .setDescription(`Found **${songs.length}** songs matching: "${query}"`)
+                    .setColor(config.colors.music);
+
+                songs.forEach((song, index) => {
+                    embed.addFields({
+                        name: `${index + 1}. ${song.title}`,
+                        value: `**Artist:** ${song.artist}\n**Play:** \`/play ${song.title} ${song.artist}\``,
+                        inline: false
+                    });
+                });
+
+                // Create action row with buttons to play these songs
+                const buttons = [];
+                songs.slice(0, 3).forEach((song, index) => {
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`lyrics_play_${index}_${song.title.replace(/[^a-zA-Z0-9]/g, '').substring(0, 20)}_${song.artist.replace(/[^a-zA-Z0-9]/g, '').substring(0, 20)}`)
+                            .setLabel(`Play Song ${index + 1}`)
+                            .setStyle(ButtonStyle.Primary)
+                            .setEmoji('🎵')
+                    );
+                });
+
+                const actionRow = new ActionRowBuilder().addComponents(...buttons);
+
+                await interaction.editReply({
+                    embeds: [embed],
+                    components: buttons.length > 0 ? [actionRow] : []
+                });
+
+            } else {
+                // Get lyrics for a specific song
+                console.log(`🎵 Getting lyrics for: "${query}"`);
+                
+                // Try to get lyrics for current playing song if no query and music is playing
+                let songTitle = query;
+                let artistName = '';
+                
+                if (!query && musicManager && musicManager.currentTrack) {
+                    songTitle = musicManager.currentTrack.title;
+                    artistName = musicManager.currentTrack.author;
+                    console.log(`🎵 Using currently playing track: "${songTitle}" by "${artistName}"`);
+                } else {
+                    // Parse query for title and artist
+                    const parts = query.split(' by ');
+                    if (parts.length === 2) {
+                        songTitle = parts[0].trim();
+                        artistName = parts[1].trim();
+                    } else {
+                        // Try to split by common patterns
+                        const dashSplit = query.split(' - ');
+                        if (dashSplit.length === 2) {
+                            artistName = dashSplit[0].trim();
+                            songTitle = dashSplit[1].trim();
+                        }
+                    }
+                }
+
+                const lyricsResult = await this.lyricsHandler.getLyricsForSong(songTitle, artistName);
+
+                if (!lyricsResult) {
+                    return await interaction.editReply({
+                        embeds: [this.createErrorEmbed(`Could not find lyrics for "${songTitle}"${artistName ? ` by ${artistName}` : ''}. Try being more specific or use \`/lyrics type:lyrics\` to search by lyrics fragment.`)]
+                    });
+                }
+
+                // Format lyrics for Discord (max 4000 characters)
+                const formattedLyrics = this.lyricsHandler.formatLyricsForDiscord(lyricsResult.lyrics);
+                
+                const embed = new EmbedBuilder()
+                    .setTitle(`🎤 ${lyricsResult.title}`)
+                    .setDescription(`**Artist:** ${lyricsResult.artist}\n\n${formattedLyrics}`)
+                    .setColor(config.colors.music)
+                    .setThumbnail(lyricsResult.thumbnail)
+                    .setFooter({ text: `Source: ${lyricsResult.source} • ${lyricsResult.url}` });
+
+                // Add play button if user wants to play this song
+                const playButton = new ButtonBuilder()
+                    .setCustomId(`lyrics_play_song_${lyricsResult.title.replace(/[^a-zA-Z0-9]/g, '').substring(0, 30)}_${lyricsResult.artist.replace(/[^a-zA-Z0-9]/g, '').substring(0, 30)}`)
+                    .setLabel('Play This Song')
+                    .setStyle(ButtonStyle.Success)
+                    .setEmoji('🎵');
+
+                const actionRow = new ActionRowBuilder().addComponents(playButton);
+
+                await interaction.editReply({
+                    embeds: [embed],
+                    components: [actionRow]
+                });
+            }
+
+        } catch (error) {
+            console.error('❌ Lyrics command error:', error);
+            await interaction.editReply({
+                embeds: [this.createErrorEmbed(`Error getting lyrics: ${error.message}`)]
+            });
+        }
+    }
+
     async registerCommands() {
         const commands = [
             new SlashCommandBuilder()
@@ -2349,6 +2580,24 @@ class AtiveMusicBot {
                         .setDescription('Number of recommendations to add (for fill action)')
                         .setMinValue(1)
                         .setMaxValue(50)
+                ),
+            new SlashCommandBuilder()
+                .setName('lyrics')
+                .setDescription('Get lyrics for a song or search songs by lyrics')
+                .addStringOption(option =>
+                    option.setName('query')
+                        .setDescription('Song name/artist or lyrics fragment to search')
+                        .setRequired(true)
+                        .setAutocomplete(true)
+                )
+                .addStringOption(option =>
+                    option.setName('type')
+                        .setDescription('Search type')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'Get lyrics for song', value: 'song' },
+                            { name: 'Search by lyrics', value: 'lyrics' }
+                        )
                 )
         ].map(command => command.toJSON());
 

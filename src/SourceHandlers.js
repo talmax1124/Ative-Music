@@ -837,10 +837,18 @@ class SourceHandlers {
         
         // Define streaming methods prioritizing anti-403 methods
         const streamingMethods = hasYtDlp ? [
-            // HLS stream handler as primary method (less likely to get 403)
+            // Anti-403 yt-dlp method with proxy-like behavior
+            {
+                name: 'yt-dlp-anti-403',
+                priority: 1,
+                method: () => this.getStreamWithAnti403(track),
+                cooldown: 1000,
+                maxFailures: 3
+            },
+            // HLS stream handler as backup method
             {
                 name: 'hls-stream',
-                priority: 1,
+                priority: 2,
                 method: () => this.getStreamWithHLS(track),
                 cooldown: 2000,
                 maxFailures: 3
@@ -848,31 +856,31 @@ class SourceHandlers {
             // Robust fallback using direct yt-dlp streaming
             {
                 name: 'robust-fallback',
-                priority: 2,
+                priority: 3,
                 method: () => this.getStreamWithRobustFallback(track),
                 cooldown: 1500,
                 maxFailures: 3
             },
-            // yt-dlp direct method
+            // Multiple format attempt
             {
-                name: 'yt-dlp-direct',
-                priority: 3,
-                method: () => this.getStreamWithYtDlp(track),
-                cooldown: 1500,
-                maxFailures: 3
+                name: 'multi-format',
+                priority: 4,
+                method: () => this.getStreamWithMultiFormat(track),
+                cooldown: 1000,
+                maxFailures: 2
             },
             // Spotify enhanced search (better for Spotify tracks)
             {
                 name: 'spotify-enhanced',
-                priority: 4,
+                priority: 5,
                 method: () => this.getStreamWithSpotifyFallback(track),
                 cooldown: 1000,
                 maxFailures: 2
             },
-            // ytdl-core as last resort (most likely to get 403)
+            // ytdl-core with enhanced configuration
             {
                 name: 'ytdl-core-enhanced',
-                priority: 5,
+                priority: 6,
                 method: () => this.getStreamWithYtdlCore(track),
                 cooldown: 3000,
                 maxFailures: 2
@@ -1664,13 +1672,31 @@ class SourceHandlers {
                 
             } catch (error) {
                 console.log(`❌ ytdl-core attempt ${i + 1} failed: ${error.message}`);
+                
+                // Special handling for 403 errors
+                if (error.message.includes('403') || error.message.includes('Forbidden') || error.message.includes('Status code: 403')) {
+                    console.log('🔄 Got 403 error, trying alternative video sources');
+                    
+                    // Try to find alternative videos for the same track
+                    try {
+                        const alternativeTrack = await this.findAlternativeYouTubeVideo(track);
+                        if (alternativeTrack && alternativeTrack.url !== track.url) {
+                            console.log(`🔄 Attempting with alternative video: ${alternativeTrack.title}`);
+                            return await this.getStreamWithYtdlCore(alternativeTrack);
+                        }
+                    } catch (altError) {
+                        console.log(`⚠️ Alternative video search failed: ${altError.message}`);
+                    }
+                }
+                
                 if (i === configOptions.length - 1) {
                     // All attempts failed, try HLS fallback
                     console.log('🔄 All ytdl-core attempts failed, trying HLS fallback');
                     return await this.getStreamWithHLS(track);
                 }
-                // Wait before next attempt
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                // Wait before next attempt with exponential backoff
+                const waitTime = 1000 * (i + 1);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
             }
         }
     }
@@ -2278,6 +2304,203 @@ class SourceHandlers {
         } catch (error) {
             this.ytDlpAvailable = false;
             return false;
+        }
+    }
+
+    async getStreamWithAnti403(track) {
+        console.log(`⚡ Trying anti-403 method for: ${track.title}`);
+        
+        let youtubeUrl = track.url;
+        if (track.source === 'spotify') {
+            const searchQuery = `${track.title} ${track.author} audio`;
+            const searchResults = await this.searchYouTube(searchQuery, 1);
+            if (searchResults.length === 0) {
+                throw new Error('No YouTube equivalent found');
+            }
+            youtubeUrl = searchResults[0].url;
+        }
+        
+        // Use yt-dlp with aggressive anti-detection measures
+        return new Promise((resolve, reject) => {
+            const ytDlpArgs = [
+                '--format', 'bestaudio[ext=m4a]/bestaudio[acodec!=opus]/bestaudio',
+                '--output', '-',
+                '--quiet',
+                '--no-warnings',
+                '--no-playlist',
+                '--extract-flat', 'false',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                '--referer', 'https://www.youtube.com/',
+                '--add-header', 'Accept:*/*',
+                '--add-header', 'Accept-Language:en-US,en;q=0.9',
+                '--add-header', 'Accept-Encoding:gzip, deflate, br',
+                '--add-header', 'Connection:keep-alive',
+                '--add-header', 'Upgrade-Insecure-Requests:1',
+                '--add-header', 'Sec-Fetch-Dest:document',
+                '--add-header', 'Sec-Fetch-Mode:navigate',
+                '--add-header', 'Sec-Fetch-Site:none',
+                '--add-header', 'Cache-Control:max-age=0',
+                '--socket-timeout', '30',
+                '--retries', '3',
+                youtubeUrl
+            ];
+            
+            console.log(`🔄 Anti-403: Starting yt-dlp with enhanced headers`);
+            const ytDlp = spawn('yt-dlp', ytDlpArgs);
+            
+            // Create a PassThrough stream for the audio data
+            const audioStream = new PassThrough({
+                highWaterMark: 1024 * 1024 // 1MB buffer
+            });
+            
+            let hasData = false;
+            let dataReceived = 0;
+            let errorOutput = '';
+            
+            ytDlp.stdout.on('data', (chunk) => {
+                dataReceived += chunk.length;
+                if (!hasData) {
+                    hasData = true;
+                    console.log('✅ Anti-403 streaming data received');
+                    resolve(audioStream);
+                }
+                audioStream.write(chunk);
+            });
+            
+            ytDlp.stdout.on('end', () => {
+                console.log(`📡 Anti-403 stream ended after ${dataReceived} bytes`);
+                audioStream.end();
+            });
+            
+            ytDlp.stderr.on('data', (data) => {
+                errorOutput += data.toString();
+                const error = data.toString();
+                if (error.includes('ERROR') || error.includes('403') || error.includes('Forbidden')) {
+                    console.log(`❌ Anti-403 error: ${error.substring(0, 150)}...`);
+                    if (!hasData) {
+                        reject(new Error(`Anti-403 failed: ${error}`));
+                    }
+                }
+            });
+            
+            ytDlp.on('close', (code) => {
+                if (!hasData && code !== 0) {
+                    console.log(`❌ Anti-403 closed without data, code: ${code}`);
+                    reject(new Error(`Anti-403 failed with code: ${code}, error: ${errorOutput}`));
+                } else if (code === 0 && hasData) {
+                    console.log(`✅ Anti-403 completed successfully`);
+                }
+            });
+            
+            ytDlp.on('error', (error) => {
+                console.log(`❌ Anti-403 spawn error: ${error.message}`);
+                reject(new Error(`Anti-403 process error: ${error.message}`));
+            });
+            
+            // Add timeout
+            setTimeout(() => {
+                if (!hasData) {
+                    ytDlp.kill('SIGKILL');
+                    reject(new Error('Anti-403 timeout after 25 seconds'));
+                }
+            }, 25000);
+        });
+    }
+
+    async getStreamWithMultiFormat(track) {
+        console.log(`⚡ Trying multi-format method for: ${track.title}`);
+        
+        let youtubeUrl = track.url;
+        if (track.source === 'spotify') {
+            const searchQuery = `${track.title} ${track.author} audio`;
+            const searchResults = await this.searchYouTube(searchQuery, 1);
+            if (searchResults.length === 0) {
+                throw new Error('No YouTube equivalent found');
+            }
+            youtubeUrl = searchResults[0].url;
+        }
+        
+        // Try multiple format priorities to avoid 403 errors
+        const formatStrategies = [
+            'bestaudio[protocol!=m3u8][protocol!=hls]/best[protocol!=m3u8][protocol!=hls]',
+            'bestaudio[ext=m4a][protocol!=m3u8]/bestaudio[ext=webm][protocol!=m3u8]/bestaudio[protocol!=m3u8]',
+            'worst[protocol!=m3u8][protocol!=hls]/worstaudio[protocol!=m3u8][protocol!=hls]',
+            'bestaudio/best'
+        ];
+        
+        for (const [index, formatString] of formatStrategies.entries()) {
+            try {
+                console.log(`🔄 Multi-format attempt ${index + 1}/${formatStrategies.length}: ${formatString}`);
+                
+                const stream = await new Promise((resolve, reject) => {
+                    const ytDlpArgs = [
+                        '--format', formatString,
+                        '--output', '-',
+                        '--quiet',
+                        '--no-warnings',
+                        '--no-playlist',
+                        '--user-agent', this.getRandomUserAgent(),
+                        '--referer', 'https://www.youtube.com/',
+                        '--socket-timeout', '20',
+                        '--retries', '2',
+                        youtubeUrl
+                    ];
+                    
+                    const ytDlp = spawn('yt-dlp', ytDlpArgs);
+                    const audioStream = new PassThrough();
+                    
+                    let hasData = false;
+                    let errorOutput = '';
+                    
+                    ytDlp.stdout.on('data', (chunk) => {
+                        if (!hasData) {
+                            hasData = true;
+                            console.log(`✅ Multi-format ${index + 1} streaming`);
+                            resolve(audioStream);
+                        }
+                        audioStream.write(chunk);
+                    });
+                    
+                    ytDlp.stdout.on('end', () => {
+                        audioStream.end();
+                    });
+                    
+                    ytDlp.stderr.on('data', (data) => {
+                        errorOutput += data.toString();
+                        if (!hasData && data.toString().includes('ERROR')) {
+                            reject(new Error(`Multi-format ${index + 1} error: ${data.toString()}`));
+                        }
+                    });
+                    
+                    ytDlp.on('close', (code) => {
+                        if (!hasData && code !== 0) {
+                            reject(new Error(`Multi-format ${index + 1} failed: ${errorOutput}`));
+                        }
+                    });
+                    
+                    ytDlp.on('error', (error) => {
+                        reject(new Error(`Multi-format ${index + 1} spawn error: ${error.message}`));
+                    });
+                    
+                    setTimeout(() => {
+                        if (!hasData) {
+                            ytDlp.kill();
+                            reject(new Error(`Multi-format ${index + 1} timeout`));
+                        }
+                    }, 15000);
+                });
+                
+                return stream;
+                
+            } catch (error) {
+                console.log(`❌ Multi-format attempt ${index + 1} failed: ${error.message}`);
+                if (index === formatStrategies.length - 1) {
+                    throw error;
+                }
+                // Wait before next attempt
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                continue;
+            }
         }
     }
 }
