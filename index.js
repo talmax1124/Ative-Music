@@ -1076,10 +1076,22 @@ class AtiveMusicBot {
             case 'music_queue':
                 const queueEmbed = this.createQueueEmbed(musicManager, 0);
                 try {
-                    await interaction.reply({ embeds: [queueEmbed], ephemeral: true });
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.reply({ embeds: [queueEmbed], ephemeral: true });
+                    } else {
+                        await interaction.followUp({ embeds: [queueEmbed], ephemeral: true });
+                    }
                 } catch (error) {
                     console.error('❌ Error showing queue:', error);
-                    await interaction.reply({ content: '❌ Failed to display queue', ephemeral: true });
+                    try {
+                        if (!interaction.replied && !interaction.deferred) {
+                            await interaction.reply({ content: '❌ Failed to display queue', ephemeral: true });
+                        } else {
+                            await interaction.followUp({ content: '❌ Failed to display queue', ephemeral: true });
+                        }
+                    } catch (replyError) {
+                        console.error('❌ Failed to send queue error response:', replyError);
+                    }
                 }
                 break;
                 
@@ -1735,9 +1747,13 @@ class AtiveMusicBot {
         }
         
         // Also disconnect any existing guild connection (handles crash recovery)
-        if (existingConnection) {
+        if (existingConnection && existingConnection.state.status !== 'destroyed') {
             console.log('🔧 Force disconnecting existing voice connection after crash recovery');
-            existingConnection.destroy();
+            try {
+                existingConnection.destroy();
+            } catch (error) {
+                console.log('⚠️ Connection already destroyed:', error.message);
+            }
         }
         
         // Clean up session management data for all channels in this guild
@@ -2986,6 +3002,12 @@ class AtiveMusicBot {
     async handleAutocomplete(interaction) {
         const { commandName, options } = interaction;
         
+        // Check if interaction is still valid
+        if (interaction.replied || interaction.deferred) {
+            console.log('⚠️ Autocomplete interaction already acknowledged, skipping...');
+            return;
+        }
+        
         if (commandName === 'play' || commandName === 'search') {
             try {
                 const focusedValue = options.getFocused();
@@ -3000,28 +3022,38 @@ class AtiveMusicBot {
                         'Billie Eilish - bad guy'
                     ];
                     
-                    await interaction.respond(
-                        suggestions.map(title => ({ 
-                            name: title, 
-                            value: title 
-                        })).slice(0, 25)
-                    );
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.respond(
+                            suggestions.map(title => ({ 
+                                name: title, 
+                                value: title 
+                            })).slice(0, 25)
+                        );
+                    }
                     return;
                 }
                 
                 // Get search suggestions based on input
                 const suggestions = await this.getSearchSuggestions(focusedValue);
                 
-                await interaction.respond(
-                    suggestions.map(track => ({
-                        name: `${track.title} - ${track.author}`.substring(0, 100),
-                        value: (track.searchQuery || `${track.title} ${track.author}`).substring(0, 100)
-                    })).slice(0, 25)
-                );
+                if (!interaction.replied && !interaction.deferred) {
+                    await interaction.respond(
+                        suggestions.map(track => ({
+                            name: `${track.title} - ${track.author}`.substring(0, 100),
+                            value: (track.searchQuery || `${track.title} ${track.author}`).substring(0, 100)
+                        })).slice(0, 25)
+                    );
+                }
                 
             } catch (error) {
                 console.error('Autocomplete error:', error);
-                await interaction.respond([]);
+                try {
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.respond([]);
+                    }
+                } catch (respondError) {
+                    console.error('Failed to send error response:', respondError);
+                }
             }
         } else if (commandName === 'clear') {
             try {
@@ -3029,7 +3061,9 @@ class AtiveMusicBot {
                 const voiceChannelId = member?.voice?.channel?.id;
                 
                 if (!voiceChannelId) {
-                    await interaction.respond([]);
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.respond([]);
+                    }
                     return;
                 }
                 
@@ -3037,7 +3071,9 @@ class AtiveMusicBot {
                 const focusedValue = options.getFocused();
                 
                 if (musicManager.queue.length === 0) {
-                    await interaction.respond([]);
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.respond([]);
+                    }
                     return;
                 }
                 
@@ -3048,16 +3084,24 @@ class AtiveMusicBot {
                     track.id.includes(focusedValue)
                 ).slice(0, 25);
                 
-                await interaction.respond(
-                    matches.map(track => ({
-                        name: `${track.title} - ${track.author}`.substring(0, 100),
-                        value: track.id
-                    }))
-                );
+                if (!interaction.replied && !interaction.deferred) {
+                    await interaction.respond(
+                        matches.map(track => ({
+                            name: `${track.title} - ${track.author}`.substring(0, 100),
+                            value: track.id
+                        }))
+                    );
+                }
                 
             } catch (error) {
                 console.error('Clear autocomplete error:', error);
-                await interaction.respond([]);
+                try {
+                    if (!interaction.replied && !interaction.deferred) {
+                        await interaction.respond([]);
+                    }
+                } catch (respondError) {
+                    console.error('Failed to send clear error response:', respondError);
+                }
             }
         }
     }

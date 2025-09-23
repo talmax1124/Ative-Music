@@ -574,10 +574,14 @@ class SmartAutoPlay {
     getPersonalizedStrategies(currentTrack, personalWeights) {
         const { preferredGenres, preferredArtists, patterns, similarUsers } = personalWeights;
         
+        // Use current track's genre as fallback if no user preferences
+        const currentGenre = currentTrack ? this.detectGenre(currentTrack) : null;
+        const genresToUse = (preferredGenres && preferredGenres.length > 0) ? preferredGenres : (currentGenre ? [currentGenre] : ['reggaeton']);
+        
         return [
             { 
                 name: 'user-preferred-genre', 
-                fn: () => this.getUserPreferredGenreTrack(preferredGenres), 
+                fn: () => this.getUserPreferredGenreTrack(genresToUse), 
                 weight: 30 
             },
             { 

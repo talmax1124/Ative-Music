@@ -26,7 +26,7 @@ class MusicManager {
         this.smartAutoPlay = new SmartAutoPlay(sourceHandlers);
         this.userPreferences = new UserPreferences();
         this.autoPlayEnabled = true;
-        this.continuousPlayback = false; // Disable by default - user controls progression
+        this.continuousPlayback = true; // Enable by default for seamless playback
         this.userStoppedPlayback = false; // Track if user manually stopped
         this.isTransitioning = false; // Prevent multiple track transitions
         this.onTrackEnd = null;
@@ -152,6 +152,14 @@ class MusicManager {
             setTimeout(() => {
                 this.fillQueueWithRecommendations(3, userContext);
             }, 2000);
+        }
+        
+        // Proactively queue more tracks when queue gets low
+        if (this.queue.length <= 3 && this.autoPlayEnabled && this.continuousPlayback) {
+            console.log('🔄 Queue running low, proactively adding more tracks...');
+            setTimeout(() => {
+                this.fillQueueWithRecommendations(8, userContext);
+            }, 1000);
         }
         
         // Auto-save queue after changes
@@ -611,10 +619,22 @@ class MusicManager {
         // Determine next action based on queue state and settings
         const hasNextInQueue = this.currentTrackIndex + 1 < this.queue.length;
         
+        console.log(`🔍 Track end analysis: hasNext=${hasNextInQueue}, currentIndex=${this.currentTrackIndex}, queueLength=${this.queue.length}, continuous=${this.continuousPlayback}, autoPlay=${this.autoPlayEnabled}`);
+        
         if (hasNextInQueue && this.continuousPlayback) {
             // Advance to next track in queue
             console.log('🔄 Auto-advancing to next track in queue...');
             this.currentTrackIndex++;
+            
+            // Proactively refill queue if it's getting low
+            const tracksRemaining = this.queue.length - this.currentTrackIndex - 1;
+            if (tracksRemaining <= 2 && this.autoPlayEnabled) {
+                console.log(`🔄 Only ${tracksRemaining} tracks remaining, refilling queue...`);
+                setTimeout(() => {
+                    this.fillQueueWithRecommendations(5, { userId: lastTrack?.requestedBy, guildId: this.guildId });
+                }, 500);
+            }
+            
             this.autoPlayTimeout = setTimeout(async () => {
                 if (!this.isPlaying && !this.userStoppedPlayback) {
                     await this.play();
@@ -854,6 +874,8 @@ class MusicManager {
             this.autoPlayEnabled = queueData.autoPlayEnabled !== undefined ? queueData.autoPlayEnabled : true;
             this.continuousPlayback = queueData.continuousPlayback !== undefined ? queueData.continuousPlayback : true;
             
+            console.log(`🔧 Restored settings: autoPlay=${this.autoPlayEnabled}, continuous=${this.continuousPlayback}`);
+            
             console.log(`💿 Restored queue for guild ${this.guildId}: ${this.queue.length} tracks (${removedCount} YouTube tracks removed)`);
             
             // Save the cleaned queue
@@ -969,19 +991,35 @@ class MusicManager {
                     this.isTransitioning = false;
                 }
             } else {
-                // Retry the current track with fallback methods
-                console.log(`🔄 Retrying current track (attempt ${trackErrorCount + 1}/3)`);
+                // Check if this is a DRM or persistent streaming error - skip immediately
+                const currentTrack = this.getCurrentTrack();
+                const shouldSkipImmediately = currentTrack && (
+                    currentTrack.lastError?.includes('DRM protected') ||
+                    currentTrack.lastError?.includes('Status code: 403') ||
+                    trackErrorCount >= 2 // Skip after 2 failed attempts
+                );
                 
-                setTimeout(async () => {
-                    if (!this.isPlaying && !this.userStoppedPlayback) {
-                        // Force sourceHandlers to use different methods by clearing cache
-                        if (this.sourceHandlers.clearStreamCache) {
-                            this.sourceHandlers.clearStreamCache(trackId);
+                if (shouldSkipImmediately) {
+                    console.log(`⏭️ Skipping problematic track immediately: ${currentTrack.title}`);
+                    setTimeout(() => {
+                        this.skip();
+                        this.isTransitioning = false;
+                    }, 500);
+                } else {
+                    // Retry the current track with fallback methods
+                    console.log(`🔄 Retrying current track (attempt ${trackErrorCount + 1}/3)`);
+                    
+                    setTimeout(async () => {
+                        if (!this.isPlaying && !this.userStoppedPlayback) {
+                            // Force sourceHandlers to use different methods by clearing cache
+                            if (this.sourceHandlers.clearStreamCache) {
+                                this.sourceHandlers.clearStreamCache(trackId);
+                            }
+                            await this.play();
                         }
-                        await this.play();
-                    }
-                    this.isTransitioning = false;
-                }, 1000 * trackErrorCount); // Exponential backoff
+                        this.isTransitioning = false;
+                    }, 1000 * trackErrorCount); // Exponential backoff
+                }
             }
         } catch (error) {
             console.error('❌ Error in handleStreamError:', error);
