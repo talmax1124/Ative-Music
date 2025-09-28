@@ -346,9 +346,19 @@ class SourceHandlers {
         try {
             console.log(`🎵 Getting YouTube stream for: ${track.title}`);
             
-            // Try play-dl first (most reliable)
+            // Try yt-dlp FIRST (most reliable for VPS)
+            if (await this.isYtDlpAvailable()) {
+                try {
+                    console.log(`🔄 Using yt-dlp (primary) for: ${track.title}`);
+                    return await this.getYtDlpStream(track);
+                } catch (ytdlpError) {
+                    console.log(`⚠️ yt-dlp failed: ${ytdlpError.message}`);
+                }
+            }
+            
+            // Fallback to play-dl
             try {
-                console.log(`🔄 Using play-dl for: ${track.title}`);
+                console.log(`🔄 Trying play-dl fallback for: ${track.title}`);
                 console.log(`🔗 Track URL: ${track.url}`);
                 
                 // Normalize YouTube URL to include www for play-dl compatibility
@@ -373,37 +383,22 @@ class SourceHandlers {
                 console.log(`⚠️ play-dl failed: ${playDlError.message}`);
             }
             
-            // Use yt-dlp as fallback
-            if (await this.isYtDlpAvailable()) {
-                try {
-                    console.log(`🔄 Trying yt-dlp fallback for: ${track.title}`);
-                    return await this.getYtDlpStream(track);
-                } catch (ytdlpError) {
-                    console.log(`⚠️ yt-dlp failed: ${ytdlpError.message}`);
-                }
-            }
-            
-            // Final fallback to ytdl-core
+            // Final fallback to ytdl-core (least likely to work)
             console.log(`🔄 Final fallback to ytdl-core for: ${track.title}`);
             console.log(`🔗 Using original URL: ${track.url}`);
-            try {
-                const stream = ytdl(track.url, {
-                    filter: 'audioonly',
-                    quality: 'lowestaudio', // Try lowest quality for compatibility
-                    highWaterMark: 1 << 20, // Smaller buffer
-                    requestOptions: {
-                        headers: {
-                            'User-Agent': this.getRandomUserAgent()
-                        }
+            const stream = ytdl(track.url, {
+                filter: 'audioonly',
+                quality: 'lowestaudio',
+                highWaterMark: 1 << 20,
+                requestOptions: {
+                    headers: {
+                        'User-Agent': this.getRandomUserAgent()
                     }
-                });
-                
-                console.log(`✅ ytdl-core stream created successfully`);
-                return stream;
-            } catch (ytdlError) {
-                console.error(`❌ ytdl-core also failed: ${ytdlError.message}`);
-                throw new Error(`All streaming methods failed for: ${track.title}`);
-            }
+                }
+            });
+            
+            console.log(`✅ ytdl-core stream created successfully`);
+            return stream;
         } catch (error) {
             console.error(`❌ YouTube stream error: ${error.message}`);
             throw new Error(`All streaming methods failed for: ${track.title}`);
@@ -439,11 +434,13 @@ class SourceHandlers {
             const hasCookies = fs.existsSync(cookiesPath);
             
             const ytdlpArgs = [
-                '--format', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
+                '--format', '140/bestaudio[ext=m4a]/bestaudio',
                 '--output', '-',
                 '--no-warnings',
                 '--no-playlist',
                 '--no-check-certificates',
+                '--prefer-free-formats',
+                '--extract-flat', 'never',
             ];
             
             if (hasCookies) {
@@ -453,20 +450,23 @@ class SourceHandlers {
             
             ytdlpArgs.push(track.url);
             
+            console.log(`🔧 yt-dlp command: yt-dlp ${ytdlpArgs.join(' ')}`);
+            
             const ytdlp = spawn('yt-dlp', ytdlpArgs);
 
             const stream = new PassThrough();
             let resolved = false;
             let hasData = false;
+            let errorBuffer = '';
             
-            // Set a timeout to reject if no data comes within 10 seconds
+            // Set a timeout to reject if no data comes within 15 seconds
             const timeout = setTimeout(() => {
                 if (!resolved && !hasData) {
                     resolved = true;
                     ytdlp.kill();
-                    reject(new Error('yt-dlp timeout - no data received'));
+                    reject(new Error(`yt-dlp timeout - no data received. Last error: ${errorBuffer}`));
                 }
-            }, 10000);
+            }, 15000);
             
             ytdlp.stdout.on('data', (chunk) => {
                 hasData = true;
@@ -482,7 +482,12 @@ class SourceHandlers {
             
             ytdlp.stderr.on('data', (data) => {
                 const errorMsg = data.toString();
-                console.error(`yt-dlp error: ${errorMsg}`);
+                errorBuffer += errorMsg;
+                
+                // Only log critical errors, not progress
+                if (errorMsg.includes('ERROR') || errorMsg.includes('WARNING')) {
+                    console.error(`yt-dlp: ${errorMsg.trim()}`);
+                }
                 
                 // If we see a format error and haven't resolved yet, reject immediately
                 if (!resolved && errorMsg.includes('Requested format is not available')) {
