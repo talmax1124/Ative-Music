@@ -639,7 +639,7 @@ class AtiveMusicBot {
         return embed;
     }
 
-    createProgressBar(track, musicManager, segments = 16) {
+    createProgressBar(track, musicManager, segments = 17) {
         const durationMs = this.getTrackDurationMs(track, musicManager) || 0;
         let elapsedMs = 0;
         if (musicManager && musicManager.isPlaying && !musicManager.isPaused && musicManager.trackStartTime) {
@@ -654,7 +654,7 @@ class AtiveMusicBot {
         let filled = Math.floor(ratio * segments);
         if (filled >= segments) filled = segments - 1;
         const empty = Math.max(0, segments - filled - 1);
-        const bar = '▰'.repeat(filled) + '🔘' + '▱'.repeat(empty);
+        const bar = '▪'.repeat(filled) + '🔘' + '◽'.repeat(empty);
         const elapsedStr = this.formatMs(elapsedMs);
         const totalStr = this.formatMs(durationMs);
         
@@ -662,7 +662,7 @@ class AtiveMusicBot {
         if (!this._panelLastElapsed) this._panelLastElapsed = new Map();
         this._panelLastElapsed.set(musicManager.channelId, elapsedMs);
 
-        return `\`${elapsedStr}\` ${bar} \`${totalStr}\``;
+        return `${elapsedStr} ${bar} ${totalStr}`;
     }
 
     getTrackDurationMs(track, musicManager) {
