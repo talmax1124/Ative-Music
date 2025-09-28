@@ -26,6 +26,13 @@ for (const dir of requiredDirs) {
     }
 }
 
+// Create cookies file from environment variable if provided (for Railway)
+if (process.env.YOUTUBE_COOKIES) {
+    const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
+    fs.writeFileSync(cookiesPath, Buffer.from(process.env.YOUTUBE_COOKIES, 'base64').toString('utf-8'));
+    console.log('🍪 YouTube cookies loaded from environment');
+}
+
 // Check if Discord token is provided
 if (!process.env.DISCORD_TOKEN || process.env.DISCORD_TOKEN === 'YOUR_BOT_TOKEN_HERE') {
     console.log('❌ Discord token not configured!');

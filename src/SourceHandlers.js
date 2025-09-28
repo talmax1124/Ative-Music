@@ -434,14 +434,26 @@ class SourceHandlers {
         return new Promise((resolve, reject) => {
             console.log(`🔄 Using yt-dlp for: ${track.title}`);
             
-            const ytdlp = spawn('yt-dlp', [
+            const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
+            const fs = require('fs');
+            const hasCookies = fs.existsSync(cookiesPath);
+            
+            const ytdlpArgs = [
                 '--format', 'ba/b',
                 '--output', '-',
                 '--quiet',
                 '--no-warnings',
                 '--no-playlist',
-                track.url
-            ]);
+            ];
+            
+            if (hasCookies) {
+                ytdlpArgs.push('--cookies', cookiesPath);
+                console.log(`🍪 Using cookies from: ${cookiesPath}`);
+            }
+            
+            ytdlpArgs.push(track.url);
+            
+            const ytdlp = spawn('yt-dlp', ytdlpArgs);
 
             const stream = new PassThrough();
             let resolved = false;
