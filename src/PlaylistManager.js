@@ -1,24 +1,11 @@
-const { promises: fs } = require('fs');
-const path = require('path');
+const firebaseService = require('./FirebaseService.js');
 
 class PlaylistManager {
     constructor() {
-        this.playlistsDir = path.join(__dirname, '../data/playlists');
-        this.userPlaylistsDir = path.join(__dirname, '../data/user_playlists');
-        this.ensureDirectories();
+        this.firebaseService = firebaseService;
     }
 
-    async ensureDirectories() {
-        try {
-            await fs.mkdir(this.playlistsDir, { recursive: true });
-            await fs.mkdir(this.userPlaylistsDir, { recursive: true });
-        } catch (error) {
-            console.error('Failed to create playlist directories:', error);
-        }
-    }
-
-    // Create a new playlist
-    async createPlaylist(userId, name, description = '', isPublic = false) {
+    async createPlaylist(userId, guildId, name, description = '', isPublic = false) {
         try {
             const playlistId = `${userId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             const playlist = {
@@ -26,6 +13,7 @@ class PlaylistManager {
                 name: name.trim(),
                 description: description.trim(),
                 owner: userId,
+                guildId,
                 tracks: [],
                 isPublic,
                 createdAt: new Date().toISOString(),
@@ -34,8 +22,7 @@ class PlaylistManager {
                 duration: 0
             };
 
-            const filePath = path.join(this.userPlaylistsDir, `${playlistId}.json`);
-            await fs.writeFile(filePath, JSON.stringify(playlist, null, 2));
+            await this.firebaseService.savePlaylist(userId, guildId, playlistId, playlist.tracks);
             
             console.log(`📝 Created playlist: ${name} for user ${userId}`);
             return playlist;
@@ -45,57 +32,34 @@ class PlaylistManager {
         }
     }
 
-    // Get user's playlists
-    async getUserPlaylists(userId) {
+    async getUserPlaylists(userId, guildId) {
         try {
-            const files = await fs.readdir(this.userPlaylistsDir);
-            const userPlaylists = [];
-
-            for (const file of files) {
-                if (file.startsWith(`${userId}_`) && file.endsWith('.json')) {
-                    try {
-                        const data = await fs.readFile(path.join(this.userPlaylistsDir, file), 'utf8');
-                        const playlist = JSON.parse(data);
-                        userPlaylists.push(playlist);
-                    } catch (parseError) {
-                        console.error(`Error parsing playlist file ${file}:`, parseError);
-                    }
-                }
-            }
-
-            // Sort by most recently updated
-            return userPlaylists.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+            return await this.firebaseService.getUserPlaylists(userId, guildId);
         } catch (error) {
             console.error('Error getting user playlists:', error);
             return [];
         }
     }
 
-    // Get a specific playlist
-    async getPlaylist(playlistId) {
+    async getPlaylist(userId, guildId, playlistName) {
         try {
-            const filePath = path.join(this.userPlaylistsDir, `${playlistId}.json`);
-            const data = await fs.readFile(filePath, 'utf8');
-            return JSON.parse(data);
+            return await this.firebaseService.loadPlaylist(userId, guildId, playlistName);
         } catch (error) {
             return null;
         }
     }
 
-    // Add track to playlist
-    async addTrackToPlaylist(playlistId, track, userId) {
+    async addTrackToPlaylist(playlistName, track, userId, guildId) {
         try {
-            const playlist = await this.getPlaylist(playlistId);
+            const playlist = await this.getPlaylist(userId, guildId, playlistName);
             if (!playlist) {
                 throw new Error('Playlist not found');
             }
 
-            // Check ownership
             if (playlist.owner !== userId) {
                 throw new Error('Permission denied: Not playlist owner');
             }
 
-            // Check for duplicates
             const existingTrack = playlist.tracks.find(t => 
                 t.url === track.url || (t.title === track.title && t.author === track.author)
             );
@@ -104,7 +68,6 @@ class PlaylistManager {
                 throw new Error('Track already exists in playlist');
             }
 
-            // Add track with metadata
             const trackWithMeta = {
                 ...track,
                 addedAt: new Date().toISOString(),
@@ -115,8 +78,8 @@ class PlaylistManager {
             playlist.updatedAt = new Date().toISOString();
             playlist.duration = this.calculatePlaylistDuration(playlist.tracks);
 
-            await this.savePlaylist(playlist);
-            console.log(`➕ Added track to playlist: ${track.title} -> ${playlist.name}`);
+            await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+            console.log(`➕ Added track to playlist: ${track.title} -> ${playlistName}`);
             return playlist;
         } catch (error) {
             console.error('Error adding track to playlist:', error);
@@ -124,10 +87,9 @@ class PlaylistManager {
         }
     }
 
-    // Remove track from playlist
-    async removeTrackFromPlaylist(playlistId, trackIndex, userId) {
+    async removeTrackFromPlaylist(playlistName, trackIndex, userId, guildId) {
         try {
-            const playlist = await this.getPlaylist(playlistId);
+            const playlist = await this.getPlaylist(userId, guildId, playlistName);
             if (!playlist) {
                 throw new Error('Playlist not found');
             }
@@ -144,8 +106,8 @@ class PlaylistManager {
             playlist.updatedAt = new Date().toISOString();
             playlist.duration = this.calculatePlaylistDuration(playlist.tracks);
 
-            await this.savePlaylist(playlist);
-            console.log(`➖ Removed track from playlist: ${removedTrack.title} <- ${playlist.name}`);
+            await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+            console.log(`➖ Removed track from playlist: ${removedTrack.title} <- ${playlistName}`);
             return playlist;
         } catch (error) {
             console.error('Error removing track from playlist:', error);
@@ -153,10 +115,9 @@ class PlaylistManager {
         }
     }
 
-    // Delete playlist
-    async deletePlaylist(playlistId, userId) {
+    async deletePlaylist(playlistName, userId, guildId) {
         try {
-            const playlist = await this.getPlaylist(playlistId);
+            const playlist = await this.getPlaylist(userId, guildId, playlistName);
             if (!playlist) {
                 throw new Error('Playlist not found');
             }
@@ -165,10 +126,9 @@ class PlaylistManager {
                 throw new Error('Permission denied: Not playlist owner');
             }
 
-            const filePath = path.join(this.userPlaylistsDir, `${playlistId}.json`);
-            await fs.unlink(filePath);
+            await this.firebaseService.deletePlaylist(userId, guildId, playlistName);
             
-            console.log(`🗑️ Deleted playlist: ${playlist.name}`);
+            console.log(`🗑️ Deleted playlist: ${playlistName}`);
             return true;
         } catch (error) {
             console.error('Error deleting playlist:', error);
@@ -176,10 +136,9 @@ class PlaylistManager {
         }
     }
 
-    // Update playlist info
-    async updatePlaylist(playlistId, updates, userId) {
+    async updatePlaylist(playlistName, updates, userId, guildId) {
         try {
-            const playlist = await this.getPlaylist(playlistId);
+            const playlist = await this.getPlaylist(userId, guildId, playlistName);
             if (!playlist) {
                 throw new Error('Playlist not found');
             }
@@ -188,15 +147,14 @@ class PlaylistManager {
                 throw new Error('Permission denied: Not playlist owner');
             }
 
-            // Update allowed fields
             if (updates.name) playlist.name = updates.name.trim();
             if (updates.description !== undefined) playlist.description = updates.description.trim();
             if (updates.isPublic !== undefined) playlist.isPublic = updates.isPublic;
             
             playlist.updatedAt = new Date().toISOString();
 
-            await this.savePlaylist(playlist);
-            console.log(`📝 Updated playlist: ${playlist.name}`);
+            await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+            console.log(`📝 Updated playlist: ${playlistName}`);
             return playlist;
         } catch (error) {
             console.error('Error updating playlist:', error);
@@ -204,13 +162,6 @@ class PlaylistManager {
         }
     }
 
-    // Save playlist to file
-    async savePlaylist(playlist) {
-        const filePath = path.join(this.userPlaylistsDir, `${playlist.id}.json`);
-        await fs.writeFile(filePath, JSON.stringify(playlist, null, 2));
-    }
-
-    // Calculate total playlist duration
     calculatePlaylistDuration(tracks) {
         return tracks.reduce((total, track) => {
             const duration = this.parseDuration(track.duration);
@@ -218,7 +169,6 @@ class PlaylistManager {
         }, 0);
     }
 
-    // Parse duration to milliseconds
     parseDuration(duration) {
         if (typeof duration === 'number') return duration;
         if (!duration) return 0;
@@ -232,10 +182,9 @@ class PlaylistManager {
             multiplier *= 60;
         }
 
-        return seconds * 1000; // Return in milliseconds
+        return seconds * 1000;
     }
 
-    // Format duration from milliseconds
     formatDuration(ms) {
         const seconds = Math.floor(ms / 1000);
         const minutes = Math.floor(seconds / 60);
@@ -247,8 +196,7 @@ class PlaylistManager {
         return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`;
     }
 
-    // Import playlist from URL (Spotify, YouTube, etc.)
-    async importPlaylistFromUrl(userId, url, name = null, sourceHandlers) {
+    async importPlaylistFromUrl(userId, guildId, url, name = null, sourceHandlers) {
         try {
             console.log(`📥 Importing playlist from URL: ${url}`);
             
@@ -271,24 +219,23 @@ class PlaylistManager {
                 throw new Error('No tracks found in playlist');
             }
 
-            // Create the playlist
             const playlist = await this.createPlaylist(
-                userId, 
+                userId,
+                guildId, 
                 playlistName, 
                 `Imported from ${new URL(url).hostname}`, 
                 false
             );
 
-            // Add all tracks
             for (const track of tracks) {
                 try {
-                    await this.addTrackToPlaylist(playlist.id, track, userId);
+                    await this.addTrackToPlaylist(playlistName, track, userId, guildId);
                 } catch (trackError) {
                     console.log(`⚠️ Skipped track: ${track.title} - ${trackError.message}`);
                 }
             }
 
-            const finalPlaylist = await this.getPlaylist(playlist.id);
+            const finalPlaylist = await this.getPlaylist(userId, guildId, playlistName);
             console.log(`✅ Imported playlist: ${finalPlaylist.tracks.length} tracks`);
             
             return finalPlaylist;
@@ -298,49 +245,33 @@ class PlaylistManager {
         }
     }
 
-    // Get public playlists for browsing
-    async getPublicPlaylists(limit = 20) {
+    async getPublicPlaylists(guildId, limit = 20) {
         try {
-            const files = await fs.readdir(this.userPlaylistsDir);
-            const publicPlaylists = [];
-
-            for (const file of files) {
-                if (file.endsWith('.json')) {
-                    try {
-                        const data = await fs.readFile(path.join(this.userPlaylistsDir, file), 'utf8');
-                        const playlist = JSON.parse(data);
-                        if (playlist.isPublic) {
-                            // Remove tracks for browsing (just metadata)
-                            publicPlaylists.push({
-                                ...playlist,
-                                tracks: undefined,
-                                trackCount: playlist.tracks.length
-                            });
-                        }
-                    } catch (parseError) {
-                        console.error(`Error parsing playlist file ${file}:`, parseError);
-                    }
-                }
-            }
-
-            // Sort by play count and recent activity
-            return publicPlaylists
+            const allPlaylists = await this.firebaseService.getUserPlaylists('*', guildId);
+            const publicPlaylists = allPlaylists
+                .filter(p => p.isPublic)
+                .map(playlist => ({
+                    ...playlist,
+                    tracks: undefined,
+                    trackCount: playlist.tracks ? playlist.tracks.length : 0
+                }))
                 .sort((a, b) => (b.playCount || 0) - (a.playCount || 0))
                 .slice(0, limit);
+            
+            return publicPlaylists;
         } catch (error) {
             console.error('Error getting public playlists:', error);
             return [];
         }
     }
 
-    // Increment play count
-    async incrementPlayCount(playlistId) {
+    async incrementPlayCount(playlistName, userId, guildId) {
         try {
-            const playlist = await this.getPlaylist(playlistId);
+            const playlist = await this.getPlaylist(userId, guildId, playlistName);
             if (playlist) {
                 playlist.playCount = (playlist.playCount || 0) + 1;
                 playlist.lastPlayed = new Date().toISOString();
-                await this.savePlaylist(playlist);
+                await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
             }
         } catch (error) {
             console.error('Error incrementing play count:', error);

@@ -1,30 +1,9 @@
-const fs = require('fs');
-const path = require('path');
+const firebaseService = require('./FirebaseService.js');
 
 class UserPreferences {
     constructor() {
-        this.dataDir = path.join(__dirname, '..', 'data');
-        this.userDataFile = path.join(this.dataDir, 'user_preferences.json');
-        this.ensureDataDirectory();
-        this.preferences = this.loadPreferences();
-    }
-
-    ensureDataDirectory() {
-        if (!fs.existsSync(this.dataDir)) {
-            fs.mkdirSync(this.dataDir, { recursive: true });
-        }
-    }
-
-    loadPreferences() {
-        try {
-            if (fs.existsSync(this.userDataFile)) {
-                const data = fs.readFileSync(this.userDataFile, 'utf8');
-                return JSON.parse(data);
-            }
-        } catch (error) {
-            console.error('❌ Error loading user preferences:', error);
-        }
-        return {
+        this.firebaseService = firebaseService;
+        this.preferences = {
             users: {},
             global: {
                 popularGenres: {},
@@ -35,16 +14,7 @@ class UserPreferences {
         };
     }
 
-    savePreferences() {
-        try {
-            fs.writeFileSync(this.userDataFile, JSON.stringify(this.preferences, null, 2));
-        } catch (error) {
-            console.error('❌ Error saving user preferences:', error);
-        }
-    }
-
-    // Track when a user plays a song
-    trackPlay(userId, guildId, track, timestamp = Date.now()) {
+    async trackPlay(userId, guildId, track, timestamp = Date.now()) {
         const userKey = `${userId}_${guildId}`;
         
         if (!this.preferences.users[userKey]) {
@@ -55,7 +25,7 @@ class UserPreferences {
                 skipHistory: [],
                 repeatHistory: [],
                 timePatterns: {},
-                energyPreference: 0.5, // 0 = calm, 1 = energetic
+                energyPreference: 0.5,
                 moodPreference: 'balanced',
                 lastActive: timestamp
             };
@@ -63,7 +33,6 @@ class UserPreferences {
 
         const user = this.preferences.users[userKey];
         
-        // Add to play history (keep last 1000 tracks)
         user.playHistory.unshift({
             title: track.title,
             author: track.author,
@@ -74,12 +43,10 @@ class UserPreferences {
         });
         user.playHistory = user.playHistory.slice(0, 1000);
 
-        // Update favorite genres and artists
         const genre = this.detectGenre(track);
         user.favoriteGenres[genre] = (user.favoriteGenres[genre] || 0) + 1;
         user.favoriteArtists[track.author] = (user.favoriteArtists[track.author] || 0) + 1;
 
-        // Update time patterns
         const hour = new Date(timestamp).getHours();
         const timeSlot = this.getTimeSlot(hour);
         if (!user.timePatterns[timeSlot]) {
@@ -88,16 +55,33 @@ class UserPreferences {
         user.timePatterns[timeSlot].genres[genre] = (user.timePatterns[timeSlot].genres[genre] || 0) + 1;
         user.timePatterns[timeSlot].artists[track.author] = (user.timePatterns[timeSlot].artists[track.author] || 0) + 1;
 
-        // Update global statistics
         this.preferences.global.popularGenres[genre] = (this.preferences.global.popularGenres[genre] || 0) + 1;
         this.preferences.global.popularArtists[track.author] = (this.preferences.global.popularArtists[track.author] || 0) + 1;
 
         user.lastActive = timestamp;
-        this.savePreferences();
+        
+        await this.firebaseService.saveUserPreference(userId, guildId, track.id || track.title, {
+            action: 'play',
+            track: {
+                title: track.title,
+                author: track.author,
+                genre: genre,
+                duration: track.duration,
+                source: track.source
+            },
+            timestamp: timestamp
+        });
+
+        await this.firebaseService.saveListeningHistory(userId, guildId, {
+            title: track.title,
+            author: track.author,
+            genre: genre,
+            duration: track.duration,
+            source: track.source
+        });
     }
 
-    // Track when a user skips a song
-    trackSkip(userId, guildId, track, playDuration, timestamp = Date.now()) {
+    async trackSkip(userId, guildId, track, playDuration, timestamp = Date.now()) {
         const userKey = `${userId}_${guildId}`;
         const user = this.preferences.users[userKey];
         
@@ -112,7 +96,6 @@ class UserPreferences {
             });
             user.skipHistory = user.skipHistory.slice(0, 500);
 
-            // Decrease preference for skipped genre/artist slightly
             const genre = this.detectGenre(track);
             if (user.favoriteGenres[genre]) {
                 user.favoriteGenres[genre] = Math.max(0, user.favoriteGenres[genre] - 0.5);
@@ -121,12 +104,21 @@ class UserPreferences {
                 user.favoriteArtists[track.author] = Math.max(0, user.favoriteArtists[track.author] - 0.5);
             }
 
-            this.savePreferences();
+            await this.firebaseService.saveUserPreference(userId, guildId, track.id || track.title, {
+                action: 'skip',
+                track: {
+                    title: track.title,
+                    author: track.author,
+                    genre: genre
+                },
+                playDuration: playDuration,
+                reason: this.determineSkipReason(playDuration, track.duration),
+                timestamp: timestamp
+            });
         }
     }
 
-    // Track when a user repeats a song
-    trackRepeat(userId, guildId, track, timestamp = Date.now()) {
+    async trackRepeat(userId, guildId, track, timestamp = Date.now()) {
         const userKey = `${userId}_${guildId}`;
         const user = this.preferences.users[userKey];
         
@@ -139,16 +131,22 @@ class UserPreferences {
             });
             user.repeatHistory = user.repeatHistory.slice(0, 100);
 
-            // Increase preference for repeated genre/artist
             const genre = this.detectGenre(track);
             user.favoriteGenres[genre] = (user.favoriteGenres[genre] || 0) + 2;
             user.favoriteArtists[track.author] = (user.favoriteArtists[track.author] || 0) + 2;
 
-            this.savePreferences();
+            await this.firebaseService.saveUserPreference(userId, guildId, track.id || track.title, {
+                action: 'repeat',
+                track: {
+                    title: track.title,
+                    author: track.author,
+                    genre: genre
+                },
+                timestamp: timestamp
+            });
         }
     }
 
-    // Get user's top genres for current time
     getUserTopGenres(userId, guildId, limit = 5) {
         const userKey = `${userId}_${guildId}`;
         const user = this.preferences.users[userKey];
@@ -157,12 +155,11 @@ class UserPreferences {
 
         const currentTimeSlot = this.getTimeSlot(new Date().getHours());
         
-        // Combine overall preferences with time-specific preferences
         let genreScores = { ...user.favoriteGenres };
         
         if (user.timePatterns[currentTimeSlot]) {
             Object.entries(user.timePatterns[currentTimeSlot].genres).forEach(([genre, count]) => {
-                genreScores[genre] = (genreScores[genre] || 0) + (count * 1.5); // Boost current time preferences
+                genreScores[genre] = (genreScores[genre] || 0) + (count * 1.5);
             });
         }
 
@@ -172,7 +169,6 @@ class UserPreferences {
             .map(([genre]) => genre);
     }
 
-    // Get user's top artists for current time
     getUserTopArtists(userId, guildId, limit = 10) {
         const userKey = `${userId}_${guildId}`;
         const user = this.preferences.users[userKey];
@@ -181,7 +177,6 @@ class UserPreferences {
 
         const currentTimeSlot = this.getTimeSlot(new Date().getHours());
         
-        // Combine overall preferences with time-specific preferences
         let artistScores = { ...user.favoriteArtists };
         
         if (user.timePatterns[currentTimeSlot]) {
@@ -196,7 +191,6 @@ class UserPreferences {
             .map(([artist]) => artist);
     }
 
-    // Get listening patterns for recommendations
     getListeningPatterns(userId, guildId) {
         const userKey = `${userId}_${guildId}`;
         const user = this.preferences.users[userKey];
@@ -205,7 +199,6 @@ class UserPreferences {
             return this.getGlobalPatterns();
         }
 
-        // Analyze recent listening behavior
         const recentTracks = user.playHistory.slice(0, 50);
         const patterns = {
             genreDistribution: {},
@@ -221,14 +214,12 @@ class UserPreferences {
             patterns.preferredSources[track.source] = (patterns.preferredSources[track.source] || 0) + 1;
         });
 
-        // Calculate diversity score (higher = more diverse tastes)
         const genres = Object.keys(patterns.genreDistribution).length;
         patterns.diversityScore = Math.min(genres / 10, 1);
 
         return patterns;
     }
 
-    // Get similar users for collaborative filtering
     getSimilarUsers(userId, guildId, limit = 5) {
         const userKey = `${userId}_${guildId}`;
         const targetUser = this.preferences.users[userKey];
@@ -241,7 +232,7 @@ class UserPreferences {
             if (otherUserKey === userKey) return;
             
             const similarity = this.calculateUserSimilarity(targetUser, otherUser);
-            if (similarity > 0.3) { // Minimum similarity threshold
+            if (similarity > 0.3) {
                 similarities.push({ userKey: otherUserKey, similarity, user: otherUser });
             }
         });
@@ -251,12 +242,10 @@ class UserPreferences {
             .slice(0, limit);
     }
 
-    // Calculate similarity between two users
     calculateUserSimilarity(user1, user2) {
         let genreSimilarity = 0;
         let artistSimilarity = 0;
 
-        // Compare genre preferences
         const user1Genres = Object.keys(user1.favoriteGenres);
         const user2Genres = Object.keys(user2.favoriteGenres);
         const commonGenres = user1Genres.filter(genre => user2Genres.includes(genre));
@@ -265,7 +254,6 @@ class UserPreferences {
             genreSimilarity = commonGenres.length / Math.max(user1Genres.length, user2Genres.length);
         }
 
-        // Compare artist preferences
         const user1Artists = Object.keys(user1.favoriteArtists);
         const user2Artists = Object.keys(user2.favoriteArtists);
         const commonArtists = user1Artists.filter(artist => user2Artists.includes(artist));
@@ -277,7 +265,6 @@ class UserPreferences {
         return (genreSimilarity * 0.6) + (artistSimilarity * 0.4);
     }
 
-    // Get global patterns for new users
     getGlobalPatterns() {
         return {
             genreDistribution: this.preferences.global.popularGenres,
@@ -287,20 +274,18 @@ class UserPreferences {
         };
     }
 
-    // Get anti-recommendations (things user dislikes)
     getAntiRecommendations(userId, guildId) {
         const userKey = `${userId}_${guildId}`;
         const user = this.preferences.users[userKey];
         
         if (!user) return { genres: [], artists: [] };
 
-        // Find frequently skipped content
         const skipThreshold = 3;
         const skippedGenres = {};
         const skippedArtists = {};
 
         user.skipHistory.forEach(skip => {
-            if (skip.reason === 'early_skip') { // Skipped within first 30 seconds
+            if (skip.reason === 'early_skip') {
                 skippedGenres[skip.genre] = (skippedGenres[skip.genre] || 0) + 1;
                 skippedArtists[skip.author] = (skippedArtists[skip.author] || 0) + 1;
             }
@@ -316,9 +301,7 @@ class UserPreferences {
         };
     }
 
-    // Helper methods
     detectGenre(track) {
-        // Simple genre detection based on artist and title
         const text = `${track.title} ${track.author}`.toLowerCase();
         
         const genreKeywords = {
@@ -339,7 +322,7 @@ class UserPreferences {
             }
         }
 
-        return 'pop'; // Default
+        return 'pop';
     }
 
     getTimeSlot(hour) {
@@ -357,7 +340,6 @@ class UserPreferences {
         return 'late_skip';
     }
 
-    // Get recommendations based on user preferences
     getPersonalizedRecommendationWeights(userId, guildId) {
         const topGenres = this.getUserTopGenres(userId, guildId);
         const topArtists = this.getUserTopArtists(userId, guildId);

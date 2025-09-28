@@ -79,6 +79,7 @@ if (typeof globalThis.File === 'undefined') {
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState, demuxProbe, getVoiceConnection } = require('@discordjs/voice');
 const config = require('./config.js');
+const firebaseService = require('./src/FirebaseService.js');
 const MusicManager = require('./src/MusicManager.js');
 const SourceHandlers = require('./src/SourceHandlers.js');
 const StayConnectedManager = require('./src/StayConnectedManager.js');
@@ -3472,6 +3473,7 @@ class AtiveMusicBot {
 
     async start() {
         try {
+            firebaseService.initialize();
             await this.client.login(config.token);
         } catch (error) {
             console.error('❌ Failed to start bot:', error);

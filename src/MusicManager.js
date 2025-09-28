@@ -1,10 +1,9 @@
 const { createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType, demuxProbe } = require('@discordjs/voice');
 const { createReadStream } = require('fs');
-const { promises: fs } = require('fs');
-const path = require('path');
 const config = require('../config.js');
 const SmartAutoPlay = require('./SmartAutoPlay.js');
 const UserPreferences = require('./UserPreferences.js');
+const firebaseService = require('./FirebaseService.js');
 
 class MusicManager {
     constructor(guildId, channelId, sourceHandlers) {
@@ -33,9 +32,9 @@ class MusicManager {
         this.onTrackStart = null;
         this.onQueueUpdate = null;
         this.autoPlayTimeout = null;
+        this.firebaseService = firebaseService;
         
         this.setupPlayerEvents();
-        this.queueFile = path.join(__dirname, `../data/queue_${channelId}.json`);
         this.loadQueue();
     }
 
@@ -115,6 +114,12 @@ class MusicManager {
             if (newState.status === 'disconnected' || newState.status === 'destroyed') {
                 console.log('⚠️ Voice connection dropped - stopping current playback to prevent EPIPE');
                 this.handleConnectionDrop();
+            }
+            
+            // Restore connection health when connection is ready
+            if (newState.status === 'ready') {
+                console.log('✅ Connection restored to ready state');
+                this.connectionHealthy = true;
             }
         });
         
@@ -229,15 +234,19 @@ class MusicManager {
             this.currentTrackIndex = 0;
         }
 
+        if (this.isPlaying && !this.isPaused) {
+            console.log('⚠️ Already playing - stopping current track first');
+            this.player.stop(true);
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        
         this.currentTrack = this.queue[this.currentTrackIndex];
         
-        // Validate current track exists
         if (!this.currentTrack) {
             console.error('❌ No track found at index', this.currentTrackIndex);
             return false;
         }
         
-        // Reset user stopped flag when starting playback
         this.userStoppedPlayback = false;
         
         try {
@@ -363,8 +372,15 @@ class MusicManager {
     async skip() {
         if (this.queue.length === 0) return false;
 
+        console.log('⏭️ Skip requested');
+        
+        clearTimeout(this.autoPlayTimeout);
+        this.isTransitioning = false;
+        
+        this.player.stop(true);
+
         if (this.loopMode === 'track') {
-            await this.play();
+            setTimeout(() => this.play(), 300);
             return true;
         }
 
@@ -373,7 +389,7 @@ class MusicManager {
         if (this.currentTrackIndex >= this.queue.length) {
             if (this.loopMode === 'queue') {
                 this.currentTrackIndex = 0;
-                await this.play();
+                setTimeout(() => this.play(), 300);
                 return true;
             } else {
                 this.stop();
@@ -381,7 +397,7 @@ class MusicManager {
             }
         }
 
-        await this.play();
+        setTimeout(() => this.play(), 300);
         return true;
     }
 
@@ -604,7 +620,6 @@ class MusicManager {
     async handleTrackEnd() {
         console.log('🎵 Track ended, determining next action...');
         
-        // Prevent multiple simultaneous track end handling
         if (this.isTransitioning) {
             console.log('⚠️ Track end ignored - already transitioning');
             return;
@@ -612,6 +627,12 @@ class MusicManager {
         
         this.isTransitioning = true;
         clearTimeout(this.autoPlayTimeout);
+        
+        const transitionTimeout = setTimeout(() => {
+            console.log('⚠️ Transition timeout - forcing reset');
+            this.isTransitioning = false;
+            this.isPlaying = false;
+        }, 10000);
         
         // Store current track before clearing for recommendation purposes
         const lastTrack = this.currentTrack;
@@ -641,31 +662,43 @@ class MusicManager {
             }
             
             this.autoPlayTimeout = setTimeout(async () => {
-                if (!this.isPlaying && !this.userStoppedPlayback) {
-                    await this.play();
+                try {
+                    if (!this.isPlaying && !this.userStoppedPlayback) {
+                        await this.play();
+                    }
+                } catch (error) {
+                    console.error('❌ Error playing next track:', error);
+                } finally {
+                    this.isTransitioning = false;
+                    clearTimeout(transitionTimeout);
                 }
-                this.isTransitioning = false;
             }, 1000);
         } else if (!hasNextInQueue && this.autoPlayEnabled && this.continuousPlayback) {
             // Queue is empty, try to find recommendations
             console.log('🤖 Queue empty, finding smart recommendation...');
             this.clearCurrentPosition();
             this.autoPlayTimeout = setTimeout(async () => {
-                if (!this.isPlaying && !this.userStoppedPlayback) {
-                    await this.findAndPlayRecommendation(lastTrack);
+                try {
+                    if (!this.isPlaying && !this.userStoppedPlayback) {
+                        await this.findAndPlayRecommendation(lastTrack);
+                    }
+                } catch (error) {
+                    console.error('❌ Error finding recommendation:', error);
+                } finally {
+                    this.isTransitioning = false;
+                    clearTimeout(transitionTimeout);
                 }
-                this.isTransitioning = false;
             }, 1500);
         } else {
             // Stop playback - either continuous playback disabled or auto-play disabled
             console.log('⏸️ Track ended - stopping playback (continuous/auto-play disabled)');
             this.clearCurrentPosition();
             
-            // Notify panel to show "Use /play" message when queue is empty
             if (this.queue.length === 0 && this.onQueueEmpty) {
                 this.onQueueEmpty();
             }
             this.isTransitioning = false;
+            clearTimeout(transitionTimeout);
         }
     }
 
@@ -771,7 +804,8 @@ class MusicManager {
     }
     
     clearCurrentPosition() {
-        // Clear any pending timeouts
+        clearTimeout(this.autoPlayTimeout);
+        this.isTransitioning = false;
         clearTimeout(this.autoPlayTimeout);
         this.autoPlayTimeout = null;
         
@@ -841,17 +875,15 @@ class MusicManager {
     // Queue Persistence Methods
     async saveQueue() {
         try {
-            await fs.mkdir(path.dirname(this.queueFile), { recursive: true });
             const queueData = {
                 queue: this.queue,
                 currentTrackIndex: this.currentTrackIndex,
                 loopMode: this.loopMode,
                 volume: this.volume,
                 autoPlayEnabled: this.autoPlayEnabled,
-                continuousPlayback: this.continuousPlayback,
-                savedAt: new Date().toISOString()
+                continuousPlayback: this.continuousPlayback
             };
-            await fs.writeFile(this.queueFile, JSON.stringify(queueData, null, 2));
+            await this.firebaseService.saveQueue(this.guildId, this.channelId, queueData);
             console.log(`💾 Queue saved for channel ${this.channelId} (guild ${this.guildId})`);
         } catch (error) {
             console.error('❌ Failed to save queue:', error);
@@ -860,12 +892,15 @@ class MusicManager {
 
     async loadQueue() {
         try {
-            const data = await fs.readFile(this.queueFile, 'utf8');
-            const queueData = JSON.parse(data);
+            const queueData = await this.firebaseService.loadQueue(this.guildId);
+            
+            if (!queueData) {
+                console.log(`🆕 Starting fresh queue for guild ${this.guildId}`);
+                return;
+            }
             
             const originalQueue = queueData.queue || [];
             
-            // Filter out YouTube tracks since they're currently broken
             this.queue = originalQueue.filter(track => track.source !== 'youtube');
             const removedCount = originalQueue.length - this.queue.length;
             
@@ -873,7 +908,7 @@ class MusicManager {
                 console.log(`🚨 Removed ${removedCount} broken YouTube tracks from queue`);
             }
             
-            this.currentTrackIndex = -1; // Reset to start from beginning
+            this.currentTrackIndex = -1;
             this.loopMode = queueData.loopMode || 'off';
             this.volume = queueData.volume || config.settings.defaultVolume;
             this.autoPlayEnabled = queueData.autoPlayEnabled !== undefined ? queueData.autoPlayEnabled : true;
@@ -883,22 +918,20 @@ class MusicManager {
             
             console.log(`💿 Restored queue for guild ${this.guildId}: ${this.queue.length} tracks (${removedCount} YouTube tracks removed)`);
             
-            // Save the cleaned queue
             if (removedCount > 0) {
                 this.saveQueue();
             }
         } catch (error) {
-            // File doesn't exist or is corrupted - start fresh
             console.log(`🆕 Starting fresh queue for guild ${this.guildId}`);
         }
     }
 
     async clearPersistedQueue() {
         try {
-            await fs.unlink(this.queueFile);
+            await this.firebaseService.clearQueue(this.guildId);
             console.log(`🗑️ Cleared persisted queue for guild ${this.guildId}`);
         } catch (error) {
-            // File might not exist - ignore
+            console.error('❌ Failed to clear persisted queue:', error);
         }
     }
     
@@ -938,13 +971,18 @@ class MusicManager {
     async handleStreamError() {
         console.log('❌ Handling stream error - trying to recover');
         
-        // Prevent multiple simultaneous error handling
         if (this.isTransitioning) {
             console.log('⚠️ Stream error ignored - already transitioning');
             return;
         }
         
         this.isTransitioning = true;
+        clearTimeout(this.autoPlayTimeout);
+        
+        const errorTimeout = setTimeout(() => {
+            console.log('⚠️ Stream error recovery timeout - forcing reset');
+            this.isTransitioning = false;
+        }, 15000);
         
         try {
             // Track errors per track
@@ -974,10 +1012,16 @@ class MusicManager {
                     this.currentTrackIndex++;
                     
                     setTimeout(async () => {
-                        if (!this.isPlaying && !this.userStoppedPlayback) {
-                            await this.play();
+                        try {
+                            if (!this.isPlaying && !this.userStoppedPlayback) {
+                                await this.play();
+                            }
+                        } catch (error) {
+                            console.error('❌ Error recovering from stream error:', error);
+                        } finally {
+                            this.isTransitioning = false;
+                            clearTimeout(errorTimeout);
                         }
-                        this.isTransitioning = false;
                     }, 2000);
                 } else if (this.autoPlayEnabled && this.continuousPlayback) {
                     // No more tracks in queue, try to find recommendation
@@ -985,15 +1029,22 @@ class MusicManager {
                     const lastTrack = this.currentTrack || this.playHistory[this.playHistory.length - 1];
                     
                     setTimeout(async () => {
-                        if (!this.isPlaying && !this.userStoppedPlayback) {
-                            await this.findAndPlayRecommendation(lastTrack);
+                        try {
+                            if (!this.isPlaying && !this.userStoppedPlayback) {
+                                await this.findAndPlayRecommendation(lastTrack);
+                            }
+                        } catch (error) {
+                            console.error('❌ Error finding recommendation after error:', error);
+                        } finally {
+                            this.isTransitioning = false;
+                            clearTimeout(errorTimeout);
                         }
-                        this.isTransitioning = false;
                     }, 2000);
                 } else {
                     console.log('⏹️ No more tracks to try - clearing position');
                     this.clearCurrentPosition();
                     this.isTransitioning = false;
+                    clearTimeout(errorTimeout);
                 }
             } else {
                 // Check if this is a DRM or persistent streaming error - skip immediately
@@ -1006,29 +1057,41 @@ class MusicManager {
                 
                 if (shouldSkipImmediately) {
                     console.log(`⏭️ Skipping problematic track immediately: ${currentTrack.title}`);
-                    setTimeout(() => {
-                        this.skip();
-                        this.isTransitioning = false;
+                    setTimeout(async () => {
+                        try {
+                            await this.skip();
+                        } catch (error) {
+                            console.error('❌ Error skipping problematic track:', error);
+                        } finally {
+                            this.isTransitioning = false;
+                            clearTimeout(errorTimeout);
+                        }
                     }, 500);
                 } else {
                     // Retry the current track with fallback methods
                     console.log(`🔄 Retrying current track (attempt ${trackErrorCount + 1}/3)`);
                     
                     setTimeout(async () => {
-                        if (!this.isPlaying && !this.userStoppedPlayback) {
-                            // Force sourceHandlers to use different methods by clearing cache
-                            if (this.sourceHandlers.clearStreamCache) {
-                                this.sourceHandlers.clearStreamCache(trackId);
+                        try {
+                            if (!this.isPlaying && !this.userStoppedPlayback) {
+                                if (this.sourceHandlers.clearStreamCache) {
+                                    this.sourceHandlers.clearStreamCache(trackId);
+                                }
+                                await this.play();
                             }
-                            await this.play();
+                        } catch (error) {
+                            console.error('❌ Error retrying track:', error);
+                        } finally {
+                            this.isTransitioning = false;
+                            clearTimeout(errorTimeout);
                         }
-                        this.isTransitioning = false;
-                    }, 1000 * trackErrorCount); // Exponential backoff
+                    }, 1000 * trackErrorCount);
                 }
             }
         } catch (error) {
             console.error('❌ Error in handleStreamError:', error);
             this.isTransitioning = false;
+            clearTimeout(errorTimeout);
         }
     }
 }
