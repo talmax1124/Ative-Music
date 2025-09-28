@@ -2,6 +2,49 @@
 process.env.YTDL_NO_UPDATE = 'true';
 process.env.DEBUG = '';
 
+// Suppress YouTube signature decipher warnings (non-critical, other extractors handle streaming)
+const originalConsoleWarn = console.warn;
+const originalConsoleLog = console.log;
+
+console.warn = function(...args) {
+    const message = args.join(' ');
+    if (message.includes('YOUTUBEJS') || 
+        message.includes('signature decipher') ||
+        message.includes('Failed to extract signature')) {
+        return;
+    }
+    originalConsoleWarn.apply(console, args);
+};
+
+console.log = function(...args) {
+    const message = args.join(' ');
+    if (message.includes('[YOUTUBEJS][Player]') && 
+        (message.includes('signature decipher') || message.includes('Failed to extract'))) {
+        return;
+    }
+    originalConsoleLog.apply(console, args);
+};
+
+// Suppress YtDlpExtractor error messages on stderr
+const originalConsoleError = console.error;
+console.error = function(...args) {
+    // Check first argument for YtDlpExtractor without serializing
+    const firstArg = args[0];
+    
+    // Only suppress very specific extractor initialization errors
+    if (firstArg && typeof firstArg === 'object' && firstArg.constructor?.name === 'YtDlpExtractor') {
+        return;
+    }
+    if (firstArg && typeof firstArg === 'string' && 
+        firstArg.includes('❌ Extractor error') && 
+        args[1]?.constructor?.name === 'YtDlpExtractor') {
+        return;
+    }
+    
+    // Allow all other errors through
+    originalConsoleError.apply(console, args);
+};
+
 // Polyfill File constructor for Discord.js compatibility in serverless environments
 if (typeof globalThis.File === 'undefined') {
     const fs = require('fs');
@@ -44,6 +87,7 @@ const LocalVideoServer = require('./src/LocalVideoServer.js');
 const ErrorHandler = require('./src/ErrorHandler.js');
 const PlaylistManager = require('./src/PlaylistManager.js');
 const LyricsHandler = require('./src/LyricsHandler.js');
+const DiscordPlayerManager = require('./src/DiscordPlayerManager.js');
 
 class AtiveMusicBot {
     constructor() {
@@ -62,6 +106,9 @@ class AtiveMusicBot {
         this.errorHandler = new ErrorHandler();
         this.playlistManager = new PlaylistManager();
         this.lyricsHandler = new LyricsHandler();
+        this.discordPlayer = new DiscordPlayerManager(this.client);
+        this.client.bot = this; // Make bot instance available to Discord Player
+        global.ativeBot = this; // Global reference for fallback
         this.searchCache = new Map();
         this.musicPanels = new Map(); // Track music control panels by channelId
         this.guildChannels = new Map(); // Track active channels per guild (guildId -> Set<channelId>)
@@ -69,6 +116,13 @@ class AtiveMusicBot {
         
         this.setupEventListeners();
         this.registerCommands();
+
+        // Disable legacy UI panels in favor of Discord Player embeds
+        this.disableLegacyUI = true;
+        // Only start legacy panel updater if explicitly enabled
+        if (!this.disableLegacyUI) {
+            this.startPanelProgressUpdater();
+        }
     }
 
     setupEventListeners() {
@@ -98,7 +152,12 @@ class AtiveMusicBot {
             if (interaction.isChatInputCommand()) {
                 await this.handleSlashCommand(interaction);
             } else if (interaction.isButton()) {
-                await this.handleButtonInteraction(interaction);
+                // Check if it's a Discord Player button
+                if (interaction.customId.startsWith('dp_')) {
+                    await this.discordPlayer.handleButtonInteraction(interaction);
+                } else {
+                    await this.handleButtonInteraction(interaction);
+                }
             } else if (interaction.isStringSelectMenu()) {
                 await this.handleSelectMenu(interaction);
             } else if (interaction.isAutocomplete()) {
@@ -150,6 +209,7 @@ class AtiveMusicBot {
     }
 
     async handleTrackStart(guildId, channelId, track) {
+        if (this.disableLegacyUI) return; // Use DiscordPlayerManager UI only
         const trackTitle = track?.title || 'Unknown';
         console.log(`🎵 Track started in channel ${channelId} (guild ${guildId}): ${trackTitle}`);
         
@@ -202,6 +262,7 @@ class AtiveMusicBot {
     }
 
     async handleQueueEmpty(guildId, channelId) {
+        if (this.disableLegacyUI) return; // No legacy panel updates
         const panelInfo = this.musicPanels.get(channelId);
         if (panelInfo && panelInfo.message) {
             try {
@@ -354,11 +415,15 @@ class AtiveMusicBot {
             case 'lyrics':
                 await this.handleLyricsCommand(interaction, musicManager);
                 break;
+            case 'tts':
+                await this.handleTTSCommand(interaction);
+                break;
         }
     }
 
     async handlePlayCommand(interaction, musicManager) {
         const query = interaction.options.getString('query');
+        const fastMode = interaction.options.getBoolean('fast') ?? true; // Default to Discord Player (YouTube + Spotify only)
         const member = interaction.member;
         const voiceChannel = member.voice.channel;
         
@@ -367,6 +432,12 @@ class AtiveMusicBot {
                 embeds: [this.createErrorEmbed('You need to be in a voice channel to play music!')],
                 ephemeral: true
             });
+        }
+
+        // Use Discord Player for faster, more reliable playback
+        if (fastMode) {
+            console.log(`🚀 Fast mode: Using Discord Player for "${query}"`);
+            return await this.discordPlayer.play(interaction, query);
         }
 
         await interaction.deferReply();
@@ -572,17 +643,86 @@ class AtiveMusicBot {
         return embed;
     }
 
-    createProgressBar(track, musicManager, length = 20) {
-        // For now, return a simple visual indicator since we don't track play time
-        const filled = '━';
-        const empty = '━';
-        const indicator = '🔘';
+    createProgressBar(track, musicManager, segments = 16) {
+        const durationMs = this.getTrackDurationMs(track, musicManager) || 0;
+        let elapsedMs = 0;
+        if (musicManager && musicManager.isPlaying && !musicManager.isPaused && musicManager.trackStartTime) {
+            elapsedMs = Date.now() - musicManager.trackStartTime;
+        } else if (musicManager && musicManager.isPaused && musicManager.trackStartTime) {
+            // Approximate elapsed at pause time; if we previously updated the panel, it will be close enough
+            elapsedMs = Math.max(0, (this._panelLastElapsed?.get(musicManager.channelId) || (Date.now() - musicManager.trackStartTime)));
+        }
+        elapsedMs = Math.max(0, Math.min(durationMs || 0, elapsedMs));
+
+        const ratio = durationMs > 0 ? elapsedMs / durationMs : 0;
+        let filled = Math.floor(ratio * segments);
+        if (filled >= segments) filled = segments - 1;
+        const empty = Math.max(0, segments - filled - 1);
+        const bar = '▰'.repeat(filled) + '🔘' + '▱'.repeat(empty);
+        const elapsedStr = this.formatMs(elapsedMs);
+        const totalStr = this.formatMs(durationMs);
         
-        // Create a simple progress indicator (this could be enhanced with actual timing)
-        const progress = Math.floor(length / 3); // Simple placeholder
-        const bar = filled.repeat(progress) + indicator + empty.repeat(length - progress - 1);
-        
-        return `\`${bar}\``;
+        // Track last elapsed for paused state approximation
+        if (!this._panelLastElapsed) this._panelLastElapsed = new Map();
+        this._panelLastElapsed.set(musicManager.channelId, elapsedMs);
+
+        return `\`${elapsedStr}\` ${bar} \`${totalStr}\``;
+    }
+
+    getTrackDurationMs(track, musicManager) {
+        if (!track) return 0;
+        if (track.durationMS) return track.durationMS;
+        if (typeof track.duration === 'number') return track.duration;
+        if (typeof track.duration === 'string') {
+            try {
+                if (musicManager?.parseDuration) {
+                    return musicManager.parseDuration(track.duration);
+                }
+                // Fallback parse mm:ss or hh:mm:ss
+                const parts = track.duration.split(':').map(n => parseInt(n, 10));
+                if (parts.length === 3) {
+                    return ((parts[0]*3600) + (parts[1]*60) + parts[2]) * 1000;
+                } else if (parts.length === 2) {
+                    return ((parts[0]*60) + parts[1]) * 1000;
+                }
+            } catch (_) { }
+        }
+        return 0;
+    }
+
+    formatMs(ms) {
+        if (!ms || ms < 0) return '0:00';
+        const s = Math.floor(ms/1000);
+        const sec = s % 60;
+        const min = Math.floor((s/60) % 60);
+        const hr = Math.floor(s/3600);
+        if (hr > 0) return `${hr}:${min.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
+        return `${min}:${sec.toString().padStart(2,'0')}`;
+    }
+
+    startPanelProgressUpdater() {
+        setInterval(async () => {
+            try {
+                for (const [channelId, panelInfo] of this.musicPanels.entries()) {
+                    const musicManager = this.musicManagers.get(channelId);
+                    if (!musicManager || !musicManager.currentTrack) continue;
+                    // Only update when playing or paused on a track
+                    if (!musicManager.isPlaying && !musicManager.isPaused) continue;
+
+                    const embed = this.createNowPlayingEmbed(musicManager.currentTrack, musicManager);
+                    try {
+                        await panelInfo.message.edit({ embeds: [embed] });
+                    } catch (e) {
+                        // If message was deleted or can't be edited, drop the panel
+                        if (e?.code === 10008 || /Unknown Message/i.test(e?.message || '')) {
+                            this.musicPanels.delete(channelId);
+                        }
+                    }
+                }
+            } catch (_) {
+                // ignore updater errors
+            }
+        }, 2000);
     }
 
     createErrorEmbed(message) {
@@ -764,6 +904,7 @@ class AtiveMusicBot {
     }
 
     async sendNewMusicPanel(channel, track, voiceChannelId, musicManager) {
+        if (this.disableLegacyUI) return null;
         const guildId = channel.guild.id;
         
         // Delete previous panel first
@@ -831,6 +972,13 @@ class AtiveMusicBot {
                 console.log('⚠️ Interaction already handled, skipping...');
                 return;
             }
+
+            // Check if interaction is expired (15 minutes = 900000ms)
+            const interactionAge = Date.now() - interaction.createdTimestamp;
+            if (interactionAge > 900000) {
+                console.log('⚠️ Interaction expired, skipping...');
+                return;
+            }
             
             // Find which voice channel to use - prefer user's current channel
             let currentChannelId = interaction.member.voice?.channel?.id;
@@ -896,10 +1044,27 @@ class AtiveMusicBot {
             // Defer the interaction immediately to prevent timeouts
             if (!interaction.deferred && !interaction.replied) {
                 try {
-                    await interaction.deferReply({ ephemeral: true });
+                    // Use a shorter timeout and defer immediately
+                    const deferPromise = interaction.deferReply({ flags: 64 }); // 64 = ephemeral flag
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Defer timeout')), 2000)
+                    );
+                    
+                    await Promise.race([deferPromise, timeoutPromise]);
+                    console.log(`✅ Successfully deferred interaction: ${interaction.customId}`);
                 } catch (deferError) {
-                    if (deferError.code !== 'InteractionAlreadyReplied') {
+                    if (deferError.code !== 'InteractionAlreadyReplied' && deferError.code !== 10062) {
                         console.error(`⚠️ Could not defer interaction: ${deferError.message}`);
+                        // If deferring fails, try to reply directly
+                        try {
+                            await interaction.reply({ 
+                                content: '⏳ Processing your request...', 
+                                flags: 64
+                            });
+                        } catch (replyError) {
+                            console.error(`❌ Failed to respond to interaction: ${replyError.message}`);
+                            return; // Give up on this interaction
+                        }
                     }
                 }
             }
@@ -907,17 +1072,41 @@ class AtiveMusicBot {
             // Helper function to safely respond to interaction
             const safeReply = async (options, useUpdate = false) => {
                 try {
-                    if (interaction.deferred && !interaction.replied) {
-                        await interaction.editReply(options);
-                    } else if (!interaction.replied && !interaction.deferred) {
-                        await interaction.reply(options);
-                    } else {
-                        // Fallback: send as followUp if possible
-                        await interaction.followUp({...options, ephemeral: true});
-                    }
+                    // Add timeout to prevent hanging
+                    const replyPromise = (async () => {
+                        if (interaction.deferred && !interaction.replied) {
+                            return await interaction.editReply(options);
+                        } else if (!interaction.replied && !interaction.deferred) {
+                            return await interaction.reply({...options, flags: options.ephemeral ? 64 : 0});
+                        } else {
+                            // Fallback: send as followUp if possible
+                            return await interaction.followUp({...options, flags: 64});
+                        }
+                    })();
+                    
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Reply timeout')), 3000)
+                    );
+                    
+                    await Promise.race([replyPromise, timeoutPromise]);
+                    console.log(`✅ Successfully replied to interaction: ${interaction.customId}`);
                 } catch (error) {
-                    if (error.code !== 'InteractionAlreadyReplied' && error.code !== 10062) {
+                    if (error.code !== 'InteractionAlreadyReplied' && 
+                        error.code !== 10062 && 
+                        error.code !== 'Unknown interaction') {
                         console.error(`⚠️ Could not respond to interaction: ${error.message}`);
+                        
+                        // Last resort: try a simple followUp
+                        try {
+                            if (!error.message.includes('timeout')) {
+                                await interaction.followUp({
+                                    content: typeof options.content === 'string' ? options.content : '✅ Action completed',
+                                    ephemeral: true
+                                });
+                            }
+                        } catch (lastResortError) {
+                            console.error(`❌ Final attempt failed: ${lastResortError.message}`);
+                        }
                     }
                 }
             };
@@ -2449,6 +2638,11 @@ class AtiveMusicBot {
                         .setDescription('Song name, URL, or search query')
                         .setRequired(true)
                         .setAutocomplete(true)
+                )
+                .addBooleanOption(option =>
+                    option.setName('fast')
+                        .setDescription('Use fast mode with Discord Player (YouTube + Spotify only, default: true)')
+                        .setRequired(false)
                 ),
             new SlashCommandBuilder()
                 .setName('clear')
@@ -2633,6 +2827,19 @@ class AtiveMusicBot {
                             { name: 'Get lyrics for song', value: 'song' },
                             { name: 'Search by lyrics', value: 'lyrics' }
                         )
+                ),
+            new SlashCommandBuilder()
+                .setName('tts')
+                .setDescription('Speak text in your voice channel (requires discord-player-tts)')
+                .addStringOption(option =>
+                    option.setName('text')
+                        .setDescription('What to say')
+                        .setRequired(true)
+                )
+                .addStringOption(option =>
+                    option.setName('voice')
+                        .setDescription('Voice/language code (e.g., en, en-US, es, fr)')
+                        .setRequired(false)
                 )
         ].map(command => command.toJSON());
 
@@ -2644,6 +2851,29 @@ class AtiveMusicBot {
             console.log('✅ Slash commands registered successfully!');
         } catch (error) {
             console.error('❌ Error registering commands:', error);
+        }
+    }
+
+    async handleTTSCommand(interaction) {
+        const member = interaction.member;
+        const voiceChannel = member?.voice?.channel;
+        if (!voiceChannel) {
+            return await interaction.reply({
+                embeds: [this.createErrorEmbed('You need to be in a voice channel to use TTS!')],
+                ephemeral: true
+            });
+        }
+
+        const text = interaction.options.getString('text', true);
+        const voice = interaction.options.getString('voice') || 'en';
+
+        try {
+            await this.discordPlayer.tts(interaction, text, { voice });
+        } catch (e) {
+            console.error('TTS command error:', e);
+            try {
+                await interaction.editReply({ content: '❌ TTS failed. Ensure discord-player-tts is installed.' });
+            } catch (_) {}
         }
     }
 
@@ -3046,13 +3276,9 @@ class AtiveMusicBot {
                 }
                 
             } catch (error) {
-                console.error('Autocomplete error:', error);
-                try {
-                    if (!interaction.replied && !interaction.deferred) {
-                        await interaction.respond([]);
-                    }
-                } catch (respondError) {
-                    console.error('Failed to send error response:', respondError);
+                // Silently handle expired autocomplete interactions
+                if (error.code !== 10062) {
+                    console.error('Autocomplete error:', error.message);
                 }
             }
         } else if (commandName === 'clear') {

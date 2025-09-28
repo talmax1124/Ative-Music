@@ -14,9 +14,15 @@
     "postinstall": "echo 'Dependencies installed successfully'"
   },
   "dependencies": {
+    "@discord-player/extractor": "^7.1.0",
     "@discordjs/voice": "^0.17.0",
     "@distube/ytdl-core": "^4.16.12",
     "cheerio": "^1.1.2",
+    "discord-player": "^7.1.0",
+    "discord-player-tts": "^1.0.9",
+    "discord-player-youtube": "^0.5.6",
+    "discord-player-youtubei": "^1.5.0",
+    "discord-player-ytdlp": "^1.0.4",
     "discord.js": "^14.14.1",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
@@ -33,7 +39,8 @@
     "undici": "^5.28.4",
     "youtube-sr": "^4.3.12",
     "yt-dlp-wrap": "^2.3.12",
-    "yt-search": "^2.10.4"
+    "yt-search": "^2.10.4",
+    "ytdl-core": "^4.11.5"
   },
   "devDependencies": {
     "@types/node": "^20.11.5"

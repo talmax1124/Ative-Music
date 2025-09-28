@@ -150,7 +150,7 @@ class MusicManager {
             console.log('🤖 Auto-queuing recommendations since only one song in queue...');
             // Small delay to ensure the current track is properly set
             setTimeout(() => {
-                this.fillQueueWithRecommendations(3, userContext);
+                this.fillQueueWithRecommendations(3, userContext || {});
             }, 2000);
         }
         
@@ -158,7 +158,7 @@ class MusicManager {
         if (this.queue.length <= 3 && this.autoPlayEnabled && this.continuousPlayback) {
             console.log('🔄 Queue running low, proactively adding more tracks...');
             setTimeout(() => {
-                this.fillQueueWithRecommendations(8, userContext);
+                this.fillQueueWithRecommendations(8, userContext || {});
             }, 1000);
         }
         
@@ -253,7 +253,7 @@ class MusicManager {
             const stream = await this.sourceHandlers.getStream(this.currentTrack);
             
             if (!stream) {
-                console.error('❌ Failed to get stream for track');
+                console.error('❌ Failed to get stream for track - no stream returned');
                 // Handle as stream error, not skip
                 this.handleStreamError();
                 return false;
@@ -332,12 +332,13 @@ class MusicManager {
             return true;
 
         } catch (error) {
-            console.error('❌ Error playing track:', error);
+            console.error('❌ Error playing track:', error.message);
+            console.error('❌ Full error details:', error);
             
             // If all streaming methods failed, try to skip to next track
             if (error.message.includes('All streaming methods failed')) {
                 console.log('❌ All streaming methods failed for this track, skipping...');
-                await this.skip();
+                this.handleStreamError();
                 return false;
             }
             
@@ -354,7 +355,7 @@ class MusicManager {
             this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
             
             // Don't call skip to avoid infinite loops
-            this.handleTrackEnd();
+            this.handleStreamError();
             return false;
         }
     }
@@ -546,6 +547,10 @@ class MusicManager {
         }
 
         return true;
+    }
+
+    getCurrentTrack() {
+        return this.currentTrack;
     }
 
     getQueueInfo() {

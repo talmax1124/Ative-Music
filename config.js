@@ -18,16 +18,21 @@ module.exports = {
     },
     
     colors: {
-        success: 0x57F287,      // Discord Green
-        error: 0xED4245,        // Discord Red
-        info: 0x5865F2,         // Discord Blurple
-        warning: 0xFEE75C,      // Discord Yellow
-        music: 0xEB459E,        // Discord Pink/Music
-        playing: 0x57F287,      // Green for playing
-        paused: 0xFEE75C,       // Yellow for paused
-        stopped: 0x747F8D,      // Gray for stopped
-        queue: 0x5865F2,        // Blurple for queue
-        premium: 0xF1C40F       // Gold for premium features
+        // Modern gradient-inspired colors
+        primary: 0x6366F1,      // Modern Indigo
+        secondary: 0x8B5CF6,    // Modern Purple  
+        success: 0x10B981,      // Modern Green
+        error: 0xEF4444,        // Modern Red
+        warning: 0xF59E0B,      // Modern Amber
+        info: 0x3B82F6,         // Modern Blue
+        
+        // Music-specific modern colors
+        music: 0xEC4899,        // Modern Pink
+        playing: 0x14B8A6,      // Teal (modern playing)
+        paused: 0xF59E0B,       // Amber (modern paused)
+        stopped: 0x6B7280,      // Modern Gray
+        queue: 0x8B5CF6,        // Purple for queue
+        premium: 0xFBBF24       // Modern Gold
     },
     
     emojis: {

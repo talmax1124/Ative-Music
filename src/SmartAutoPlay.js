@@ -43,7 +43,7 @@ class SmartAutoPlay {
     async getNextRecommendation(currentTrack, playHistory = [], userContext = {}) {
         console.log('🧠 Smart Auto-Play: Finding next recommendation with AI analysis...');
         
-        const { userId, guildId } = userContext;
+        const { userId, guildId } = userContext || {};
         
         if (!currentTrack) {
             console.log('⚠️ No current track provided, using personalized fallback strategy');
