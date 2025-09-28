@@ -485,10 +485,8 @@ class SourceHandlers {
                 const errorMsg = data.toString();
                 errorBuffer += errorMsg;
                 
-                // Only log critical errors, not progress
-                if (errorMsg.includes('ERROR') || errorMsg.includes('WARNING')) {
-                    console.error(`yt-dlp: ${errorMsg.trim()}`);
-                }
+                // Log ALL stderr output for debugging
+                console.error(`yt-dlp stderr: ${errorMsg.trim()}`);
                 
                 // If we see a format error and haven't resolved yet, reject immediately
                 if (!resolved && errorMsg.includes('Requested format is not available')) {
