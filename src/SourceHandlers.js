@@ -440,7 +440,6 @@ class SourceHandlers {
                 '--no-playlist',
                 '--no-check-certificates',
                 '--prefer-free-formats',
-                '--extract-flat', 'never',
             ];
             
             if (hasCookies) {
