@@ -529,6 +529,7 @@ class SourceHandlers {
 
         // Try multiple possible yt-dlp locations
         const ytdlpPaths = [
+            '/home/container/yt-dlp', // Pterodactyl container location
             'yt-dlp',
             '/usr/local/bin/yt-dlp',
             '/usr/bin/yt-dlp',
