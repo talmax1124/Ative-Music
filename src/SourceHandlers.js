@@ -240,35 +240,45 @@ class SourceHandlers {
     }
 
     async searchYouTube(query, limit = 5) {
+        if (!query || typeof query !== 'string') {
+            console.error('❌ Invalid YouTube search query:', query);
+            return [];
+        }
+
         try {
-            // Try yt-search first (more reliable with current YouTube changes)
             console.log(`🔍 yt-search for: ${query}`);
-            const ytsResults = await yts(query);
             
-            if (ytsResults && ytsResults.videos && ytsResults.videos.length > 0) {
-                console.log(`✅ yt-search found ${ytsResults.videos.length} results`);
-                return ytsResults.videos.slice(0, limit).map(video => ({
-                    title: video.title,
-                    author: video.author?.name || 'Unknown',
-                    duration: video.duration?.timestamp || '0:00',
-                    url: video.url,
-                    thumbnail: video.thumbnail,
-                    source: 'youtube',
-                    type: 'track',
-                    viewCount: video.views || 0,
-                    id: video.videoId
-                }));
+            try {
+                const ytsResults = await yts(query);
+                
+                if (ytsResults && ytsResults.videos && Array.isArray(ytsResults.videos) && ytsResults.videos.length > 0) {
+                    console.log(`✅ yt-search found ${ytsResults.videos.length} results`);
+                    return ytsResults.videos.slice(0, limit).map(video => ({
+                        title: video.title || 'Unknown Title',
+                        author: video.author?.name || video.author || 'Unknown',
+                        duration: video.duration?.timestamp || video.timestamp || '0:00',
+                        url: video.url,
+                        thumbnail: video.thumbnail,
+                        source: 'youtube',
+                        type: 'track',
+                        viewCount: video.views || 0,
+                        id: video.videoId
+                    }));
+                } else {
+                    console.log('⚠️ yt-search returned no results');
+                }
+            } catch (ytsError) {
+                console.log(`⚠️ yt-search failed: ${ytsError?.message || 'Unknown error'}`);
             }
 
-            // Fallback to YouTube-SR if yt-search fails
-            console.log('⚠️ yt-search failed, trying YouTube-SR fallback');
+            console.log('🔄 Trying YouTube-SR fallback');
             try {
                 const results = await YouTube.search(query, { limit, type: 'video' });
                 
-                if (results && results.length > 0) {
+                if (results && Array.isArray(results) && results.length > 0) {
                     console.log(`✅ YouTube-SR found ${results.length} results`);
                     return results.map(video => ({
-                        title: video.title,
+                        title: video.title || 'Unknown Title',
                         author: video.channel?.name || 'Unknown',
                         duration: video.durationFormatted || '0:00',
                         url: `https://www.youtube.com/watch?v=${video.id}`,
@@ -278,14 +288,17 @@ class SourceHandlers {
                         viewCount: video.views || 0,
                         id: video.id
                     }));
+                } else {
+                    console.log('⚠️ YouTube-SR returned no results');
                 }
             } catch (srError) {
-                console.log('⚠️ YouTube-SR also failed due to signature issues');
+                console.log(`⚠️ YouTube-SR failed: ${srError?.message || 'Unknown error'}`);
             }
 
+            console.log('❌ All YouTube search methods failed');
             return [];
         } catch (error) {
-            console.error('❌ YouTube search error:', error.message);
+            console.error('❌ YouTube search error:', error?.message || String(error) || 'Unknown error');
             return [];
         }
     }
