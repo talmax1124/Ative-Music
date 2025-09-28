@@ -575,48 +575,14 @@ class DiscordPlayerManager {
                 console.log(`🎵 Track added to queue. Currently playing: ${musicManager.isPlaying}, Queue position: ${musicManager.currentTrackIndex + 1}/${musicManager.queue.length}`);
             }
 
-            // Create a Now Playing panel with controls
-            const embed = new EmbedBuilder()
-                .setColor(0x57F287)
-                .setTitle('🎵 Now Playing')
-                .setDescription(`**${track.title}**\nby ${track.author}`)
-                .addFields(
-                    { name: 'Source', value: track.source.toUpperCase(), inline: true },
-                    { name: 'Duration', value: track.duration, inline: true },
-                    { name: 'Queue', value: `${musicManager.queue.length} tracks`, inline: true }
-                )
-                .setThumbnail(track.thumbnail || null)
-                .setTimestamp();
-
-            const row = new ActionRowBuilder()
-                .addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('pause')
-                        .setLabel('Pause')
-                        .setEmoji('⏸️')
-                        .setStyle(ButtonStyle.Secondary),
-                    new ButtonBuilder()
-                        .setCustomId('skip')
-                        .setLabel('Skip')
-                        .setEmoji('⏭️')
-                        .setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder()
-                        .setCustomId('stop')
-                        .setLabel('Stop')
-                        .setEmoji('⏹️')
-                        .setStyle(ButtonStyle.Danger),
-                    new ButtonBuilder()
-                        .setCustomId('queue')
-                        .setLabel('Queue')
-                        .setEmoji('📜')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-
+            // Send proper Now Playing panel with live progress tracking
             await interaction.editReply({
-                content: null,
-                embeds: [embed],
-                components: [row]
+                content: '✅ Now playing!',
+                ephemeral: false
             });
+
+            // Send the live-updating music panel in the channel
+            await bot.sendNewMusicPanel(interaction.channel, track, voiceChannel.id, musicManager);
 
             return true;
         } catch (fallbackError) {

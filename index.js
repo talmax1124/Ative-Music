@@ -117,12 +117,10 @@ class AtiveMusicBot {
         this.setupEventListeners();
         this.registerCommands();
 
-        // Disable legacy UI panels in favor of Discord Player embeds
-        this.disableLegacyUI = true;
-        // Only start legacy panel updater if explicitly enabled
-        if (!this.disableLegacyUI) {
-            this.startPanelProgressUpdater();
-        }
+        // Enable legacy UI panels for built-in MusicManager (has live progress tracking)
+        this.disableLegacyUI = false;
+        // Start panel updater for live progress tracking
+        this.startPanelProgressUpdater();
     }
 
     setupEventListeners() {
@@ -209,7 +207,6 @@ class AtiveMusicBot {
     }
 
     async handleTrackStart(guildId, channelId, track) {
-        if (this.disableLegacyUI) return; // Use DiscordPlayerManager UI only
         const trackTitle = track?.title || 'Unknown';
         console.log(`🎵 Track started in channel ${channelId} (guild ${guildId}): ${trackTitle}`);
         
@@ -262,7 +259,6 @@ class AtiveMusicBot {
     }
 
     async handleQueueEmpty(guildId, channelId) {
-        if (this.disableLegacyUI) return; // No legacy panel updates
         const panelInfo = this.musicPanels.get(channelId);
         if (panelInfo && panelInfo.message) {
             try {
@@ -904,7 +900,6 @@ class AtiveMusicBot {
     }
 
     async sendNewMusicPanel(channel, track, voiceChannelId, musicManager) {
-        if (this.disableLegacyUI) return null;
         const guildId = channel.guild.id;
         
         // Delete previous panel first
