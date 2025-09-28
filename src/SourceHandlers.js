@@ -450,9 +450,10 @@ class SourceHandlers {
             
             ytdlpArgs.push(track.url);
             
-            console.log(`🔧 yt-dlp command: yt-dlp ${ytdlpArgs.join(' ')}`);
+            const ytdlpPath = this.ytDlpPath || 'yt-dlp';
+            console.log(`🔧 yt-dlp command: ${ytdlpPath} ${ytdlpArgs.join(' ')}`);
             
-            const ytdlp = spawn('yt-dlp', ytdlpArgs);
+            const ytdlp = spawn(ytdlpPath, ytdlpArgs);
 
             const stream = new PassThrough();
             let resolved = false;
@@ -526,27 +527,50 @@ class SourceHandlers {
             return this.ytDlpAvailable;
         }
 
-        try {
-            await new Promise((resolve, reject) => {
-                const ytdlp = spawn('yt-dlp', ['--version']);
-                ytdlp.on('close', (code) => {
-                    if (code === 0) {
-                        resolve();
-                    } else {
-                        reject(new Error(`yt-dlp not available`));
-                    }
+        // Try multiple possible yt-dlp locations
+        const ytdlpPaths = [
+            'yt-dlp',
+            '/usr/local/bin/yt-dlp',
+            '/usr/bin/yt-dlp',
+            process.env.YTDL_BINARY_PATH
+        ].filter(Boolean);
+
+        for (const ytdlpPath of ytdlpPaths) {
+            try {
+                await new Promise((resolve, reject) => {
+                    const ytdlp = spawn(ytdlpPath, ['--version']);
+                    let versionOutput = '';
+                    
+                    ytdlp.stdout.on('data', (data) => {
+                        versionOutput += data.toString();
+                    });
+                    
+                    ytdlp.on('close', (code) => {
+                        if (code === 0) {
+                            console.log(`✅ yt-dlp found at: ${ytdlpPath} (version: ${versionOutput.trim()})`);
+                            resolve();
+                        } else {
+                            reject(new Error(`yt-dlp not available at ${ytdlpPath}`));
+                        }
+                    });
+                    ytdlp.on('error', (error) => {
+                        reject(new Error(`yt-dlp error at ${ytdlpPath}: ${error.message}`));
+                    });
                 });
-                ytdlp.on('error', reject);
-            });
-            
-            this.ytDlpAvailable = true;
-            console.log('✅ yt-dlp is available');
-            return true;
-        } catch (error) {
-            this.ytDlpAvailable = false;
-            console.log('⚠️ yt-dlp not available, using fallback methods');
-            return false;
+                
+                this.ytDlpAvailable = true;
+                this.ytDlpPath = ytdlpPath;
+                return true;
+            } catch (error) {
+                // Try next path
+                continue;
+            }
         }
+        
+        this.ytDlpAvailable = false;
+        console.log('⚠️ yt-dlp not available in any location, using fallback methods');
+        console.log(`Searched paths: ${ytdlpPaths.join(', ')}`);
+        return false;
     }
 }
 
