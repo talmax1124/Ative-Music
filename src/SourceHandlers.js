@@ -439,13 +439,11 @@ class SourceHandlers {
             const hasCookies = fs.existsSync(cookiesPath);
             
             const ytdlpArgs = [
-                '--format', 'bestaudio/best',
-                '--extract-audio',
-                '--audio-format', 'opus',
+                '--format', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
                 '--output', '-',
-                '--quiet',
                 '--no-warnings',
                 '--no-playlist',
+                '--no-check-certificates',
             ];
             
             if (hasCookies) {
