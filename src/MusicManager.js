@@ -761,7 +761,7 @@ class MusicManager {
     }
 
     async handleTrackEnd() {
-        console.log('🎵 Track ended, determining next action...');
+        console.log('🎵 Track ended, clearing queue for fresh session...');
         
         if (this.isTransitioning) {
             console.log('⚠️ Track end ignored - already transitioning');
@@ -785,74 +785,18 @@ class MusicManager {
             this.onTrackEnd(lastTrack);
         }
         
-        // Determine next action based on queue state and settings
-        const hasNextInQueue = this.currentTrackIndex + 1 < this.queue.length;
+        // Clear queue and stop playback for fresh session
+        console.log('🧹 Clearing queue after track completion - ready for fresh session');
+        this.clearQueue(false); // Don't mark as user-initiated to preserve auto-play settings
+        this.clearCurrentPosition();
         
-        console.log(`🔍 Track end analysis: hasNext=${hasNextInQueue}, currentIndex=${this.currentTrackIndex}, queueLength=${this.queue.length}, continuous=${this.continuousPlayback}, autoPlay=${this.autoPlayEnabled}`);
+        // Stop playback completely
+        this.stop(false);
         
-        if (hasNextInQueue && this.continuousPlayback) {
-            // Advance to next track in queue
-            console.log('🔄 Auto-advancing to next track in queue...');
-            this.currentTrackIndex++;
-            
-            console.log(`📍 Advanced to track index ${this.currentTrackIndex} of ${this.queue.length} total tracks`);
-            console.log(`🎵 Next track: ${this.queue[this.currentTrackIndex]?.title || 'Unknown'}`);
-            
-            // Only refill queue if running low
-            const tracksRemaining = this.queue.length - this.currentTrackIndex - 1;
-            if (tracksRemaining <= 1 && this.autoPlayEnabled && this.continuousPlayback) {
-                console.log(`🔄 Queue running low (${tracksRemaining} tracks remaining), adding recommendations...`);
-                setTimeout(() => {
-                    this.fillQueueWithRecommendations(3, { userId: lastTrack?.requestedBy, guildId: this.guildId });
-                }, 1000);
-            }
-            
-            this.autoPlayTimeout = setTimeout(async () => {
-                try {
-                    if (!this.isPlaying && !this.userStoppedPlayback) {
-                        console.log(`🎵 Playing next track: ${this.queue[this.currentTrackIndex]?.title}`);
-                        await this.play();
-                    }
-                } catch (error) {
-                    console.error('❌ Error playing next track:', error);
-                    // If playing the next track fails, try to advance again
-                    if (this.currentTrackIndex + 1 < this.queue.length) {
-                        console.log('🔄 Trying to advance to the following track...');
-                        this.currentTrackIndex++;
-                        setTimeout(() => this.play().catch(console.error), 1000);
-                    }
-                } finally {
-                    this.isTransitioning = false;
-                    clearTimeout(transitionTimeout);
-                }
-            }, 1000);
-        } else if (!hasNextInQueue && this.autoPlayEnabled && this.continuousPlayback) {
-            // Queue is empty, try to find recommendations
-            console.log('🤖 Queue empty, finding smart recommendation...');
-            this.clearCurrentPosition();
-            this.autoPlayTimeout = setTimeout(async () => {
-                try {
-                    if (!this.isPlaying && !this.userStoppedPlayback) {
-                        await this.findAndPlayRecommendation(lastTrack);
-                    }
-                } catch (error) {
-                    console.error('❌ Error finding recommendation:', error);
-                } finally {
-                    this.isTransitioning = false;
-                    clearTimeout(transitionTimeout);
-                }
-            }, 1500);
-        } else {
-            // Stop playback - either continuous playback disabled or auto-play disabled
-            console.log('⏸️ Track ended - stopping playback (continuous/auto-play disabled)');
-            this.clearCurrentPosition();
-            
-            if (this.queue.length === 0 && this.onQueueEmpty) {
-                this.onQueueEmpty();
-            }
-            this.isTransitioning = false;
-            clearTimeout(transitionTimeout);
-        }
+        console.log('✅ Queue cleared and playback stopped - ready for new session');
+        
+        this.isTransitioning = false;
+        clearTimeout(transitionTimeout);
     }
 
     async findAndPlayRecommendation(lastTrack = null, userContext = {}) {

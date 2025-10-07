@@ -11,7 +11,11 @@ class WebPortalServer {
     this.publicPort = process.env.PUBLIC_PORT || process.env.SERVER_PORT || process.env.WEB_PORT || 25567;
     this.apiToken = process.env.WEB_API_TOKEN || null;
     
+    // Store SSE clients for progress updates
+    this.progressClients = new Set();
+    
     this.setupRoutes();
+    this.setupProgressListener();
   }
 
   auth(req, res, next) {
@@ -21,6 +25,14 @@ class WebPortalServer {
 
   setupRoutes() {
     this.app.use(express.json());
+    
+    // Add CORS headers
+    this.app.use((req, res, next) => {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+      next();
+    });
 
     // Ultra-Modern Web Player UI inspired by Spotify/Apple Music
     this.app.get('/', (req, res) => {
@@ -247,6 +259,27 @@ class WebPortalServer {
       border-radius: 8px;
       width: 36px;
       height: 36px;
+    }
+    
+    .btn.loading {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+    
+    .spinner {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid transparent;
+      border-top: 2px solid currentColor;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-right: 6px;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
     }
     
     /* Content Area */
@@ -612,6 +645,74 @@ class WebPortalServer {
       color: var(--text-muted);
     }
     
+    /* Download Progress Section */
+    .download-progress {
+      background: var(--tertiary-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin: 16px 0;
+      animation: slideDown 0.3s ease-out;
+    }
+    
+    .download-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    
+    .download-title {
+      font-weight: 500;
+      color: var(--text-primary);
+      font-size: 0.9rem;
+    }
+    
+    .download-status {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    
+    .download-bar {
+      width: 100%;
+      height: 6px;
+      background: var(--surface);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    
+    .download-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #2ea043);
+      border-radius: 3px;
+      transition: width 0.3s ease;
+      animation: pulse 2s ease-in-out infinite alternate;
+    }
+    
+    .download-percent {
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+    
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 0.8; }
+      100% { opacity: 1; }
+    }
+    
     /* Queue Section */
     .queue-list {
       margin-top: 1rem;
@@ -794,6 +895,13 @@ class WebPortalServer {
         <button class="btn btn-secondary btn-small" id="btn-repeat">
           <i class="fas fa-repeat"></i> Repeat
         </button>
+        <button class="btn btn-secondary btn-small" id="btn-autoplay" style="position: relative;">
+          <i class="fas fa-magic"></i> Auto-play
+          <span class="autoplay-status" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 0.7rem; opacity: 0.7;">ON</span>
+        </button>
+        <button class="btn btn-danger btn-small" id="btn-clear-queue">
+          <i class="fas fa-trash"></i> Clear Queue
+        </button>
       </div>
     </div>
 
@@ -858,6 +966,18 @@ class WebPortalServer {
       </button>
     </div>
     
+    <!-- Download Progress Section -->
+    <div class="download-progress" id="download-progress" style="display: none;">
+      <div class="download-info">
+        <div class="download-title" id="download-title">Preparing track...</div>
+        <div class="download-status" id="download-status">Starting download...</div>
+      </div>
+      <div class="download-bar">
+        <div class="download-fill" id="download-fill" style="width: 0%"></div>
+      </div>
+      <div class="download-percent" id="download-percent">0%</div>
+    </div>
+    
     <div class="progress-section">
       <div class="progress-times">
         <span id="current-time">0:00</span>
@@ -898,6 +1018,8 @@ class WebPortalServer {
       btnNext: document.getElementById('btn-next'),
       btnShuffle: document.getElementById('btn-shuffle'),
       btnRepeat: document.getElementById('btn-repeat'),
+      btnAutoplay: document.getElementById('btn-autoplay'),
+      btnClearQueue: document.getElementById('btn-clear-queue'),
       progressBar: document.getElementById('progress-bar'),
       progressFill: document.getElementById('progress-fill'),
       currentTime: document.getElementById('current-time'),
@@ -909,6 +1031,7 @@ class WebPortalServer {
     window.addEventListener('load', () => {
       loadGuilds();
       updateStatus();
+      loadAutoplayStatus();
       setInterval(updateStatus, 5000);
     });
 
@@ -935,7 +1058,16 @@ class WebPortalServer {
     async function loadGuilds() {
       try {
         const response = await fetch(BASE + '/api/guilds');
+        if (!response.ok) {
+          throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
+        }
         const guilds = await response.json();
+        
+        if (!Array.isArray(guilds) || guilds.length === 0) {
+          els.guild.innerHTML = '<option value="">No servers available</option>';
+          showNotification('Bot is not in any servers or not ready yet', 'warning');
+          return;
+        }
         
         els.guild.innerHTML = '<option value="">Select server...</option>';
         guilds.forEach(guild => {
@@ -952,8 +1084,15 @@ class WebPortalServer {
           currentGuild = savedGuildId;
           loadChannels(); // Auto-load channels for saved guild
         }
+        
+        showNotification(\`Loaded \${guilds.length} server(s)\`, 'success');
       } catch (error) {
-        showNotification('Failed to load servers', 'error');
+        console.error('Failed to load guilds:', error);
+        showNotification(\`Failed to load servers: \${error.message}\`, 'error');
+        setTimeout(() => {
+          console.log('Retrying guild load in 3 seconds...');
+          loadGuilds();
+        }, 3000);
       }
     }
 
@@ -1066,6 +1205,11 @@ class WebPortalServer {
         } else {
           els.statusDot.classList.remove('connected');
           els.connectionText.textContent = 'Disconnected';
+        }
+        
+        // Update auto-play button status
+        if (data.autoPlayEnabled !== undefined) {
+          updateAutoplayButton(data.autoPlayEnabled);
         }
 
         // Update player
@@ -1281,6 +1425,47 @@ class WebPortalServer {
     els.btnNext.addEventListener('click', () => control('skip'));
     els.btnShuffle.addEventListener('click', () => control('shuffle'));
     els.btnRepeat.addEventListener('click', () => control('repeat'));
+    // Helper function for auto-play button
+    function updateAutoplayButton(enabled) {
+      const statusSpan = els.btnAutoplay.querySelector('.autoplay-status');
+      statusSpan.textContent = enabled ? 'ON' : 'OFF';
+      statusSpan.style.color = enabled ? '#4CAF50' : '#f44336';
+      els.btnAutoplay.style.backgroundColor = enabled ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)';
+    }
+    
+    els.btnAutoplay.addEventListener('click', async () => {
+      const result = await control('autoplay');
+      if (result && result.autoPlayEnabled !== undefined) {
+        updateAutoplayButton(result.autoPlayEnabled);
+        showNotification('Auto-play ' + (result.autoPlayEnabled ? 'enabled' : 'disabled'), 'success');
+      }
+    });
+    
+    // Initialize auto-play button status on page load
+    async function loadAutoplayStatus() {
+      try {
+        const response = await fetch(BASE + '/api/status');
+        if (response.ok) {
+          const status = await response.json();
+          if (status.currentTrack && status.autoPlayEnabled !== undefined) {
+            updateAutoplayButton(status.autoPlayEnabled);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load auto-play status:', error);
+      }
+    }
+    
+    els.btnClearQueue.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to clear the entire queue?')) {
+        const result = await control('clearqueue');
+        if (result && result.success) {
+          showNotification('Queue cleared successfully', 'success');
+        } else {
+          showNotification('Failed to clear queue', 'error');
+        }
+      }
+    });
 
     els.progressBar.addEventListener('click', async (e) => {
       if (!currentTrack || totalTime === 0) return;
@@ -1291,6 +1476,70 @@ class WebPortalServer {
       
       await control('seek', seekTime);
     });
+
+    // Progress tracking variables
+    let progressEventSource = null;
+    let isProcessingTrack = false;
+
+    // Connect to progress stream
+    function connectToProgressStream() {
+      if (progressEventSource) {
+        progressEventSource.close();
+      }
+      
+      progressEventSource = new EventSource(BASE + '/api/progress');
+      
+      progressEventSource.onopen = () => {
+        console.log('Connected to progress stream');
+      };
+      
+      progressEventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'progress') {
+            updateDownloadProgress(data);
+          }
+        } catch (error) {
+          console.error('Error parsing progress data:', error);
+        }
+      };
+      
+      progressEventSource.onerror = (error) => {
+        console.log('Progress stream error, reconnecting in 5s...');
+        setTimeout(connectToProgressStream, 5000);
+      };
+    }
+
+    // Update download progress UI
+    function updateDownloadProgress(data) {
+      const progressSection = document.getElementById('download-progress');
+      const titleEl = document.getElementById('download-title');
+      const statusEl = document.getElementById('download-status');
+      const fillEl = document.getElementById('download-fill');
+      const percentEl = document.getElementById('download-percent');
+      
+      if (!isProcessingTrack && data.progress < 100) {
+        // Show progress bar when processing starts
+        isProcessingTrack = true;
+        progressSection.style.display = 'block';
+      }
+      
+      titleEl.textContent = data.title || 'Processing track...';
+      statusEl.textContent = data.status || 'Processing...';
+      fillEl.style.width = data.progress + '%';
+      percentEl.textContent = data.progress + '%';
+      
+      if (data.progress >= 100) {
+        // Hide progress bar after a short delay
+        setTimeout(() => {
+          progressSection.style.display = 'none';
+          isProcessingTrack = false;
+        }, 1500);
+      }
+    }
+
+    // Connect to progress stream on page load
+    connectToProgressStream();
 
     // Auto-refresh status
     setInterval(updateStatus, 2000);
@@ -1532,6 +1781,8 @@ class WebPortalServer {
           case 'previous':
           case 'shuffle':
           case 'repeat':
+          case 'autoplay':
+          case 'clearqueue':
             const musicManager = this.bot.musicManagers?.get(channelId);
             if (musicManager) {
               if (action === 'pause') musicManager.pause();
@@ -1540,6 +1791,14 @@ class WebPortalServer {
               else if (action === 'previous') musicManager.previous();
               else if (action === 'shuffle') musicManager.toggleShuffle();
               else if (action === 'repeat') musicManager.toggleRepeat();
+              else if (action === 'autoplay') {
+                const enabled = musicManager.setAutoPlay(!musicManager.autoPlayEnabled);
+                result = { success: true, autoPlayEnabled: enabled };
+              }
+              else if (action === 'clearqueue') {
+                musicManager.clearQueue(true); // true indicates user-initiated
+                result = { success: true, message: 'Queue cleared successfully' };
+              }
             } else {
               result = { success: false, error: 'No active music session' };
             }
@@ -1593,7 +1852,8 @@ class WebPortalServer {
           currentTime: 0,
           totalTime: 0,
           queue: [],
-          currentIndex: -1
+          currentIndex: -1,
+          autoPlayEnabled: true // Default value
         };
 
         if (connection && connection.joinConfig) {
@@ -1630,6 +1890,7 @@ class WebPortalServer {
               } catch { status.totalTime = 180; }
               status.queue = musicManager.queue || [];
               status.currentIndex = musicManager.currentTrackIndex || -1;
+              status.autoPlayEnabled = musicManager.autoPlayEnabled;
             }
           }
         }
@@ -1640,6 +1901,76 @@ class WebPortalServer {
         res.status(500).json({ error: error.message });
       }
     });
+
+    // Server-Sent Events endpoint for progress updates
+    this.app.get('/api/progress', this.auth, (req, res) => {
+      // Set up SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+      });
+
+      // Add client to the set
+      this.progressClients.add(res);
+      
+      // Send initial connection confirmation
+      res.write('data: {"type": "connected"}\n\n');
+
+      // Clean up when client disconnects
+      req.on('close', () => {
+        this.progressClients.delete(res);
+      });
+    });
+  }
+
+  setupProgressListener() {
+    // Listen for progress events from AudioProcessor
+    // The audioProcessor is in SourceHandlers, which might be in different places
+    setTimeout(() => {
+      // Try to find the audioProcessor in the bot structure
+      let audioProcessor = null;
+      
+      // Check if it's in SourceHandlers
+      if (this.bot.sourceHandlers?.audioProcessor) {
+        audioProcessor = this.bot.sourceHandlers.audioProcessor;
+      }
+      
+      // Check MusicManagers for audioProcessor
+      if (!audioProcessor && this.bot.musicManagers) {
+        for (const [key, musicManager] of this.bot.musicManagers) {
+          if (musicManager.sourceHandlers?.audioProcessor) {
+            audioProcessor = musicManager.sourceHandlers.audioProcessor;
+            break;
+          }
+        }
+      }
+      
+      if (audioProcessor) {
+        console.log('🔗 Connected to AudioProcessor for progress updates');
+        audioProcessor.on('progress', (data) => {
+          this.broadcastProgress(data);
+        });
+      } else {
+        console.log('⚠️ AudioProcessor not found, progress updates disabled');
+      }
+    }, 1000); // Wait for bot initialization
+  }
+
+  broadcastProgress(data) {
+    const message = `data: ${JSON.stringify({ type: 'progress', ...data })}\n\n`;
+    
+    // Send to all connected clients
+    for (const client of this.progressClients) {
+      try {
+        client.write(message);
+      } catch (error) {
+        // Remove client if write fails
+        this.progressClients.delete(client);
+      }
+    }
   }
 
   start() {

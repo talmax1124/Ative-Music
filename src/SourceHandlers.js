@@ -7,7 +7,9 @@ const config = require('../config.js');
 const play = require('play-dl');
 const { spawn } = require('child_process');
 const { Readable, PassThrough } = require('stream');
+const fs = require('fs');
 const DownloadCacheManager = require('./DownloadCacheManager');
+const AudioProcessor = require('./AudioProcessor');
 
 class SourceHandlers {
     constructor() {
@@ -40,6 +42,9 @@ class SourceHandlers {
 
         // Initialize download cache manager
         this.downloadCache = new DownloadCacheManager();
+        
+        // Initialize audio processor for MP3 conversion
+        this.audioProcessor = new AudioProcessor();
         
         // Stream cache for failed tracks
         this.streamCache = new Map();
@@ -542,65 +547,79 @@ class SourceHandlers {
         try {
             console.log(`🎵 Getting YouTube stream for: ${track.title}`);
             
+            // Use the new AudioProcessor to download and convert
+            const result = await this.audioProcessor.downloadAndConvert(track.url, track.title);
+            
+            if (result.cached) {
+                console.log(`📂 Using cached MP3: ${track.title}`);
+            } else {
+                console.log(`✅ Downloaded and converted to MP3: ${track.title}`);
+            }
+            
+            // Create read stream from MP3 file
+            const stream = fs.createReadStream(result.path);
+            
+            // Handle seek if requested
+            if (options.seekSeconds && options.seekSeconds > 0) {
+                console.log(`⏩ Seeking to ${options.seekSeconds} seconds in MP3 file`);
+                return this.createSeekableMP3Stream(result.path, options.seekSeconds);
+            }
+            
+            return stream;
+            
+        } catch (error) {
+            console.error(`❌ YouTube stream error: ${error.message}`);
+            
+            // Fallback to old streaming method if AudioProcessor fails
+            console.log(`🔄 Falling back to direct streaming for: ${track.title}`);
+            return await this.getYouTubeStreamFallback(track, options);
+        }
+    }
+
+    async getYouTubeStreamFallback(track, options = {}) {
+        try {
+            console.log(`🔄 Using fallback streaming for: ${track.title}`);
+            
             const videoId = this.downloadCache.extractVideoId(track.url);
             if (!videoId) {
                 throw new Error('Could not extract video ID from URL');
             }
             
-            // Check if file is already cached
+            // Check if file is already cached in old system
             if (this.downloadCache.isFileCached(videoId)) {
-                console.log(`📂 Streaming from cache: ${track.title}`);
+                console.log(`📂 Streaming from old cache: ${track.title}`);
                 return this.downloadCache.createReadStream(videoId);
             }
             
-            // Start background download for caching
-            const downloadPromise = this.downloadCache.downloadAndCache(videoId, track.url, track.title)
-                .catch(error => {
-                    console.log(`⚠️ Background download failed: ${error.message}`);
-                });
-            
-            // Meanwhile, try to stream directly for immediate playback
-            console.log(`🔄 Cache miss, streaming directly while downloading for cache`);
-            
-            // Prefer play-dl first for speed, then yt-dlp as fallback
+            // Try direct streaming methods
             const extractors = ['playdl', 'ytdlp'];
-            const startIndex = Number(track._fallbackIndex || 0) % extractors.length;
             for (let i = 0; i < extractors.length; i++) {
-                const which = extractors[(startIndex + i) % extractors.length];
+                const which = extractors[i];
                 try {
                     if (which === 'playdl') {
                         const streamResult = await play.stream(track.url, {
-                            quality: 2, // Higher quality for better reliability
+                            quality: 2,
                             ...(typeof options.seekSeconds === 'number' && options.seekSeconds > 0 ? { seek: Math.floor(options.seekSeconds) } : {})
                         });
-                        console.log('✅ play-dl stream created (fast path)');
-                        track._lastExtractor = 'playdl';
+                        console.log('✅ play-dl fallback stream created');
                         return streamResult.stream;
                     }
                     if (which === 'ytdlp') {
                         if (await this.isYtDlpAvailable()) {
-                            const fmtIndex = Number(track._ytdlpFormatIndex || 0);
-                            console.log(`🔄 Using yt-dlp fallback (fmt#${fmtIndex})`);
-                            const stream = await this.getYtDlpStream(track, fmtIndex);
-                            track._lastExtractor = 'ytdlp';
+                            console.log(`🔄 Using yt-dlp fallback`);
+                            const stream = await this.getYtDlpStream(track, 0);
                             return stream;
-                        } else {
-                            console.log('⚠️ yt-dlp not available, skipping');
                         }
                     }
                 } catch (err) {
-                    console.log(`⚠️ ${which} failed: ${err?.message || err}`);
-                    if (which === 'ytdlp') {
-                        // Nudge format index for next attempt if yt-dlp failed
-                        track._ytdlpFormatIndex = Number(track._ytdlpFormatIndex || 0) + 1;
-                    }
-                    // next extractor will be tried in loop
+                    console.log(`⚠️ Fallback ${which} failed: ${err?.message || err}`);
                 }
             }
-            throw new Error(`All streaming methods failed for: ${track.title}`);
+            
+            throw new Error(`All fallback streaming methods failed for: ${track.title}`);
         } catch (error) {
-            console.error(`❌ YouTube stream error: ${error.message}`);
-            throw new Error(`All streaming methods failed for: ${track.title}`);
+            console.error(`❌ Fallback stream error: ${error.message}`);
+            throw error;
         }
     }
 
@@ -892,6 +911,78 @@ class SourceHandlers {
         }
         
         return null;
+    }
+
+    createSeekableMP3Stream(filePath, seekSeconds) {
+        return new Promise((resolve, reject) => {
+            console.log(`🎯 Creating seekable stream starting at ${seekSeconds}s using FFmpeg`);
+            
+            const ffmpegArgs = [
+                '-ss', seekSeconds.toString(), // Seek to position before input (faster)
+                '-i', filePath,
+                '-acodec', 'copy', // Copy audio without re-encoding
+                '-f', 'mp3', // Output format
+                '-avoid_negative_ts', 'make_zero',
+                'pipe:1' // Output to stdout
+            ];
+
+            const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+            let resolved = false;
+            let hasData = false;
+            let errorBuffer = '';
+
+            const stream = new PassThrough();
+            
+            const timeout = setTimeout(() => {
+                if (!resolved && !hasData) {
+                    resolved = true;
+                    ffmpeg.kill();
+                    reject(new Error(`FFmpeg seek timeout - no data received. Error: ${errorBuffer}`));
+                }
+            }, 5000);
+
+            ffmpeg.stdout.on('data', (chunk) => {
+                hasData = true;
+                if (!resolved) {
+                    resolved = true;
+                    clearTimeout(timeout);
+                    console.log(`✅ FFmpeg seek stream started successfully`);
+                    resolve(stream);
+                }
+            });
+
+            ffmpeg.stdout.pipe(stream);
+
+            ffmpeg.stderr.on('data', (data) => {
+                errorBuffer += data.toString();
+                // FFmpeg outputs progress info to stderr, so don't log all of it
+                const msg = data.toString().trim();
+                if (msg.includes('error') || msg.includes('failed')) {
+                    console.error(`FFmpeg seek error: ${msg}`);
+                }
+            });
+
+            ffmpeg.on('error', (error) => {
+                if (!resolved) {
+                    resolved = true;
+                    clearTimeout(timeout);
+                    console.error(`FFmpeg seek spawn error: ${error.message}`);
+                    reject(error);
+                }
+            });
+
+            ffmpeg.on('close', (code) => {
+                if (!resolved) {
+                    resolved = true;
+                    clearTimeout(timeout);
+                    if (code !== 0) {
+                        reject(new Error(`FFmpeg seek failed with code ${code}. Error: ${errorBuffer.trim()}`));
+                    } else if (!hasData) {
+                        reject(new Error('FFmpeg seek closed without providing data'));
+                    }
+                }
+            });
+        });
     }
 }
 
