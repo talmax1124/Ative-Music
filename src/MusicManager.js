@@ -1044,8 +1044,20 @@ class MusicManager {
     // Queue Persistence Methods
     async saveQueue() {
         try {
+            // Sanitize queue data to remove undefined values
+            const sanitizedQueue = this.queue.map(track => ({
+                ...track,
+                title: track.title || 'Unknown Title',
+                author: track.author || 'Unknown Artist',
+                duration: track.duration || '0:00',
+                thumbnail: track.thumbnail || null, // Convert undefined to null for Firestore
+                url: track.url || '',
+                source: track.source || 'unknown',
+                type: track.type || 'track'
+            }));
+            
             const queueData = {
-                queue: this.queue,
+                queue: sanitizedQueue,
                 currentTrackIndex: this.currentTrackIndex,
                 loopMode: this.loopMode,
                 volume: this.volume,
