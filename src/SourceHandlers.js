@@ -7,6 +7,7 @@ const config = require('../config.js');
 const play = require('play-dl');
 const { spawn } = require('child_process');
 const { Readable, PassThrough } = require('stream');
+const DownloadCacheManager = require('./DownloadCacheManager');
 
 class SourceHandlers {
     constructor() {
@@ -37,7 +38,84 @@ class SourceHandlers {
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ];
 
+        // Initialize download cache manager
+        this.downloadCache = new DownloadCacheManager();
+        
+        // Stream cache for failed tracks
+        this.streamCache = new Map();
+        
+        // Session management for 403 mitigation
+        this.sessionRotation = {
+            currentSession: 0,
+            lastUsed: Date.now(),
+            cooldownTime: 60000, // 1 minute cooldown
+            sessionErrors: new Map()
+        };
+        
+        // Proxy configuration
+        this.proxyConfig = this.setupProxyConfig();
+        
         console.log('🎵 SourceHandlers initialized for YouTube and Spotify only');
+    }
+    
+    clearStreamCache(trackId) {
+        if (this.streamCache.has(trackId)) {
+            this.streamCache.delete(trackId);
+            console.log(`🗑️ Cleared stream cache for track: ${trackId}`);
+        }
+    }
+    
+    handleSessionRotation() {
+        const now = Date.now();
+        
+        // Check if we need to rotate session due to cooldown
+        if (now - this.sessionRotation.lastUsed > this.sessionRotation.cooldownTime) {
+            this.sessionRotation.currentSession = (this.sessionRotation.currentSession + 1) % 4;
+            this.sessionRotation.lastUsed = now;
+            console.log(`🔄 Rotated to session ${this.sessionRotation.currentSession}`);
+        }
+        
+        return this.sessionRotation.currentSession;
+    }
+    
+    async waitForCooldown(trackUrl) {
+        const errors = this.sessionRotation.sessionErrors.get(trackUrl) || 0;
+        if (errors > 0) {
+            const waitTime = Math.min(errors * 500, 2000); // Reduced wait times
+            console.log(`⏱️ Waiting ${waitTime}ms before retry due to previous errors`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+    }
+    
+    async findAlternativeYouTubeVideo(originalTrack) {
+        try {
+            // Try different search variations
+            const searchQueries = [
+                `${originalTrack.title} ${originalTrack.author}`,
+                `${originalTrack.title} official`,
+                `${originalTrack.title} audio`,
+                `${originalTrack.title} lyrics`,
+                originalTrack.title
+            ];
+            
+            for (const query of searchQueries) {
+                const results = await this.searchYouTube(query, 3);
+                // Find a different video than the original
+                const alternative = results.find(r => 
+                    r.url !== originalTrack.url && 
+                    !this.sessionRotation.sessionErrors.has(r.url)
+                );
+                
+                if (alternative) {
+                    return alternative;
+                }
+            }
+            
+            return null;
+        } catch (error) {
+            console.log(`⚠️ Failed to find alternative: ${error.message}`);
+            return null;
+        }
     }
     
     getRandomUserAgent() {
@@ -71,6 +149,89 @@ class SourceHandlers {
             console.log('✅ play-dl ready for streaming');
         } catch (error) {
             console.log('⚠️ play-dl setup failed:', error.message);
+        }
+    }
+
+    setupProxyConfig() {
+        const proxyConfig = {
+            enabled: false,
+            url: null,
+            list: [],
+            rotation: false,
+            currentIndex: 0
+        };
+
+        // Check for proxy URL
+        if (process.env.PROXY_URL && process.env.PROXY_URL.trim()) {
+            proxyConfig.enabled = true;
+            proxyConfig.url = process.env.PROXY_URL.trim();
+            console.log('🌐 Single proxy configured');
+        }
+
+        // Check for proxy list (comma-separated)
+        if (process.env.PROXY_LIST && process.env.PROXY_LIST.trim()) {
+            const proxies = process.env.PROXY_LIST.split(',')
+                .map(p => p.trim())
+                .filter(p => p.length > 0);
+            
+            if (proxies.length > 0) {
+                proxyConfig.enabled = true;
+                proxyConfig.list = proxies;
+                proxyConfig.rotation = String(process.env.PROXY_ROTATION || 'false').toLowerCase() === 'true';
+                console.log(`🌐 Proxy list configured: ${proxies.length} proxies, rotation: ${proxyConfig.rotation}`);
+            }
+        }
+
+        if (!proxyConfig.enabled) {
+            console.log('🌐 No proxy configuration found');
+        }
+
+        return proxyConfig;
+    }
+
+    getNextProxy() {
+        if (!this.proxyConfig.enabled) return null;
+
+        // Single proxy mode
+        if (this.proxyConfig.url) {
+            return this.proxyConfig.url;
+        }
+
+        // Proxy list mode
+        if (this.proxyConfig.list.length > 0) {
+            if (this.proxyConfig.rotation) {
+                const proxy = this.proxyConfig.list[this.proxyConfig.currentIndex];
+                this.proxyConfig.currentIndex = (this.proxyConfig.currentIndex + 1) % this.proxyConfig.list.length;
+                console.log(`🔄 Rotating to proxy ${this.proxyConfig.currentIndex}: ${proxy.split('@')[1] || proxy}`);
+                return proxy;
+            } else {
+                // Use first proxy if rotation is disabled
+                return this.proxyConfig.list[0];
+            }
+        }
+
+        return null;
+    }
+
+    createProxyAgent(proxyUrl) {
+        try {
+            const url = new URL(proxyUrl);
+            
+            if (url.protocol === 'http:' || url.protocol === 'https:') {
+                // HTTP/HTTPS proxy support
+                const { HttpsProxyAgent } = require('https-proxy-agent');
+                return new HttpsProxyAgent(proxyUrl);
+            } else if (url.protocol === 'socks5:' || url.protocol === 'socks4:') {
+                // SOCKS proxy support
+                const { SocksProxyAgent } = require('socks-proxy-agent');
+                return new SocksProxyAgent(proxyUrl);
+            } else {
+                console.log(`⚠️ Unsupported proxy protocol: ${url.protocol}`);
+                return null;
+            }
+        } catch (error) {
+            console.log(`⚠️ Error creating proxy agent: ${error.message}`);
+            return null;
         }
     }
 
@@ -114,18 +275,34 @@ class SourceHandlers {
                 throw new Error('Invalid YouTube URL');
             }
 
-            const video = await YouTube.getVideo(videoId);
-            return {
-                title: video.title,
-                author: video.channel?.name || 'Unknown',
-                duration: video.durationFormatted || '0:00',
-                url: `https://www.youtube.com/watch?v=${videoId}`,
-                thumbnail: video.thumbnail?.url,
-                source: 'youtube',
-                type: 'track',
-                viewCount: video.views || 0,
-                id: videoId
-            };
+            const fullUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            try {
+                const video = await YouTube.getVideo(fullUrl);
+                return {
+                    title: video.title || videoId,
+                    author: video.channel?.name || 'Unknown',
+                    duration: video.durationFormatted || '0:00',
+                    url: fullUrl,
+                    thumbnail: video.thumbnail?.url,
+                    source: 'youtube',
+                    type: 'track',
+                    viewCount: video.views || 0,
+                    id: videoId
+                };
+            } catch (metaErr) {
+                console.log(`⚠️ YouTube metadata fetch failed, using minimal info: ${metaErr?.message || metaErr}`);
+                return {
+                    title: videoId,
+                    author: 'YouTube',
+                    duration: '0:00',
+                    url: fullUrl,
+                    thumbnail: undefined,
+                    source: 'youtube',
+                    type: 'track',
+                    viewCount: 0,
+                    id: videoId
+                };
+            }
         } catch (error) {
             console.error(`❌ Error handling YouTube URL:`, error.message);
             return null;
@@ -157,8 +334,14 @@ class SourceHandlers {
     }
 
     extractYouTubeVideoId(url) {
+        try {
+            const u = new URL(url.startsWith('http') ? url : ('https://' + url));
+            url = u.toString();
+        } catch (_) {}
+
         const patterns = [
-            /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([^&\n?#]+)/,
+            /(?:youtube\.com\/watch\?v=|music\.youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/,
+            /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
             /^([a-zA-Z0-9_-]{11})$/
         ];
         
@@ -181,11 +364,11 @@ class SourceHandlers {
             const track = await this.handleURL(query);
             if (track) results.push(track);
         } else {
-            // Search YouTube and Spotify only
-            console.log(`🔍 Starting search for: ${query}`);
+            // Search YouTube and Spotify in parallel for speed
+            console.log(`🔍 Starting parallel search for: ${query}`);
             const searches = await Promise.allSettled([
-                this.searchSpotify(query, limit),
-                this.searchYouTube(query, limit)
+                this.searchSpotify(query, Math.floor(limit / 2)),
+                this.searchYouTube(query, Math.ceil(limit / 2))
             ]);
 
             for (const search of searches) {
@@ -342,83 +525,86 @@ class SourceHandlers {
         return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`;
     }
 
-    async getStream(track) {
+    async getStream(track, options = {}) {
         console.log(`🎵 Getting stream for: ${track.title} from ${track.source}`);
         
         if (track.source === 'spotify') {
             // For Spotify, we need to find a YouTube equivalent
-            return await this.getSpotifyStream(track);
+            return await this.getSpotifyStream(track, options);
         } else if (track.source === 'youtube') {
-            return await this.getYouTubeStream(track);
+            return await this.getYouTubeStream(track, options);
         } else {
             throw new Error(`Unsupported source: ${track.source}`);
         }
     }
 
-    async getYouTubeStream(track) {
+    async getYouTubeStream(track, options = {}) {
         try {
             console.log(`🎵 Getting YouTube stream for: ${track.title}`);
             
-            // Try yt-dlp FIRST (most reliable for VPS)
-            if (await this.isYtDlpAvailable()) {
+            const videoId = this.downloadCache.extractVideoId(track.url);
+            if (!videoId) {
+                throw new Error('Could not extract video ID from URL');
+            }
+            
+            // Check if file is already cached
+            if (this.downloadCache.isFileCached(videoId)) {
+                console.log(`📂 Streaming from cache: ${track.title}`);
+                return this.downloadCache.createReadStream(videoId);
+            }
+            
+            // Start background download for caching
+            const downloadPromise = this.downloadCache.downloadAndCache(videoId, track.url, track.title)
+                .catch(error => {
+                    console.log(`⚠️ Background download failed: ${error.message}`);
+                });
+            
+            // Meanwhile, try to stream directly for immediate playback
+            console.log(`🔄 Cache miss, streaming directly while downloading for cache`);
+            
+            // Prefer play-dl first for speed, then yt-dlp as fallback
+            const extractors = ['playdl', 'ytdlp'];
+            const startIndex = Number(track._fallbackIndex || 0) % extractors.length;
+            for (let i = 0; i < extractors.length; i++) {
+                const which = extractors[(startIndex + i) % extractors.length];
                 try {
-                    console.log(`🔄 Using yt-dlp (primary) for: ${track.title}`);
-                    return await this.getYtDlpStream(track);
-                } catch (ytdlpError) {
-                    console.log(`⚠️ yt-dlp failed: ${ytdlpError.message}`);
-                }
-            }
-            
-            // Fallback to play-dl
-            try {
-                console.log(`🔄 Trying play-dl fallback for: ${track.title}`);
-                console.log(`🔗 Track URL: ${track.url}`);
-                
-                // Normalize YouTube URL to include www for play-dl compatibility
-                let normalizedUrl = track.url;
-                if (normalizedUrl.includes('youtube.com') && !normalizedUrl.includes('www.')) {
-                    normalizedUrl = normalizedUrl.replace('youtube.com', 'www.youtube.com');
-                    console.log(`🔧 Normalized URL: ${normalizedUrl}`);
-                }
-                
-                // Validate YouTube URL for play-dl  
-                const validationResult = await play.yt_validate(normalizedUrl);
-                console.log(`🔍 play-dl validation result: ${validationResult}`);
-                
-                if (!validationResult) {
-                    throw new Error(`Invalid YouTube URL for play-dl: ${normalizedUrl}`);
-                }
-                
-                const streamResult = await play.stream(normalizedUrl, { quality: 2 });
-                console.log(`✅ play-dl stream created successfully`);
-                return streamResult.stream;
-            } catch (playDlError) {
-                console.log(`⚠️ play-dl failed: ${playDlError.message}`);
-            }
-            
-            // Final fallback to ytdl-core (least likely to work)
-            console.log(`🔄 Final fallback to ytdl-core for: ${track.title}`);
-            console.log(`🔗 Using original URL: ${track.url}`);
-            const stream = ytdl(track.url, {
-                filter: 'audioonly',
-                quality: 'lowestaudio',
-                highWaterMark: 1 << 20,
-                requestOptions: {
-                    headers: {
-                        'User-Agent': this.getRandomUserAgent()
+                    if (which === 'playdl') {
+                        const streamResult = await play.stream(track.url, {
+                            quality: 2, // Higher quality for better reliability
+                            ...(typeof options.seekSeconds === 'number' && options.seekSeconds > 0 ? { seek: Math.floor(options.seekSeconds) } : {})
+                        });
+                        console.log('✅ play-dl stream created (fast path)');
+                        track._lastExtractor = 'playdl';
+                        return streamResult.stream;
                     }
+                    if (which === 'ytdlp') {
+                        if (await this.isYtDlpAvailable()) {
+                            const fmtIndex = Number(track._ytdlpFormatIndex || 0);
+                            console.log(`🔄 Using yt-dlp fallback (fmt#${fmtIndex})`);
+                            const stream = await this.getYtDlpStream(track, fmtIndex);
+                            track._lastExtractor = 'ytdlp';
+                            return stream;
+                        } else {
+                            console.log('⚠️ yt-dlp not available, skipping');
+                        }
+                    }
+                } catch (err) {
+                    console.log(`⚠️ ${which} failed: ${err?.message || err}`);
+                    if (which === 'ytdlp') {
+                        // Nudge format index for next attempt if yt-dlp failed
+                        track._ytdlpFormatIndex = Number(track._ytdlpFormatIndex || 0) + 1;
+                    }
+                    // next extractor will be tried in loop
                 }
-            });
-            
-            console.log(`✅ ytdl-core stream created successfully`);
-            return stream;
+            }
+            throw new Error(`All streaming methods failed for: ${track.title}`);
         } catch (error) {
             console.error(`❌ YouTube stream error: ${error.message}`);
             throw new Error(`All streaming methods failed for: ${track.title}`);
         }
     }
 
-    async getSpotifyStream(track) {
+    async getSpotifyStream(track, options = {}) {
         try {
             console.log(`🎵 Finding YouTube equivalent for Spotify track: ${track.title}`);
             
@@ -428,7 +614,7 @@ class SourceHandlers {
             
             if (youtubeResults.length > 0) {
                 console.log(`✅ Found YouTube equivalent: ${youtubeResults[0].title}`);
-                return await this.getYouTubeStream(youtubeResults[0]);
+                return await this.getYouTubeStream(youtubeResults[0], options);
             } else {
                 throw new Error('No YouTube equivalent found for Spotify track');
             }
@@ -438,49 +624,146 @@ class SourceHandlers {
         }
     }
 
-    async getYtDlpStream(track) {
+    async getYtDlpStream(track, formatIndex = 0) {
+        // Handle session rotation and cooldowns
+        this.handleSessionRotation();
+        await this.waitForCooldown(track.url);
+
+        // Use formats that don't require authentication first
+        const formats = ['worst[height>=360]/worst', 'worst', '18', 'bestaudio', 'best', '140'];
+        // Start with android client - often works without auth
+        const clients = ['android', 'web', 'ios', 'tv_embedded'];
+
+        // Try format/client combinations
+        for (let i = 0; i < formats.length; i++) {
+            const fmt = formats[(formatIndex + i) % formats.length];
+            for (let c = 0; c < clients.length; c++) {
+                const client = clients[c];
+                try {
+                    const stream = await this.spawnYtDlp(track, fmt, client);
+                    try { track._lastFormat = fmt; track._lastExtractor = 'ytdlp'; track._lastClient = client; } catch {}
+                    return stream;
+                } catch (err) {
+                    const msg = String(err?.message || err);
+                    console.log(`⚠️ yt-dlp failed (fmt=${fmt}, client=${client}): ${msg}`);
+                    if (/Please sign in|cookies/i.test(msg)) {
+                        // Cookies required; bubble up so caller can prompt
+                        throw err;
+                    }
+                }
+            }
+        }
+
+        // As a last attempt, try an alternative video for the same track
+        if (!track._altTried) {
+            try {
+                const alt = await this.findAlternativeYouTubeVideo(track);
+                if (alt) {
+                    console.log(`🔁 Trying alternative YouTube video: ${alt.title}`);
+                    alt._altTried = true;
+                    return await this.getYtDlpStream(alt, 0);
+                }
+            } catch (e) {
+                console.log(`⚠️ Alternative lookup failed: ${e?.message || e}`);
+            }
+        }
+
+        throw new Error('yt-dlp: all audio formats and clients failed');
+    }
+
+    spawnYtDlp(track, fmt, client = 'web') {
         return new Promise((resolve, reject) => {
             console.log(`🔄 Using yt-dlp for: ${track.title}`);
-            
+
             const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
             const fs = require('fs');
-            const hasCookies = fs.existsSync(cookiesPath);
-            
+
+            let hasCookies = false;
+            if (fs.existsSync(cookiesPath)) {
+                try {
+                    const cookiesContent = fs.readFileSync(cookiesPath, 'utf8');
+                    // Check for Netscape format header or actual cookie entries
+                    if (cookiesContent.includes('Netscape HTTP Cookie File') || 
+                        cookiesContent.includes('.youtube.com') ||
+                        /^\.youtube\.com\t/m.test(cookiesContent)) {
+                        hasCookies = true;
+                        console.log(`🍪 Found valid cookies file with ${cookiesContent.split('\n').filter(l => l && !l.startsWith('#')).length} cookie entries`);
+                    } else {
+                        console.log('⚠️ Cookies file appears empty or invalid');
+                    }
+                } catch (error) {
+                    console.log('⚠️ Failed to read cookies file, continuing without cookies');
+                }
+            }
+
             const ytdlpArgs = [
-                '--format', '140/bestaudio[ext=m4a]/bestaudio',
+                '--format', fmt,
                 '--output', '-',
                 '--no-warnings',
                 '--no-playlist',
                 '--no-check-certificates',
-                '--prefer-free-formats',
+                '--prefer-insecure',
+                '--force-ipv4',
+                '--hls-prefer-ffmpeg',
+                '--hls-use-mpegts',
+                '--concurrent-fragments', '8',  // More fragments for faster download
+                '--no-part',
+                '--geo-bypass',
+                '--geo-bypass-country', 'US',
+                '--no-update',
+                '--socket-timeout', '10',  // Faster timeout
+                '--retries', '2',  // Fewer retries for speed
+                '--fragment-retries', '2',
+                '--retry-sleep', '0',  // No sleep between retries
+                '--sleep-interval', '0',  // No rate limiting delay
+                '--max-sleep-interval', '0',  // No maximum sleep
+                '--ignore-errors',
+                '--no-abort-on-error',
+                '--no-progress',
+                '--extractor-retries', '1',  // Single extractor retry
+                '--buffer-size', '16K',  // Smaller buffer for faster start
+                '--http-chunk-size', '1M'  // Optimized chunk size
             ];
-            
+
             if (hasCookies) {
                 ytdlpArgs.push('--cookies', cookiesPath);
                 console.log(`🍪 Using cookies from: ${cookiesPath}`);
             }
-            
+
+            const proxy = this.getNextProxy();
+            if (proxy) {
+                ytdlpArgs.push('--proxy', proxy);
+                console.log(`🌐 Using proxy: ${proxy.split('@')[1] || proxy.split('://')[1] || proxy}`);
+            }
+
+            try {
+                const ua = this.getRandomUserAgent();
+                ytdlpArgs.push('--user-agent', ua);
+                const clientArg = `youtube:player_client=${client}`;
+                ytdlpArgs.push('--extractor-args', clientArg);
+                console.log(`🔄 Using player client: ${clientArg}`);
+            } catch {}
+
             ytdlpArgs.push(track.url);
-            
+
             const ytdlpPath = this.ytDlpPath || 'yt-dlp';
             console.log(`🔧 yt-dlp command: ${ytdlpPath} ${ytdlpArgs.join(' ')}`);
-            
+
             const ytdlp = spawn(ytdlpPath, ytdlpArgs);
 
             const stream = new PassThrough();
             let resolved = false;
             let hasData = false;
             let errorBuffer = '';
-            
-            // Set a timeout to reject if no data comes within 15 seconds
+
             const timeout = setTimeout(() => {
                 if (!resolved && !hasData) {
                     resolved = true;
                     ytdlp.kill();
                     reject(new Error(`yt-dlp timeout - no data received. Last error: ${errorBuffer}`));
                 }
-            }, 15000);
-            
+            }, 10000);  // Reduced timeout for faster failure detection
+
             ytdlp.stdout.on('data', (chunk) => {
                 hasData = true;
                 if (!resolved) {
@@ -490,22 +773,27 @@ class SourceHandlers {
                     resolve(stream);
                 }
             });
-            
+
             ytdlp.stdout.pipe(stream);
-            
+
             ytdlp.stderr.on('data', (data) => {
                 const errorMsg = data.toString();
                 errorBuffer += errorMsg;
-                
-                // Log ALL stderr output for debugging
                 console.error(`yt-dlp stderr: ${errorMsg.trim()}`);
-                
-                // If we see a format error and haven't resolved yet, reject immediately
-                if (!resolved && errorMsg.includes('Requested format is not available')) {
+
+                if (!resolved && (/Requested format is not available/i.test(errorMsg) ||
+                                  /No video formats found/i.test(errorMsg) ||
+                                  /Unable to extract/i.test(errorMsg))) {
                     resolved = true;
                     clearTimeout(timeout);
                     ytdlp.kill();
                     reject(new Error(`yt-dlp format error: ${errorMsg.trim()}`));
+                }
+                if (!resolved && /Please sign in|cookies/i.test(errorMsg)) {
+                    resolved = true;
+                    clearTimeout(timeout);
+                    ytdlp.kill();
+                    reject(new Error(errorMsg.trim()));
                 }
             });
 
@@ -523,7 +811,9 @@ class SourceHandlers {
                     resolved = true;
                     clearTimeout(timeout);
                     if (code !== 0) {
-                        reject(new Error(`yt-dlp exited with code ${code}`));
+                        const currentErrors = this.sessionRotation.sessionErrors.get(track.url) || 0;
+                        this.sessionRotation.sessionErrors.set(track.url, currentErrors + 1);
+                        reject(new Error(`yt-dlp exited with code ${code}. ${errorBuffer.trim()}`));
                     } else {
                         reject(new Error('yt-dlp closed without providing data'));
                     }
@@ -582,6 +872,26 @@ class SourceHandlers {
         console.log('⚠️ yt-dlp not available in any location, using fallback methods');
         console.log(`Searched paths: ${ytdlpPaths.join(', ')}`);
         return false;
+    }
+
+    extractVideoId(url) {
+        if (!url) return null;
+        
+        // YouTube URL patterns
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+            /youtube\.com\/v\/([a-zA-Z0-9_-]{11})/,
+            /youtube\.com\/watch.*?v=([a-zA-Z0-9_-]{11})/
+        ];
+        
+        for (const pattern of patterns) {
+            const match = url.match(pattern);
+            if (match && match[1]) {
+                return match[1];
+            }
+        }
+        
+        return null;
     }
 }
 

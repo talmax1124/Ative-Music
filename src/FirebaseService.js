@@ -30,6 +30,31 @@ class FirebaseService {
         }
     }
 
+    // Panel mapping persistence
+    async savePanelMapping(guildId, voiceChannelId, textChannelId) {
+        try {
+            await this.db.collection('panelMappings').doc(`${guildId}_${voiceChannelId}`).set({
+                guildId,
+                voiceChannelId,
+                textChannelId,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+        } catch (error) {
+            console.error('❌ Failed to save panel mapping:', error);
+        }
+    }
+
+    async getPanelMapping(guildId, voiceChannelId) {
+        try {
+            const doc = await this.db.collection('panelMappings').doc(`${guildId}_${voiceChannelId}`).get();
+            if (!doc.exists) return null;
+            return doc.data();
+        } catch (error) {
+            console.error('❌ Failed to load panel mapping:', error);
+            return null;
+        }
+    }
+
     async saveQueue(guildId, channelId, queueData) {
         try {
             await this.db.collection('queues').doc(guildId).set({

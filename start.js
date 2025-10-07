@@ -44,14 +44,24 @@ if (!process.env.DISCORD_TOKEN || process.env.DISCORD_TOKEN === 'YOUR_BOT_TOKEN_
 // Start the bot
 console.log('🚀 Launching bot...');
 
-try {
+(async () => {
+    // Preload libsodium-wrappers so new Discord voice encryption modes work
+    try {
+        const sodium = require('libsodium-wrappers');
+        await sodium.ready;
+        global.sodium = sodium;
+        console.log('🔐 libsodium-wrappers ready');
+    } catch (e) {
+        console.log('⚠️ Failed to preload libsodium-wrappers; voice may not connect:', e?.message || e);
+    }
+
     require('./index.js');
-} catch (error) {
-    console.error('❌ Failed to start bot:', error.message);
+})().catch((error) => {
+    console.error('❌ Failed to start bot:', error.message || error);
     console.log('\n🔧 Troubleshooting:');
     console.log('1. Make sure all dependencies are installed: npm install');
     console.log('2. Check your .env configuration');
     console.log('3. Ensure FFmpeg is installed on your system');
     console.log('4. Check the README.md for detailed setup instructions');
     process.exit(1);
-}
+});

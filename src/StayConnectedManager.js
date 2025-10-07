@@ -15,9 +15,10 @@ class StayConnectedManager {
 
     setupEventHandlers() {
         this.client.on('clientReady', () => {
-            if (config.settings.stayInChannel) {
-                this.initializeConnections();
-            }
+            // Disabled auto-connect on startup - bot will only connect when commanded
+            // if (config.settings.stayInChannel) {
+            //     this.initializeConnections();
+            // }
         });
 
         this.client.on('voiceStateUpdate', (oldState, newState) => {

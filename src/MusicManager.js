@@ -33,9 +33,12 @@ class MusicManager {
         this.onQueueUpdate = null;
         this.autoPlayTimeout = null;
         this.firebaseService = firebaseService;
+        this.isSeeking = false;
+        this.shuffleEnabled = false;
         
         this.setupPlayerEvents();
-        this.loadQueue();
+        // Disabled auto-loading queue on startup for fresh sessions
+        // this.loadQueue();
     }
 
     setupPlayerEvents() {
@@ -90,6 +93,11 @@ class MusicManager {
 
         this.player.on('error', (error) => {
             console.error('❌ Audio player error:', error);
+            try {
+                if (this.currentTrack && error && error.message) {
+                    this.currentTrack.lastError = String(error.message);
+                }
+            } catch {}
             this.isPlaying = false;
             this.isPaused = false;
             this.handleStreamError();
@@ -136,6 +144,22 @@ class MusicManager {
     async addToQueue(track, position = -1, userContext = null) {
         track.addedAt = new Date();
         track.id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        // Normalize duration fields for reliable progress rendering
+        try {
+            if (track && track.durationMS == null) {
+                if (typeof track.duration === 'number') track.durationMS = track.duration;
+                else track.durationMS = this.parseDuration(track.duration);
+            }
+        } catch {}
+
+        // Prevent duplicates at insertion time
+        if (this.isDuplicate(track)) {
+            console.log(`🚫 Duplicate detected, not adding to queue: ${track.title} by ${track.author}`);
+            return Object.assign({}, track, { skippedDuplicate: true });
+        }
+        
+        // Check if queue was empty before adding
+        const wasEmpty = this.queue.length === 0;
         
         if (position === -1) {
             this.queue.push(track);
@@ -150,21 +174,26 @@ class MusicManager {
             this.userPreferences.trackPlay(userContext.userId, userContext.guildId, track);
         }
         
-        // Auto-queue recommendations if only one song and auto-play is enabled
-        if (this.queue.length === 1 && this.autoPlayEnabled) {
-            console.log('🤖 Auto-queuing recommendations since only one song in queue...');
-            // Small delay to ensure the current track is properly set
+        // Auto-start playback if queue was empty and nothing is currently playing
+        if (wasEmpty && !this.isPlaying && this.connection) {
+            console.log(`🎵 Queue was empty, auto-starting playback with: ${track.title}`);
+            this.currentTrackIndex = 0;
+            // Start playback asynchronously to avoid blocking the add operation
+            setTimeout(async () => {
+                try {
+                    await this.play();
+                } catch (error) {
+                    console.error(`❌ Auto-play failed:`, error);
+                }
+            }, 100);
+        }
+        
+        // Only queue more tracks if we're actually low and playing
+        if (this.queue.length <= 1 && this.autoPlayEnabled && this.continuousPlayback && this.isPlaying) {
+            console.log('🔄 Queue running low, adding recommendations...');
             setTimeout(() => {
                 this.fillQueueWithRecommendations(3, userContext || {});
             }, 2000);
-        }
-        
-        // Proactively queue more tracks when queue gets low
-        if (this.queue.length <= 3 && this.autoPlayEnabled && this.continuousPlayback) {
-            console.log('🔄 Queue running low, proactively adding more tracks...');
-            setTimeout(() => {
-                this.fillQueueWithRecommendations(8, userContext || {});
-            }, 1000);
         }
         
         // Auto-save queue after changes
@@ -295,26 +324,26 @@ class MusicManager {
                 console.log('📡 Stream ended normally');
             });
 
-            // Probe the stream for format detection
+            // Create resource with minimal buffering for fastest start
             let resource;
             try {
-                const probe = await demuxProbe(stream);
-                resource = createAudioResource(probe.stream, {
-                    inputType: probe.type,
+                resource = createAudioResource(stream, {
+                    inputType: StreamType.Arbitrary,
                     inlineVolume: true,
-                    silencePaddingFrames: 5, // Add padding for audio stability
+                    silencePaddingFrames: 0,  // No silence padding for faster start
                     metadata: {
                         title: this.currentTrack?.title || 'Unknown',
                         author: this.currentTrack?.author || 'Unknown'
                     }
                 });
+                console.log('⚡ Fast audio resource created');
             } catch (probeError) {
-                console.log('⚠️ Audio probing failed, using fallback:', probeError.message);
-                // Fallback to arbitrary input type
-                resource = createAudioResource(stream, {
-                    inputType: StreamType.Arbitrary,
+                console.log('⚠️ Resource creation failed, retrying with probe:', probeError.message);
+                const probe = await demuxProbe(stream);
+                resource = createAudioResource(probe.stream, {
+                    inputType: probe.type,
                     inlineVolume: true,
-                    silencePaddingFrames: 5,
+                    silencePaddingFrames: 0,  // No silence padding
                     metadata: {
                         title: this.currentTrack?.title || 'Unknown',
                         author: this.currentTrack?.author || 'Unknown'
@@ -369,10 +398,100 @@ class MusicManager {
         }
     }
 
+    // Jump to a specific index in the queue and start playing
+    async jumpTo(index) {
+        if (typeof index !== 'number' || index < 0 || index >= this.queue.length) return false;
+        this.currentTrackIndex = index;
+        try {
+            this.player.stop(true);
+        } catch {}
+        await new Promise(r => setTimeout(r, 150));
+        return this.play();
+    }
+
+    // Toggle shuffle: performs a one-time shuffle of the remaining queue
+    toggleShuffle() {
+        this.shuffleEnabled = !this.shuffleEnabled;
+        if (this.shuffleEnabled) {
+            this.shuffle();
+        }
+        return this.shuffleEnabled;
+    }
+
+    // Cycle repeat mode: off -> track -> queue -> off
+    toggleRepeat() {
+        const order = ['off', 'track', 'queue'];
+        const next = order[(order.indexOf(this.loopMode) + 1) % order.length];
+        this.setLoop(next);
+        return this.loopMode;
+    }
+
+    // Seek to a position in seconds within the current track
+    async seek(seconds) {
+        if (!this.currentTrack || typeof seconds !== 'number' || seconds < 0) return false;
+        if (this.isTransitioning || this.isSeeking) {
+            console.log('⚠️ Seek ignored during transition');
+            return false;
+        }
+        this.isSeeking = true;
+        try {
+            // Stop current playback cleanly
+            this.player.stop(true);
+        } catch {}
+
+        try {
+            // Request a new stream starting at the desired offset
+            const stream = await this.sourceHandlers.getStream(this.currentTrack, { seekSeconds: seconds });
+            if (!stream || !stream.readable || stream.destroyed) {
+                console.error('❌ Seek stream invalid');
+                return false;
+            }
+
+            // Recreate audio resource from the new stream; prefer fast path
+            let resource;
+            try {
+                resource = createAudioResource(stream, {
+                    inputType: StreamType.Arbitrary,
+                    inlineVolume: true,
+                    silencePaddingFrames: 3,
+                    metadata: {
+                        title: this.currentTrack?.title || 'Unknown',
+                        author: this.currentTrack?.author || 'Unknown'
+                    }
+                });
+            } catch (probeError) {
+                console.log('⚠️ Seek resource failed, retry with probe:', probeError.message);
+                const probe = await demuxProbe(stream);
+                resource = createAudioResource(probe.stream, {
+                    inputType: probe.type,
+                    inlineVolume: true,
+                    silencePaddingFrames: 3,
+                    metadata: {
+                        title: this.currentTrack?.title || 'Unknown',
+                        author: this.currentTrack?.author || 'Unknown'
+                    }
+                });
+            }
+
+            resource.volume?.setVolume(this.volume / 100);
+            // Adjust start time so progress reflects seek position
+            this.trackStartTime = Date.now() - Math.floor(seconds * 1000);
+            this.player.play(resource);
+            this.isPlaying = true;
+            this.isPaused = false;
+            return true;
+        } catch (error) {
+            console.error('❌ Seek failed:', error?.message || error);
+            return false;
+        } finally {
+            this.isSeeking = false;
+        }
+    }
+
     async skip() {
         if (this.queue.length === 0) return false;
 
-        console.log('⏭️ Skip requested');
+        console.log(`⏭️ Skip requested - advancing from index ${this.currentTrackIndex} to ${this.currentTrackIndex + 1}`);
         
         clearTimeout(this.autoPlayTimeout);
         this.isTransitioning = false;
@@ -380,23 +499,28 @@ class MusicManager {
         this.player.stop(true);
 
         if (this.loopMode === 'track') {
+            console.log('🔁 Loop mode: track - replaying current track');
             setTimeout(() => this.play(), 300);
             return true;
         }
 
         this.currentTrackIndex++;
+        console.log(`📍 Skipped to track index ${this.currentTrackIndex} of ${this.queue.length} total tracks`);
         
         if (this.currentTrackIndex >= this.queue.length) {
             if (this.loopMode === 'queue') {
+                console.log('🔁 Loop mode: queue - returning to beginning');
                 this.currentTrackIndex = 0;
                 setTimeout(() => this.play(), 300);
                 return true;
             } else {
+                console.log('⏹️ Reached end of queue - stopping playback');
                 this.stop();
                 return false;
             }
         }
 
+        console.log(`🎵 Next track after skip: ${this.queue[this.currentTrackIndex]?.title || 'Unknown'}`);
         setTimeout(() => this.play(), 300);
         return true;
     }
@@ -411,6 +535,10 @@ class MusicManager {
 
     pause() {
         if (this.isPlaying && !this.isPaused) {
+            // capture current position for accurate resume/progress
+            if (this.trackStartTime) {
+                this._lastPositionAtPauseMs = Date.now() - this.trackStartTime;
+            }
             this.player.pause();
             return true;
         }
@@ -419,6 +547,10 @@ class MusicManager {
 
     resume() {
         if (this.isPaused) {
+            if (typeof this._lastPositionAtPauseMs === 'number') {
+                this.trackStartTime = Date.now() - this._lastPositionAtPauseMs;
+                delete this._lastPositionAtPauseMs;
+            }
             this.player.unpause();
             return true;
         }
@@ -579,8 +711,19 @@ class MusicManager {
             volume: this.volume,
             loopMode: this.loopMode,
             queueLength: this.queue.length,
-            queueDuration: this.getTotalDuration()
+            queueDuration: this.getTotalDuration(),
+            currentPositionMs: this.getCurrentPositionMs()
         };
+    }
+
+    getCurrentPositionMs() {
+        if (!this.currentTrack || !this.trackStartTime) return 0;
+        if (this.isPaused) {
+            // Approximate position at pause time
+            return Math.max(0, (this._lastPositionAtPauseMs ?? (Date.now() - this.trackStartTime)));
+        }
+        const pos = Date.now() - this.trackStartTime;
+        return pos > 0 ? pos : 0;
     }
 
     getTotalDuration() {
@@ -652,22 +795,32 @@ class MusicManager {
             console.log('🔄 Auto-advancing to next track in queue...');
             this.currentTrackIndex++;
             
-            // Proactively refill queue if it's getting low
+            console.log(`📍 Advanced to track index ${this.currentTrackIndex} of ${this.queue.length} total tracks`);
+            console.log(`🎵 Next track: ${this.queue[this.currentTrackIndex]?.title || 'Unknown'}`);
+            
+            // Only refill queue if running low
             const tracksRemaining = this.queue.length - this.currentTrackIndex - 1;
-            if (tracksRemaining <= 2 && this.autoPlayEnabled) {
-                console.log(`🔄 Only ${tracksRemaining} tracks remaining, refilling queue...`);
+            if (tracksRemaining <= 1 && this.autoPlayEnabled && this.continuousPlayback) {
+                console.log(`🔄 Queue running low (${tracksRemaining} tracks remaining), adding recommendations...`);
                 setTimeout(() => {
-                    this.fillQueueWithRecommendations(5, { userId: lastTrack?.requestedBy, guildId: this.guildId });
-                }, 500);
+                    this.fillQueueWithRecommendations(3, { userId: lastTrack?.requestedBy, guildId: this.guildId });
+                }, 1000);
             }
             
             this.autoPlayTimeout = setTimeout(async () => {
                 try {
                     if (!this.isPlaying && !this.userStoppedPlayback) {
+                        console.log(`🎵 Playing next track: ${this.queue[this.currentTrackIndex]?.title}`);
                         await this.play();
                     }
                 } catch (error) {
                     console.error('❌ Error playing next track:', error);
+                    // If playing the next track fails, try to advance again
+                    if (this.currentTrackIndex + 1 < this.queue.length) {
+                        console.log('🔄 Trying to advance to the following track...');
+                        this.currentTrackIndex++;
+                        setTimeout(() => this.play().catch(console.error), 1000);
+                    }
                 } finally {
                     this.isTransitioning = false;
                     clearTimeout(transitionTimeout);
@@ -736,19 +889,35 @@ class MusicManager {
     }
     
     isDuplicate(track) {
-        // Check if track is already in queue
-        const inQueue = this.queue.some(queueTrack => 
-            queueTrack.title.toLowerCase() === track.title.toLowerCase() &&
-            queueTrack.author.toLowerCase() === track.author.toLowerCase()
-        );
-        
-        // Check if track was played recently
-        const recentlyPlayed = this.playHistory.slice(-10).some(historyTrack => 
-            historyTrack.title.toLowerCase() === track.title.toLowerCase() &&
-            historyTrack.author.toLowerCase() === track.author.toLowerCase()
-        );
-        
-        return inQueue || recentlyPlayed;
+        if (!track) return false;
+        const key = this._trackKey(track);
+        // Check queue
+        const inQueue = this.queue.some(t => this._trackKey(t) === key || (t.id && track.id && t.id === track.id) || (t.url && track.url && t.url === track.url));
+        if (inQueue) return true;
+        // Check recent history (last 20 plays)
+        const recentlyPlayed = this.playHistory.slice(-20).some(t => this._trackKey(t) === key || (t.url && track.url && t.url === track.url));
+        return recentlyPlayed;
+    }
+
+    _normalize(str) {
+        try {
+            return String(str)
+                .toLowerCase()
+                .replace(/\([^\)]*\)|\[[^\]]*\]/g, '') // remove parentheses/brackets
+                .replace(/official|mv|video|audio|lyrics|lyric|remastered|hd|4k/gi, '')
+                .replace(/[^a-z0-9]+/gi, ' ')
+                .trim()
+                .replace(/\s+/g, ' ');
+        } catch { return ''; }
+    }
+
+    _trackKey(track) {
+        if (!track) return '';
+        const t = this._normalize(track.title || '');
+        const a = this._normalize(track.author || '');
+        const id = track.id || track.videoId || '';
+        const urlId = (track.url || '').replace(/^https?:\/\//, '');
+        return `${t}::${a}::${id}::${urlId}`;
     }
 
     async fillQueueWithRecommendations(count = 10, userContext = {}) {
@@ -970,6 +1139,10 @@ class MusicManager {
     
     async handleStreamError() {
         console.log('❌ Handling stream error - trying to recover');
+        if (this.isSeeking) {
+            console.log('⚠️ Suppressing stream error during active seek');
+            return;
+        }
         
         if (this.isTransitioning) {
             console.log('⚠️ Stream error ignored - already transitioning');
@@ -990,26 +1163,52 @@ class MusicManager {
             this.trackErrors = this.trackErrors || new Map();
             const trackErrorCount = (this.trackErrors.get(trackId) || 0) + 1;
             this.trackErrors.set(trackId, trackErrorCount);
+            // Advance extractor fallback; let SourceHandlers manage yt-dlp format cycling
+            if (this.currentTrack) {
+                this.currentTrack._fallbackIndex = Number(this.currentTrack._fallbackIndex || 0) + 1;
+            }
             
             // Global consecutive error count
             this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
             
-            // If too many global errors, stop completely
-            if (this.consecutiveErrors > 5) {
-                console.log('🚨 Too many consecutive stream errors - stopping playback');
-                this.stop();
-                this.isTransitioning = false;
-                return;
+            // If too many global errors, try to advance or fetch recommendation
+            if (this.consecutiveErrors > 8) {
+                console.log('🚨 Too many consecutive stream errors - attempting auto-recovery');
+                if (this.currentTrackIndex + 1 < this.queue.length) {
+                    console.log('🔄 Skipping to next track in queue due to errors');
+                    this.currentTrackIndex++;
+                    setTimeout(async () => {
+                        try { await this.play(); } catch (e) { console.error('❌ Recovery play failed:', e); }
+                        this.isTransitioning = false;
+                        clearTimeout(errorTimeout);
+                    }, 500);
+                    return;
+                } else if (this.autoPlayEnabled && this.continuousPlayback) {
+                    console.log('🤖 Queue empty on error - trying recommendation');
+                    const lastTrack = this.currentTrack || this.playHistory[this.playHistory.length - 1];
+                    setTimeout(async () => {
+                        try { await this.findAndPlayRecommendation(lastTrack); } catch (e) { console.error('❌ Recovery recommendation failed:', e); }
+                        this.isTransitioning = false;
+                        clearTimeout(errorTimeout);
+                    }, 1000);
+                    return;
+                } else {
+                    console.log('⏹️ No recovery path available - stopping');
+                    this.stop();
+                    this.isTransitioning = false;
+                    return;
+                }
             }
             
             // If this specific track has failed too many times, skip it
-            if (trackErrorCount >= 3) {
+            if (trackErrorCount >= 5) {
                 console.log(`🔄 Track "${this.currentTrack?.title}" failed ${trackErrorCount} times - skipping to next`);
                 
                 // Try next track if available
                 if (this.currentTrackIndex + 1 < this.queue.length) {
-                    console.log('🔄 Moving to next track in queue');
+                    console.log(`🔄 Moving to next track in queue: ${this.queue[this.currentTrackIndex + 1]?.title}`);
                     this.currentTrackIndex++;
+                    console.log(`📍 Advanced to track index ${this.currentTrackIndex} after stream error`);
                     
                     setTimeout(async () => {
                         try {
@@ -1051,8 +1250,8 @@ class MusicManager {
                 const currentTrack = this.getCurrentTrack();
                 const shouldSkipImmediately = currentTrack && (
                     currentTrack.lastError?.includes('DRM protected') ||
-                    currentTrack.lastError?.includes('Status code: 403') ||
-                    trackErrorCount >= 2 // Skip after 2 failed attempts
+                    (currentTrack.lastError?.includes('Status code: 403') && trackErrorCount >= 3) ||
+                    trackErrorCount >= 4 // Skip after 4 failed attempts
                 );
                 
                 if (shouldSkipImmediately) {
@@ -1077,6 +1276,7 @@ class MusicManager {
                                 if (this.sourceHandlers.clearStreamCache) {
                                     this.sourceHandlers.clearStreamCache(trackId);
                                 }
+                                // Leave yt-dlp format rotation to SourceHandlers
                                 await this.play();
                             }
                         } catch (error) {
@@ -1085,7 +1285,7 @@ class MusicManager {
                             this.isTransitioning = false;
                             clearTimeout(errorTimeout);
                         }
-                    }, 1000 * trackErrorCount);
+                    }, Math.min(1000 * trackErrorCount, 3000)); // Cap retry delay at 3 seconds
                 }
             }
         } catch (error) {

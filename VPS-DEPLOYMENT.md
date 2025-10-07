@@ -73,6 +73,18 @@ SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
 # PRODUCTION SETTINGS
 NODE_ENV=production
 PORT=3000
+ 
+# WEB PORTAL (search + play from browser)
+# Bind the web portal to your VPS public port
+WEB_HOST=0.0.0.0
+WEB_PORT=25567
+
+# Optional: set public address for logs/links
+# PUBLIC_HOST=199.244.48.46
+# PUBLIC_PORT=25567
+
+# Optional: protect APIs with a simple key
+# WEB_API_TOKEN=change-me-strong-secret
 ```
 
 ### Validation and Startup
@@ -117,10 +129,10 @@ sudo apt install ffmpeg libavcodec-dev libavformat-dev
 - Make sure yt-dlp is properly installed and accessible
 - The bot automatically falls back to working streaming methods
 
-**5. Web portal not accessible externally (Pterodactyl)**
-- Make sure your server allows the configured port
-- The bot automatically binds to 0.0.0.0 for external access
-- Use your server IP and port to access the video player
+**5. Web portal not accessible externally (Pterodactyl/VPS)**
+- Ensure firewall/panel exposes `WEB_PORT` (e.g., 25567)
+- The app binds to `0.0.0.0` externally (WEB_HOST)
+- Access via `http://<your-ip>:<WEB_PORT>`
 
 ## 📋 Post-Deployment Validation
 
@@ -150,10 +162,10 @@ Once deployed, your bot supports:
 - `/queue` - View current queue
 - `/autoplay` - Toggle smart auto-play
 
-### Video Streaming
-- Access the web portal at `http://your-server-ip:port`
-- Perfect for Discord screen sharing
-- Cached video playback for smooth streaming
+### Web Portal + Video Server
+- Web portal (search + play): `http://<your-ip>:<WEB_PORT>` (e.g., `http://199.244.48.46:25567`)
+- Video server (for screen share): `http://<your-ip>:3000` by default
+- Both bind to `0.0.0.0` for external access on VPS
 
 ### Smart Features
 - **Genre-based auto-play**: Automatically queues similar music

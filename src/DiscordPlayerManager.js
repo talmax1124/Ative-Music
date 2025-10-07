@@ -565,12 +565,49 @@ class DiscordPlayerManager {
             // Add track to queue
             await musicManager.addToQueue(track);
             
-            // Start playing the newly added track if nothing is currently playing
-            if (!musicManager.isPlaying && musicManager.currentTrackIndex === -1) {
-                // Set the current track index to the newly added track (last in queue)
-                musicManager.currentTrackIndex = musicManager.queue.length - 1;
+            // Start playing if nothing is currently playing
+            if (!musicManager.isPlaying) {
+                // Set the current track index to the newly added track (last in queue) if not set
+                if (musicManager.currentTrackIndex === -1) {
+                    musicManager.currentTrackIndex = musicManager.queue.length - 1;
+                }
                 console.log(`🎵 Starting playback with newly added track: ${track.title} (position ${musicManager.currentTrackIndex + 1})`);
-                await musicManager.play();
+                
+                // Try to play with retry logic for streaming failures
+                let playSuccess = false;
+                let attempts = 0;
+                const maxAttempts = 3;
+                
+                while (!playSuccess && attempts < maxAttempts && musicManager.queue.length > 0) {
+                    attempts++;
+                    console.log(`🔄 Playback attempt ${attempts}/${maxAttempts} for: ${musicManager.queue[musicManager.currentTrackIndex]?.title}`);
+                    
+                    try {
+                        playSuccess = await musicManager.play();
+                        if (playSuccess) {
+                            console.log(`✅ Playback started successfully on attempt ${attempts}`);
+                            break;
+                        }
+                    } catch (error) {
+                        console.log(`❌ Playback attempt ${attempts} failed: ${error.message}`);
+                    }
+                    
+                    // If playback failed, advance to next track if available
+                    if (!playSuccess && musicManager.currentTrackIndex + 1 < musicManager.queue.length) {
+                        console.log(`🔄 Advancing to next track due to playback failure`);
+                        musicManager.currentTrackIndex++;
+                    } else if (!playSuccess) {
+                        console.log(`❌ No more tracks available to try`);
+                        break;
+                    }
+                    
+                    // Small delay between attempts
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                
+                if (!playSuccess) {
+                    console.log(`❌ Failed to start playback after ${attempts} attempts`);
+                }
             } else {
                 console.log(`🎵 Track added to queue. Currently playing: ${musicManager.isPlaying}, Queue position: ${musicManager.currentTrackIndex + 1}/${musicManager.queue.length}`);
             }
@@ -581,8 +618,13 @@ class DiscordPlayerManager {
                 ephemeral: false
             });
 
-            // Send the live-updating music panel in the channel
-            await bot.sendNewMusicPanel(interaction.channel, track, voiceChannel.id, musicManager);
+            // Send the live-updating music panel in the proper text channel for this voice channel
+            const textChannel = bot.getTextChannelForVoice(voiceChannel.id, voiceChannel.guild);
+            if (textChannel) {
+                await bot.sendNewMusicPanel(textChannel, track, voiceChannel.id, musicManager);
+            } else {
+                console.log('⚠️ No text channel found for music panel, skipping panel creation');
+            }
 
             return true;
         } catch (fallbackError) {

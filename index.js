@@ -85,6 +85,7 @@ const SourceHandlers = require('./src/SourceHandlers.js');
 const StayConnectedManager = require('./src/StayConnectedManager.js');
 const VideoHandler = require('./src/VideoHandler.js');
 const LocalVideoServer = require('./src/LocalVideoServer.js');
+const WebPortalServer = require('./src/WebPortalServer.js');
 const ErrorHandler = require('./src/ErrorHandler.js');
 const PlaylistManager = require('./src/PlaylistManager.js');
 const LyricsHandler = require('./src/LyricsHandler.js');
@@ -108,6 +109,7 @@ class AtiveMusicBot {
         this.playlistManager = new PlaylistManager();
         this.lyricsHandler = new LyricsHandler();
         this.discordPlayer = new DiscordPlayerManager(this.client);
+        this.webPortal = new WebPortalServer(this);
         this.client.bot = this; // Make bot instance available to Discord Player
         global.ativeBot = this; // Global reference for fallback
         this.searchCache = new Map();
@@ -115,6 +117,11 @@ class AtiveMusicBot {
         this.guildChannels = new Map(); // Track active channels per guild (guildId -> Set<channelId>)
         this.musicTextChannels = new Map(); // Track which text channel music commands came from (voiceChannelId -> textChannelId)
         
+        this.allowedGuilds = new Set([
+            '1403244656845787167',
+            '1379253916352385085'
+        ]);
+
         this.setupEventListeners();
         this.registerCommands();
 
@@ -128,9 +135,31 @@ class AtiveMusicBot {
         this.client.once('clientReady', async () => {
             console.log(`🎵 ${this.client.user.tag} is online!`);
             console.log(`🎶 Serving music in ${this.client.guilds.cache.size} servers`);
+
+            // Enforce allowed guilds only
+            try {
+                for (const [id, guild] of this.client.guilds.cache) {
+                    if (!this.allowedGuilds.has(id)) {
+                        console.log(`🚪 Leaving unauthorized guild: ${guild.name} (${id})`);
+                        await guild.leave();
+                    }
+                }
+            } catch (e) {
+                console.log('⚠️ Guild pruning error:', e?.message || e);
+            }
             
             // Clean up any debug HTML files on startup
             this.cleanupDebugFiles();
+            
+            // Clear any saved queues for fresh startup
+            try {
+                for (const [guildId] of this.client.guilds.cache) {
+                    await firebaseService.clearQueue(guildId);
+                }
+                console.log('🗑️ Cleared all saved queues for fresh startup');
+            } catch (error) {
+                console.log('⚠️ Failed to clear some queues:', error.message);
+            }
             
             this.client.user.setActivity('🎵 Ative Music | /play', { type: 2 }); // 2 = ActivityType.Listening
             
@@ -141,10 +170,19 @@ class AtiveMusicBot {
             } catch (error) {
                 console.error('❌ Failed to start video server:', error);
             }
-            
-            if (config.settings.stayInChannel) {
-                this.reconnectToChannels();
+
+            // Start web portal (search + play via browser)
+            try {
+                const portalUrl = await this.webPortal.start();
+                console.log(`🕸️ Web portal started: ${portalUrl}`);
+            } catch (error) {
+                console.error('❌ Failed to start web portal:', error);
             }
+            
+            // Disabled auto-reconnect on startup - bot will only connect when commanded
+            // if (config.settings.stayInChannel) {
+            //     this.reconnectToChannels();
+            // }
         });
 
         this.client.on('interactionCreate', async (interaction) => {
@@ -166,6 +204,18 @@ class AtiveMusicBot {
 
         this.client.on('voiceStateUpdate', (oldState, newState) => {
             this.handleVoiceStateUpdate(oldState, newState);
+        });
+
+        // Leave unauthorized guilds immediately when invited
+        this.client.on('guildCreate', async (guild) => {
+            try {
+                if (!this.allowedGuilds.has(guild.id)) {
+                    console.log(`🚪 Leaving unauthorized guild on join: ${guild.name} (${guild.id})`);
+                    await guild.leave();
+                }
+            } catch (e) {
+                console.log('⚠️ Failed leaving unauthorized guild:', e?.message || e);
+            }
         });
 
         // Add prefix command support (aliases)
@@ -207,6 +257,95 @@ class AtiveMusicBot {
         return this.musicManagers.get(channelId);
     }
 
+    // Helper function to find the appropriate text channel for a voice channel
+    getTextChannelForVoice(voiceChannelId, guild) {
+        // Try to find the text channel where music commands were issued from
+        let textChannel = null;
+        
+        // First try to get the stored text channel for this voice channel
+        const storedTextChannelId = this.musicTextChannels.get(voiceChannelId);
+        if (storedTextChannelId) {
+            textChannel = guild.channels.cache.get(storedTextChannelId);
+        }
+        
+        // If not found, try the last panel location
+        if (!textChannel) {
+            const panelInfo = this.musicPanels.get(voiceChannelId);
+            if (panelInfo) {
+                textChannel = guild.channels.cache.get(panelInfo.textChannelId);
+            }
+        }
+        
+        // Try to find channels where users are actively present first
+        if (!textChannel) {
+            const voiceChannel = guild.channels.cache.get(voiceChannelId);
+            if (voiceChannel) {
+                // Find text channels where users in the voice channel have recently been active
+                const voiceMembers = voiceChannel.members;
+                if (voiceMembers && voiceMembers.size > 0) {
+                    // Look for channels where these voice users have permissions to view
+                    const channelsWithActiveUsers = guild.channels.cache.filter(ch => {
+                        if (ch.type !== 0) return false; // Must be text channel
+                        
+                        // Check if voice members can view this channel
+                        return voiceMembers.some(member => 
+                            ch.permissionsFor(member).has('ViewChannel') &&
+                            ch.permissionsFor(member).has('SendMessages')
+                        );
+                    });
+                    
+                    // Prioritize channels where the voice users are most likely to be
+                    textChannel = channelsWithActiveUsers.find(ch => 
+                        ch.name.includes('music') || ch.name.includes('bot')
+                    ) || channelsWithActiveUsers.first();
+                    
+                    if (textChannel) {
+                        console.log(`👥 Found text channel with voice users: ${textChannel.name} for voice channel: ${voiceChannel.name}`);
+                    }
+                }
+                
+                // Fallback: Try to find a text channel with similar name to voice channel
+                if (!textChannel) {
+                    const voiceName = voiceChannel.name.toLowerCase();
+                    // Look for text channel with similar name (remove emojis, spaces, convert to lowercase)
+                    const normalizedVoiceName = voiceName.replace(/[^\w\s]/g, '').replace(/\s+/g, '-');
+                    textChannel = guild.channels.cache.find(ch => 
+                        ch.type === 0 && // text channel
+                        (ch.name.toLowerCase().includes(normalizedVoiceName) ||
+                         normalizedVoiceName.includes(ch.name.toLowerCase()) ||
+                         ch.name.toLowerCase().replace(/[^\w]/g, '') === voiceName.replace(/[^\w]/g, ''))
+                    );
+                    
+                    if (textChannel) {
+                        console.log(`🎯 Found related text channel: ${textChannel.name} for voice channel: ${voiceChannel.name}`);
+                    }
+                }
+            }
+        }
+        
+        // PRIORITY: Manual channel override for user-specified channel ID
+        const manualChannelId = '1416219967128342539';
+        const manualChannel = guild.channels.cache.get(manualChannelId);
+        if (manualChannel && manualChannel.type === 0) {
+            textChannel = manualChannel;
+            console.log(`🎯 Using user-specified channel: ${textChannel.name} (${manualChannelId})`);
+            return textChannel; // Return immediately to override all other logic
+        }
+        
+        // Last resort: find a music/bot/general channel or use the first text channel
+        if (!textChannel) {
+            textChannel = guild.channels.cache.find(ch => 
+                ch.type === 0 && (
+                    ch.name.includes('music') || 
+                    ch.name.includes('bot') || 
+                    ch.name.includes('general')
+                )
+            ) || guild.channels.cache.find(ch => ch.type === 0); // 0 = GUILD_TEXT
+        }
+        
+        return textChannel;
+    }
+
     async handleTrackStart(guildId, channelId, track) {
         const trackTitle = track?.title || 'Unknown';
         console.log(`🎵 Track started in channel ${channelId} (guild ${guildId}): ${trackTitle}`);
@@ -220,32 +359,7 @@ class AtiveMusicBot {
         const guild = this.client.guilds.cache.get(guildId);
         if (!guild) return;
         
-        // Try to find the text channel where music commands were issued from
-        let textChannel = null;
-        
-        // First try to get the stored text channel for this voice channel
-        const storedTextChannelId = this.musicTextChannels.get(channelId);
-        if (storedTextChannelId) {
-            textChannel = guild.channels.cache.get(storedTextChannelId);
-        }
-        
-        // If not found, try the last panel location
-        if (!textChannel) {
-            const panelInfo = this.musicPanels.get(channelId);
-            if (panelInfo) {
-                textChannel = guild.channels.cache.get(panelInfo.textChannelId);
-            }
-        }
-        
-        // Last resort: find a general/music channel or use the first text channel
-        if (!textChannel) {
-            textChannel = guild.channels.cache.find(ch => 
-                ch.name.includes('music') || 
-                ch.name.includes('bot') || 
-                ch.name.includes('general')
-            ) || guild.channels.cache.find(ch => ch.type === 0); // 0 = GUILD_TEXT
-        }
-        
+        const textChannel = this.getTextChannelForVoice(channelId, guild);
         if (textChannel) {
             const musicManager = this.getMusicManager(guildId, channelId);
             await this.sendNewMusicPanel(textChannel, track, channelId, musicManager);
@@ -334,12 +448,125 @@ class AtiveMusicBot {
             case 'play':
                 await this.handlePlayCommand(interaction, musicManager);
                 break;
+            case 'playnext': {
+                const query = interaction.options.getString('query');
+                await interaction.deferReply();
+                const voiceChannel = interaction.member?.voice?.channel;
+                if (!voiceChannel) return await interaction.editReply({ content: 'Join a voice channel first.', ephemeral: true });
+                try {
+                    const connection = await this.connectToVoiceChannel(voiceChannel, interaction.guildId);
+                    musicManager = this.getMusicManager(interaction.guildId, voiceChannel.id);
+                    musicManager.setConnection(connection);
+                    const results = await this.sourceHandlers.search(query, 8);
+                    if (!results || results.length === 0) return await interaction.editReply({ embeds: [this.createErrorEmbed('No results found!')] });
+                    const selected = results.find(t => t.source === 'youtube') || results[0];
+                    const pos = (musicManager.currentTrackIndex >= 0) ? (musicManager.currentTrackIndex + 1) : -1;
+                    await musicManager.addToQueue(selected, pos, { userId: interaction.user.id, guildId: interaction.guild.id });
+                    if (!musicManager.isPlaying) await musicManager.play();
+                    const embed = this.createMusicEmbed('🎵 Queued Next', `Queued to play next: ${selected.title}`, config.colors.success, selected.thumbnail);
+                    await interaction.editReply({ embeds: [embed] });
+                } catch (e) {
+                    console.error('playnext error:', e);
+                    await interaction.editReply({ embeds: [this.createErrorEmbed('Failed to queue next.')]} );
+                }
+                break;
+            }
             case 'search':
                 await this.handleSearchCommand(interaction, musicManager);
                 break;
             case 'queue':
                 await this.handleQueueCommand(interaction, musicManager);
                 break;
+            case 'repeat': {
+                await interaction.deferReply({ ephemeral: true });
+                const vc = interaction.member?.voice?.channel;
+                if (!vc) return await interaction.editReply('Join a voice channel first.');
+                musicManager = this.getMusicManager(interaction.guildId, vc.id);
+                const newMode = musicManager.loopMode === 'track' ? 'off' : 'track';
+                musicManager.setLoop(newMode);
+                // Restart current track from beginning when enabling repeat
+                if (newMode === 'track' && musicManager.currentTrack) {
+                    musicManager.player.stop(true);
+                    await new Promise(r => setTimeout(r, 300));
+                    await musicManager.play();
+                }
+                await interaction.editReply(`Repeat is now ${newMode === 'track' ? 'enabled for current track' : 'off'}.`);
+                break;
+            }
+            case 'web-portal': {
+                const host = process.env.PUBLIC_HOST || process.env.SERVER_HOST || process.env.HOST || 'localhost';
+                const port = process.env.PUBLIC_PORT || process.env.SERVER_PORT || process.env.WEB_PORT || process.env.PORT || 25567;
+                const base = `http://${host}:${port}`;
+                const vc = interaction.member?.voice?.channel;
+                const url = vc ? `${base}/?guildId=${interaction.guildId}&voiceChannelId=${vc.id}` : base;
+                await interaction.reply({ content: `Web Portal: ${url}`, ephemeral: true });
+                break;
+            }
+            case 'repeatqueue': {
+                await interaction.deferReply({ ephemeral: true });
+                const vc = interaction.member?.voice?.channel;
+                if (!vc) return await interaction.editReply('Join a voice channel first.');
+                musicManager = this.getMusicManager(interaction.guildId, vc.id);
+                const newMode = musicManager.loopMode === 'queue' ? 'off' : 'queue';
+                musicManager.setLoop(newMode);
+                await interaction.editReply(`Queue repeat is now ${newMode === 'queue' ? 'enabled' : 'off'}.`);
+                break;
+            }
+            case 'setpanel': {
+                await interaction.deferReply({ ephemeral: true });
+                const textChannel = interaction.options.getChannel('channel');
+                if (!textChannel || textChannel.type !== 0) {
+                    return await interaction.editReply('Please select a text channel.');
+                }
+                const voiceChannel = interaction.member?.voice?.channel;
+                if (!voiceChannel) {
+                    return await interaction.editReply('Join a voice channel to bind its panel channel.');
+                }
+                try {
+                    // Persist mapping
+                    if (!firebaseService.initialized) firebaseService.initialize();
+                    await firebaseService.savePanelMapping(interaction.guildId, voiceChannel.id, textChannel.id);
+                    // Update memory maps
+                    this.musicTextChannels.set(voiceChannel.id, textChannel.id);
+                    const panelInfo = this.musicPanels.get(voiceChannel.id) || {};
+                    this.musicPanels.set(voiceChannel.id, {
+                        message: panelInfo.message || null,
+                        textChannelId: textChannel.id,
+                        guildId: interaction.guildId,
+                        track: panelInfo.track || null
+                    });
+                    await interaction.editReply(`Panel channel set to <#${textChannel.id}> for voice channel <#${voiceChannel.id}>.`);
+                } catch (e) {
+                    console.error('setpanel error:', e);
+                    await interaction.editReply('Failed to save panel channel.');
+                }
+                break;
+            }
+            case 'move': {
+                await interaction.deferReply({ ephemeral: true });
+                const from = interaction.options.getInteger('from');
+                const to = interaction.options.getInteger('to');
+                const vc = interaction.member?.voice?.channel;
+                if (!vc) return await interaction.editReply('Join a voice channel to manage the queue.');
+                musicManager = this.getMusicManager(interaction.guildId, vc.id);
+                const ok = musicManager.moveInQueue(from, to);
+                if (!ok) return await interaction.editReply('Invalid indices.');
+                await this.updateQueueState(interaction.guildId, vc.id, musicManager);
+                await interaction.editReply(`Moved track from ${from} to ${to}.`);
+                break;
+            }
+            case 'removeindex': {
+                await interaction.deferReply({ ephemeral: true });
+                const index = interaction.options.getInteger('index');
+                const vc = interaction.member?.voice?.channel;
+                if (!vc) return await interaction.editReply('Join a voice channel to manage the queue.');
+                musicManager = this.getMusicManager(interaction.guildId, vc.id);
+                const removed = musicManager.removeFromQueue(index);
+                if (!removed) return await interaction.editReply('Invalid index.');
+                await this.updateQueueState(interaction.guildId, vc.id, musicManager);
+                await interaction.editReply(`Removed: ${removed.title}`);
+                break;
+            }
             case 'skip':
                 if (!musicManager) {
                     return await interaction.reply({ 
@@ -490,6 +717,14 @@ class AtiveMusicBot {
                 components: this.createMusicControls()
             });
 
+            // Persist panel mapping (voice channel -> this text channel) for future panels
+            try {
+                if (!firebaseService.initialized) firebaseService.initialize();
+                await firebaseService.savePanelMapping(interaction.guildId, voiceChannel.id, interaction.channelId);
+            } catch (e) {
+                console.log('⚠️ Failed to persist panel mapping:', e?.message || e);
+            }
+
             if (!musicManager.isPlaying) {
                 await musicManager.play();
             }
@@ -589,11 +824,18 @@ class AtiveMusicBot {
         const statusEmoji = musicManager.isPaused ? '⏸️' : isPlaying ? '▶️' : '⏹️';
         
         const progressBar = this.createProgressBar(track, musicManager);
-        
+        const durationMs = this.getTrackDurationMs(track, musicManager) || 0;
+        const elapsedMs = Math.max(0, Math.min(durationMs || 0, queueInfo.currentPositionMs || 0));
+        const remainingMs = Math.max(0, (durationMs || 0) - elapsedMs);
+        const eta = new Date(Date.now() + remainingMs);
+        const etaStr = isFinite(remainingMs) && remainingMs > 0 
+            ? `${eta.getHours().toString().padStart(2,'0')}:${eta.getMinutes().toString().padStart(2,'0')}`
+            : '—';
+
         const embed = new EmbedBuilder()
             .setColor(isPlaying ? config.colors.playing : musicManager.isPaused ? config.colors.paused : config.colors.stopped)
             .setTitle(`${statusEmoji} ${status}`)
-            .setDescription(`## ${track.title}\n**${track.author}**\n\n${progressBar}`)
+            .setDescription(`## ${track.title}\n**${track.author}**\n\n${progressBar} • \`-${this.formatMs(remainingMs)}\` • ETA \`${etaStr}\``)
             .setThumbnail(track.thumbnail || null)
             .setTimestamp()
             .setFooter({ 
@@ -606,6 +848,16 @@ class AtiveMusicBot {
             { 
                 name: '⏱️ Duration', 
                 value: `\`${track.duration || 'Unknown'}\``, 
+                inline: true 
+            },
+            { 
+                name: '⏳ Remaining', 
+                value: `\`${this.formatMs(remainingMs)}\``, 
+                inline: true 
+            },
+            { 
+                name: '🕒 ETA', 
+                value: `\`${etaStr}\``, 
                 inline: true 
             },
             { 
@@ -632,7 +884,8 @@ class AtiveMusicBot {
                 name: '🤖 Auto-Play', 
                 value: `\`${musicManager.autoPlayEnabled ? 'Enabled' : 'Disabled'}\``, 
                 inline: true 
-            }
+            },
+            ...(track._lastExtractor || track._lastFormat ? [{ name: 'Extractor', value: `\`${(track._lastExtractor||'AUTO').toUpperCase()} (${track._lastFormat||'auto'})\``, inline: true }] : [])
         ];
 
         embed.addFields(fields);
@@ -2661,6 +2914,41 @@ class AtiveMusicBot {
             new SlashCommandBuilder()
                 .setName('queue')
                 .setDescription('Show the current music queue'),
+            new SlashCommandBuilder()
+                .setName('repeat')
+                .setDescription('Toggle repeat current track (restart from beginning)'),
+            new SlashCommandBuilder()
+                .setName('web-portal')
+                .setDescription('Get a link to the Web Portal for this bot'),
+            new SlashCommandBuilder()
+                .setName('repeatqueue')
+                .setDescription('Toggle repeat for the entire queue'),
+            new SlashCommandBuilder()
+                .setName('setpanel')
+                .setDescription('Set the text channel for music panels for your current voice channel')
+                .addChannelOption(option =>
+                    option.setName('channel')
+                        .setDescription('Text channel to post music panels')
+                        .setRequired(true)
+                ),
+            new SlashCommandBuilder()
+                .setName('playnext')
+                .setDescription('Queue a track to play next')
+                .addStringOption(option =>
+                    option.setName('query')
+                        .setDescription('Song name, URL, or search query')
+                        .setRequired(true)
+                        .setAutocomplete(true)
+                ),
+            new SlashCommandBuilder()
+                .setName('move')
+                .setDescription('Move a track in the queue by index')
+                .addIntegerOption(option => option.setName('from').setDescription('From index (0-based)').setRequired(true))
+                .addIntegerOption(option => option.setName('to').setDescription('To index (0-based)').setRequired(true)),
+            new SlashCommandBuilder()
+                .setName('removeindex')
+                .setDescription('Remove a track from queue by index')
+                .addIntegerOption(option => option.setName('index').setDescription('Index (0-based)').setRequired(true)),
             new SlashCommandBuilder()
                 .setName('skip')
                 .setDescription('Skip the current track'),
