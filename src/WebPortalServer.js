@@ -15,6 +15,7 @@ class WebPortalServer {
     this.progressClients = new Set();
     
     this.setupRoutes();
+    this.setupPlaylistRoutes();
     this.setupProgressListener();
   }
 
@@ -152,9 +153,19 @@ class WebPortalServer {
       margin: 0 auto;
       padding: 2rem;
       display: grid;
-      grid-template-columns: 300px 1fr;
+      grid-template-columns: 320px 1fr;
       gap: 2rem;
       min-height: calc(100vh - 200px);
+    }
+    
+    /* Server selection container override */
+    .server-selection-container {
+      display: block;
+      max-width: none;
+      padding: 0;
+      margin: 0;
+      width: 100%;
+      height: 100vh;
     }
     
     /* Sidebar */
@@ -170,12 +181,47 @@ class WebPortalServer {
     }
     
     .sidebar h3 {
-      font-size: 1rem;
+      font-size: 1.1rem;
       font-weight: 600;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+    
+    .sidebar h4 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      margin-top: 1.5rem;
       color: var(--text-secondary);
       text-transform: uppercase;
       letter-spacing: 0.5px;
+    }
+    
+    .server-header {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    .connection-section {
+      margin-bottom: 1.5rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    .btn-outline {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+    }
+    
+    .btn-outline:hover {
+      background: var(--surface-hover);
+      color: var(--text-primary);
+      border-color: var(--accent);
     }
     
     .form-group {
@@ -310,6 +356,47 @@ class WebPortalServer {
       color: var(--text-primary);
     }
     
+    /* Tabs */
+    .search-tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      padding: 1rem 1.5rem;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-primary);
+      background: var(--surface-hover);
+    }
+
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
     /* Search */
     .search-container {
       position: relative;
@@ -354,6 +441,149 @@ class WebPortalServer {
       font-weight: 500;
       cursor: pointer;
       transition: all 0.2s ease;
+    }
+
+    .search-btn:hover {
+      transform: translateY(-50%) translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+
+    /* Playlist */
+    .playlist-container {
+      max-width: 800px;
+    }
+
+    .playlist-input-section {
+      margin-bottom: 2rem;
+    }
+
+    .playlist-input-section label {
+      display: block;
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text-primary);
+    }
+
+    .playlist-input-group {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .playlist-icon {
+      position: absolute;
+      left: 1rem;
+      color: var(--text-muted);
+      font-size: 1rem;
+      z-index: 10;
+    }
+
+    .playlist-input {
+      flex: 1;
+      padding: 1rem 1rem 1rem 3rem;
+      background: var(--tertiary-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text-primary);
+      font-size: 1rem;
+      transition: all 0.2s ease;
+    }
+
+    .playlist-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-light);
+    }
+
+    .playlist-btn {
+      background: var(--gradient-primary);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      padding: 1rem 1.5rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      white-space: nowrap;
+    }
+
+    .playlist-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
+
+    .playlist-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .playlist-examples {
+      margin-top: 1rem;
+      color: var(--text-muted);
+    }
+
+    .example-link {
+      color: var(--accent);
+      font-family: monospace;
+      background: var(--accent-light);
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+    }
+
+    .playlist-results {
+      margin-top: 2rem;
+    }
+
+    .playlist-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 2rem;
+      padding: 1.5rem;
+      background: var(--gradient-surface);
+      border-radius: 16px;
+      border: 1px solid var(--border);
+    }
+
+    .playlist-cover {
+      width: 80px;
+      height: 80px;
+      border-radius: 12px;
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .playlist-cover img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .playlist-info h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+    }
+
+    .playlist-meta {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    .playlist-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 0.5rem;
     }
     
     /* Track Grid */
@@ -775,7 +1005,56 @@ class WebPortalServer {
       cursor: not-allowed !important;
     }
     
+    /* Mobile Responsive */
     @media (max-width: 768px) {
+      .main-container {
+        grid-template-columns: 1fr;
+        padding: 1rem;
+      }
+      
+      .sidebar {
+        position: static;
+        margin-bottom: 2rem;
+      }
+      
+      .server-selection {
+        padding: 1rem;
+        min-height: calc(100vh - 120px);
+      }
+      
+      .server-selection-header h1 {
+        font-size: 2rem;
+      }
+      
+      .server-selection-header p {
+        font-size: 1rem;
+      }
+      
+      .server-selection-header {
+        margin-bottom: 2rem;
+      }
+      
+      .server-grid {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+      
+      .server-card {
+        padding: 2rem 1.5rem;
+        min-height: 200px;
+      }
+      
+      .server-icon {
+        width: 80px;
+        height: 80px;
+        font-size: 2rem;
+        margin-bottom: 1.5rem;
+      }
+      
+      .server-name {
+        font-size: 1.25rem;
+      }
+      
       .main-container {
         padding: 1rem;
       }
@@ -798,6 +1077,58 @@ class WebPortalServer {
         order: -1;
       }
     }
+
+    /* Tablet Responsive */
+    @media (max-width: 1024px) and (min-width: 769px) {
+      .server-selection-header h1 {
+        font-size: 2.5rem;
+      }
+      
+      .server-grid {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1.5rem;
+      }
+      
+      .server-card {
+        padding: 2.5rem 2rem;
+        min-height: 220px;
+      }
+    }
+
+    /* Small Mobile */
+    @media (max-width: 480px) {
+      .server-selection {
+        padding: 0.5rem;
+      }
+      
+      .server-selection-header h1 {
+        font-size: 1.75rem;
+      }
+      
+      .server-selection-header p {
+        font-size: 0.9rem;
+      }
+      
+      .server-card {
+        padding: 1.5rem 1rem;
+        min-height: 180px;
+      }
+      
+      .server-icon {
+        width: 70px;
+        height: 70px;
+        font-size: 1.75rem;
+        margin-bottom: 1rem;
+      }
+      
+      .server-name {
+        font-size: 1.1rem;
+      }
+      
+      .server-members {
+        font-size: 0.9rem;
+      }
+    }
     
     /* Empty States */
     .empty-state {
@@ -812,6 +1143,163 @@ class WebPortalServer {
       opacity: 0.5;
     }
     
+    /* Server Selection */
+    .server-selection {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .server-selection-content {
+      max-width: 1200px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .server-selection-header {
+      text-align: center;
+      margin-bottom: 4rem;
+    }
+
+    .server-selection-header h1 {
+      font-size: 3rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 1rem;
+      line-height: 1.2;
+    }
+
+    .server-selection-header p {
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    .server-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+      justify-content: center;
+      align-items: stretch;
+    }
+
+    .server-card {
+      background: var(--gradient-surface);
+      border-radius: 24px;
+      padding: 3rem 2rem;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+      min-height: 240px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .server-card:hover {
+      transform: translateY(-8px) scale(1.02);
+      box-shadow: var(--shadow-xl);
+      border-color: var(--accent);
+    }
+
+    .server-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: var(--gradient-primary);
+      transform: scaleX(0);
+      transition: transform 0.4s ease;
+    }
+
+    .server-card:hover::before {
+      transform: scaleX(1);
+    }
+
+    .server-icon {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: var(--gradient-primary);
+      margin: 0 auto 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5rem;
+      color: white;
+      box-shadow: var(--shadow-md);
+      transition: all 0.3s ease;
+    }
+
+    .server-card:hover .server-icon {
+      transform: scale(1.1);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .server-name {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.75rem;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .server-members {
+      font-size: 1rem;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .server-members::before {
+      content: '👥';
+      font-size: 0.875rem;
+    }
+
+    .loading-servers {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+      grid-column: 1 / -1;
+      background: var(--gradient-surface);
+      border-radius: 24px;
+      border: 1px solid var(--border);
+      margin: 0 auto;
+      max-width: 500px;
+    }
+
+    .loading-servers .spinner {
+      width: 32px;
+      height: 32px;
+      margin-bottom: 1.5rem;
+      border-width: 3px;
+    }
+
+    .loading-servers p {
+      font-size: 1.1rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .loading-servers p:last-child {
+      font-size: 0.9rem;
+      opacity: 0.7;
+    }
+
     /* Notifications */
     .notification {
       position: fixed;
@@ -857,37 +1345,53 @@ class WebPortalServer {
     </div>
   </div>
 
-  <!-- Main Container -->
-  <div class="main-container">
+  <!-- Server Selection Container (full screen) -->
+  <div id="server-selection-container" class="server-selection-container">
+    <div id="server-selection" class="server-selection">
+      <div class="server-selection-content">
+        <div class="server-selection-header">
+          <h1><i class="fas fa-server"></i> Select a Server</h1>
+          <p>Choose a Discord server to connect to and control music</p>
+        </div>
+        
+        <div class="server-grid" id="server-grid">
+          <div class="loading-servers">
+            <div class="spinner"></div>
+            <p>Loading servers...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Music Interface Container (hidden initially) -->
+  <div id="music-interface-container" class="main-container" style="display: none;">
     <!-- Sidebar -->
     <div class="sidebar">
-      <h3>Connection</h3>
-      
-      <div class="form-group">
-        <label>Server</label>
-        <select class="form-control" id="guild">
-          <option value="">Select server...</option>
-        </select>
-      </div>
-      
-      <div class="form-group">
-        <label>Voice Channel</label>
-        <select class="form-control" id="channel">
-          <option value="">Select channel...</option>
-        </select>
-      </div>
-      
-      <div style="display: flex; gap: 0.5rem; margin-bottom: 2rem;">
-        <button class="btn btn-small" id="connect">
-          <i class="fas fa-plug"></i> Connect
-        </button>
-        <button class="btn btn-secondary btn-small" id="disconnect">
-          <i class="fas fa-times"></i> Disconnect
+      <div class="server-header">
+        <h3 id="current-server-name">Current Server</h3>
+        <button class="btn btn-outline btn-small" id="change-server">
+          <i class="fas fa-exchange-alt"></i> Change Server
         </button>
       </div>
       
-      <h3>Quick Actions</h3>
+      <div class="connection-section">
+        <h4>Voice Channel</h4>
+        <select class="form-control" id="channel" style="margin-bottom: 1rem;">
+          <option value="">Select voice channel...</option>
+        </select>
+        
+        <div style="display: flex; gap: 0.5rem; margin-bottom: 2rem;">
+          <button class="btn btn-small" id="connect">
+            <i class="fas fa-plug"></i> Connect
+          </button>
+          <button class="btn btn-secondary btn-small" id="disconnect">
+            <i class="fas fa-times"></i> Disconnect
+          </button>
+        </div>
+      </div>
       
+      <h4>Music Controls</h4>
       <div style="display: flex; flex-direction: column; gap: 0.5rem;">
         <button class="btn btn-secondary btn-small" id="btn-shuffle">
           <i class="fas fa-random"></i> Shuffle
@@ -897,7 +1401,7 @@ class WebPortalServer {
         </button>
         <button class="btn btn-secondary btn-small" id="btn-autoplay" style="position: relative;">
           <i class="fas fa-magic"></i> Auto-play
-          <span class="autoplay-status" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 0.7rem; opacity: 0.7;">ON</span>
+          <span class="autoplay-status" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 0.7rem; opacity: 0.7;">OFF</span>
         </button>
         <button class="btn btn-danger btn-small" id="btn-clear-queue">
           <i class="fas fa-trash"></i> Clear Queue
@@ -915,13 +1419,50 @@ class WebPortalServer {
           </h2>
         </div>
         
-        <div class="search-container">
-          <i class="fas fa-search search-icon"></i>
-          <input type="text" class="search-input" id="search" placeholder="Search for songs, artists, or playlists..." />
-          <button class="search-btn" id="search-btn">Search</button>
+        <div class="search-tabs">
+          <button class="tab-btn active" id="tab-search">
+            <i class="fas fa-search"></i> Search Music
+          </button>
+          <button class="tab-btn" id="tab-playlist">
+            <i class="fas fa-list-ul"></i> Import Playlist
+          </button>
         </div>
-        
-        <div id="results" class="track-grid"></div>
+
+        <!-- Search Tab -->
+        <div id="search-tab" class="tab-content active">
+          <div class="search-container">
+            <i class="fas fa-search search-icon"></i>
+            <input type="text" class="search-input" id="search" placeholder="Search for songs, artists, or playlists..." />
+            <button class="search-btn" id="search-btn">Search</button>
+          </div>
+          
+          <div id="results" class="track-grid"></div>
+        </div>
+
+        <!-- Playlist Tab -->
+        <div id="playlist-tab" class="tab-content">
+          <div class="playlist-container">
+            <div class="playlist-input-section">
+              <label for="playlist-url">Playlist URL</label>
+              <div class="playlist-input-group">
+                <i class="fas fa-link playlist-icon"></i>
+                <input type="text" class="playlist-input" id="playlist-url" placeholder="Paste Spotify or YouTube playlist URL..." />
+                <button class="playlist-btn" id="import-playlist-btn">
+                  <i class="fas fa-download"></i> Import
+                </button>
+              </div>
+              <div class="playlist-examples">
+                <small>
+                  <strong>Supported:</strong> 
+                  <span class="example-link">spotify.com/playlist/...</span> • 
+                  <span class="example-link">youtube.com/playlist?list=...</span>
+                </small>
+              </div>
+            </div>
+            
+            <div id="playlist-results" class="playlist-results"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Queue Section -->
@@ -940,10 +1481,11 @@ class WebPortalServer {
         </div>
       </div>
     </div>
+    </div>
   </div>
 
-  <!-- Bottom Player -->
-  <div class="bottom-player">
+  <!-- Bottom Player (hidden on server selection) -->
+  <div class="bottom-player" id="bottom-player" style="display: none;">
     <div class="player-track-info">
       <div class="player-thumbnail" id="player-thumbnail">
         <i class="fas fa-music"></i>
@@ -1000,10 +1542,10 @@ class WebPortalServer {
     let isPlaying = false;
     let currentTime = 0;
     let totalTime = 0;
+    let loadedServers = null; // Cache loaded servers
 
     // DOM Elements
     const els = {
-      guild: document.getElementById('guild'),
       channel: document.getElementById('channel'),
       search: document.getElementById('search'),
       results: document.getElementById('results'),
@@ -1027,12 +1569,30 @@ class WebPortalServer {
       notification: document.getElementById('notification')
     };
 
+    // URL Routing
+    function getServerFromURL() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('server');
+    }
+
+    function setServerInURL(serverId) {
+      const url = new URL(window.location);
+      url.searchParams.set('server', serverId);
+      window.history.pushState({}, '', url);
+    }
+
+    function clearServerFromURL() {
+      const url = new URL(window.location);
+      url.searchParams.delete('server');
+      window.history.pushState({}, '', url);
+    }
+
     // Initialize
     window.addEventListener('load', () => {
-      loadGuilds();
+      // ALWAYS show server selection first
+      loadServersForSelection();
       updateStatus();
-      loadAutoplayStatus();
-      setInterval(updateStatus, 5000);
+      setInterval(updateStatus, 1000);
     });
 
     // Helper Functions
@@ -1054,8 +1614,33 @@ class WebPortalServer {
       return \`\${mins}:\${secs.toString().padStart(2, '0')}\`;
     }
 
-    // API Functions
-    async function loadGuilds() {
+    // Server Selection Functions
+    async function loadServersAndSelectFromURL(serverId) {
+      try {
+        const response = await fetch(BASE + '/api/guilds');
+        if (!response.ok) {
+          throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
+        }
+        const guilds = await response.json();
+        
+        const guild = guilds.find(g => g.id === serverId);
+        if (guild) {
+          // Valid server ID - go directly to music interface
+          selectServer(serverId, guild.name);
+          // Guild dropdown no longer needed
+        } else {
+          // Invalid server ID - show server selection
+          clearServerFromURL();
+          loadServersForSelection();
+        }
+      } catch (error) {
+        console.error('Failed to load servers from URL:', error);
+        clearServerFromURL();
+        loadServersForSelection();
+      }
+    }
+
+    async function loadServersForSelection() {
       try {
         const response = await fetch(BASE + '/api/guilds');
         if (!response.ok) {
@@ -1064,48 +1649,140 @@ class WebPortalServer {
         const guilds = await response.json();
         
         if (!Array.isArray(guilds) || guilds.length === 0) {
-          els.guild.innerHTML = '<option value="">No servers available</option>';
-          showNotification('Bot is not in any servers or not ready yet', 'warning');
+          document.getElementById('server-grid').innerHTML = \`
+            <div class="loading-servers">
+              <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 1rem; color: var(--warning);"></i>
+              <p>No servers available</p>
+              <p style="font-size: 0.875rem; opacity: 0.7;">Bot is not in any servers or not ready yet</p>
+            </div>
+          \`;
           return;
         }
         
-        els.guild.innerHTML = '<option value="">Select server...</option>';
-        guilds.forEach(guild => {
-          const option = document.createElement('option');
-          option.value = guild.id;
-          option.textContent = guild.name;
-          els.guild.appendChild(option);
-        });
+        const serverCardsHTML = guilds.map(guild => {
+          const safeName = guild.name.split("'").join("\\'");
+          const iconContent = guild.iconURL 
+            ? \`<img src="\${guild.iconURL}" alt="\${guild.name}" style="width: 100%; height: 100%; object-fit: cover; border-radius: 50%;">\`
+            : \`<i class="fas fa-server"></i>\`;
+          return \`
+          <div class="server-card" onclick="selectServer('\${guild.id}', '\${safeName}')">
+            <div class="server-icon">
+              \${iconContent}
+            </div>
+            <div class="server-name">\${guild.name}</div>
+            <div class="server-members">\${guild.memberCount} members</div>
+          </div>
+        \`;
+        }).join('');
         
-        // Restore saved guild from localStorage
-        const savedGuildId = localStorage.getItem('musicBot_guildId');
-        if (savedGuildId && guilds.find(g => g.id === savedGuildId)) {
-          els.guild.value = savedGuildId;
-          currentGuild = savedGuildId;
-          loadChannels(); // Auto-load channels for saved guild
-        }
+        document.getElementById('server-grid').innerHTML = serverCardsHTML;
         
-        showNotification(\`Loaded \${guilds.length} server(s)\`, 'success');
+        // Cache the loaded servers for reuse
+        loadedServers = serverCardsHTML;
+        
+        // Always show server selection first - don't auto-select previously used servers
+        // Users must explicitly choose a server each time they visit
       } catch (error) {
-        console.error('Failed to load guilds:', error);
-        showNotification(\`Failed to load servers: \${error.message}\`, 'error');
-        setTimeout(() => {
-          console.log('Retrying guild load in 3 seconds...');
-          loadGuilds();
-        }, 3000);
+        console.error('Failed to load servers:', error);
+        document.getElementById('server-grid').innerHTML = \`
+          <div class="loading-servers">
+            <i class="fas fa-exclamation-triangle" style="font-size: 3rem; margin-bottom: 1rem; color: var(--danger);"></i>
+            <p>Failed to load servers</p>
+            <p style="font-size: 0.875rem; opacity: 0.7;">Retrying in 3 seconds...</p>
+          </div>
+        \`;
+        setTimeout(loadServersForSelection, 3000);
       }
     }
 
+    function selectServer(guildId, guildName) {
+      currentGuild = guildId;
+      localStorage.setItem('musicBot_guildId', currentGuild);
+      
+      // Update URL
+      setServerInURL(guildId);
+      
+      // Hide server selection and show music interface
+      document.getElementById('server-selection-container').style.display = 'none';
+      document.getElementById('music-interface-container').style.display = 'grid';
+      
+      // Update server name display
+      document.getElementById('current-server-name').textContent = guildName;
+      
+      // Show the bottom player when entering a server
+      document.getElementById('bottom-player').style.display = 'flex';
+      
+      // Load channels for the selected server
+      loadChannels();
+      loadAutoplayStatus();
+      
+      // Immediately check for current playing state
+      updateStatus();
+      
+      showNotification(\`Selected server: \${guildName}\`, 'success');
+    }
+
+    function showServerSelection() {
+      // Clear URL
+      clearServerFromURL();
+      
+      // Clear all search and playlist content
+      clearAllContent();
+      
+      document.getElementById('server-selection-container').style.display = 'block';
+      document.getElementById('music-interface-container').style.display = 'none';
+      
+      // Hide the bottom player when going back to server selection
+      document.getElementById('bottom-player').style.display = 'none';
+      
+      // Use cached servers if available, otherwise load them
+      if (loadedServers) {
+        console.log('📋 Using cached server list');
+        document.getElementById('server-grid').innerHTML = loadedServers;
+      } else {
+        console.log('🔄 Loading server list...');
+        loadServersForSelection();
+      }
+    }
+
+    function clearAllContent() {
+      // Clear search input
+      document.getElementById('search').value = '';
+      
+      // Clear search results
+      document.getElementById('results').innerHTML = '';
+      
+      // Clear playlist input
+      document.getElementById('playlist-url').value = '';
+      
+      // Clear playlist results
+      document.getElementById('playlist-results').innerHTML = '';
+      
+      // Reset to search tab
+      switchTab('search');
+      
+      // Clear any stored playlist data
+      window.currentPlaylist = null;
+      
+      console.log('🧹 Cleared all search and playlist content');
+    }
+
+    // API Functions (simplified since we don't use guild dropdown anymore)
+    async function loadGuilds() {
+      // This function is kept for any future needs but simplified
+      // The main guild loading is now handled by loadServersForSelection()
+      return;
+    }
+
     async function loadChannels() {
-      const guildId = els.guild.value;
-      if (!guildId) return;
+      if (!currentGuild) return;
       
       try {
-        const response = await fetch(BASE + '/api/channels/' + guildId);
+        const response = await fetch(BASE + '/api/channels/' + currentGuild);
         const data = await response.json();
         const channels = data.channels || data; // Handle both old and new response formats
         
-        els.channel.innerHTML = '<option value="">Select channel...</option>';
+        els.channel.innerHTML = '<option value="">Select voice channel...</option>';
         channels.forEach(channel => {
           const option = document.createElement('option');
           option.value = channel.id;
@@ -1127,7 +1804,8 @@ class WebPortalServer {
           }
         }
       } catch (error) {
-        showNotification('Failed to load channels', 'error');
+        console.error('Failed to load channels:', error);
+        showNotification('Failed to load channels: ' + error.message, 'error');
       }
     }
 
@@ -1195,7 +1873,8 @@ class WebPortalServer {
 
     async function updateStatus() {
       try {
-        const response = await fetch(BASE + '/api/status');
+        const params = new URLSearchParams({ guildId: currentGuild || '', channelId: currentChannel || '' });
+        const response = await fetch(BASE + '/api/status?' + params.toString());
         const data = await response.json();
         
         // Update connection status
@@ -1212,13 +1891,20 @@ class WebPortalServer {
           updateAutoplayButton(data.autoPlayEnabled);
         }
 
-        // Update player
+        // Update player - always update to ensure sync across users
         if (data.currentTrack) {
           updatePlayer(data.currentTrack, data.isPlaying, data.currentTime, data.totalTime);
+          // Show the bottom player if we have a current track and we're in the music interface
+          if (document.getElementById('music-interface-container').style.display !== 'none') {
+            document.getElementById('bottom-player').style.display = 'flex';
+          }
+        } else {
+          // Clear player when no track is playing
+          updatePlayer({title: 'No track playing', author: 'Select a song to play'}, false, 0, 0);
         }
 
-        // Update queue
-        if (data.queue) {
+        // Update queue - always update to ensure sync
+        if (data.queue !== undefined) {
           updateQueue(data.queue, data.currentIndex);
         }
       } catch (error) {
@@ -1287,6 +1973,212 @@ class WebPortalServer {
         </div>
       \`).join('');
     }
+
+    // Tab switching functionality
+    function switchTab(tabName) {
+      // Remove active class from all tabs and content
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      
+      // Add active class to selected tab and content
+      document.getElementById('tab-' + tabName).classList.add('active');
+      document.getElementById(tabName + '-tab').classList.add('active');
+    }
+
+    // Playlist functionality
+    async function importPlaylist() {
+      const url = document.getElementById('playlist-url').value.trim();
+      const button = document.getElementById('import-playlist-btn');
+      
+      if (!url) {
+        showNotification('Please enter a playlist URL', 'error');
+        return;
+      }
+
+      // Validate URL
+      if (!isValidPlaylistUrl(url)) {
+        showNotification('Please enter a valid Spotify or YouTube playlist URL', 'error');
+        return;
+      }
+
+      // Show loading state
+      const originalHTML = button.innerHTML;
+      button.innerHTML = '<div class="spinner"></div> Importing...';
+      button.disabled = true;
+
+      try {
+        const response = await fetch(BASE + '/api/playlist/import', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ url })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+          displayPlaylistResults(result.playlist);
+          showNotification('Playlist imported successfully!', 'success');
+        } else {
+          showNotification(result.error || 'Failed to import playlist', 'error');
+        }
+      } catch (error) {
+        showNotification('Failed to import playlist', 'error');
+      } finally {
+        // Reset button state
+        button.innerHTML = originalHTML;
+        button.disabled = false;
+      }
+    }
+
+    function isValidPlaylistUrl(url) {
+      // Very simple and permissive validation - just check for key URL patterns
+      const lowerUrl = url.toLowerCase();
+      
+      // Check for Spotify playlist
+      if (lowerUrl.includes('spotify.com/playlist/')) {
+        return true;
+      }
+      
+      // Check for YouTube playlist - be very permissive
+      if ((lowerUrl.includes('youtube.com/playlist?list=') || lowerUrl.includes('youtu.be/playlist?list=')) && lowerUrl.includes('list=')) {
+        return true;
+      }
+      
+      return false;
+    }
+
+    function displayPlaylistResults(playlist) {
+      const resultsDiv = document.getElementById('playlist-results');
+      
+      if (!playlist || !playlist.tracks || playlist.tracks.length === 0) {
+        resultsDiv.innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>No tracks found in playlist</p></div>';
+        return;
+      }
+
+      resultsDiv.innerHTML = \`
+        <div class="playlist-header">
+          <div class="playlist-cover">
+            \${playlist.image ? 
+              \`<img src="\${playlist.image}" alt="\${playlist.name}" />\` :
+              \`<i class="fas fa-list-ul" style="font-size: 2rem; color: var(--text-muted);"></i>\`
+            }
+          </div>
+          <div class="playlist-info">
+            <h3>\${playlist.name}</h3>
+            <div class="playlist-meta">
+              \${playlist.tracks.length} tracks • \${playlist.source === 'spotify' ? 'Spotify' : 'YouTube'}
+              \${playlist.description ? \` • \${playlist.description}\` : ''}
+            </div>
+          </div>
+          <div class="playlist-actions">
+            <button class="btn btn-small" onclick="queuePlaylist()">
+              <i class="fas fa-plus"></i> Queue All
+            </button>
+            <button class="btn btn-small" onclick="playPlaylist()">
+              <i class="fas fa-play"></i> Play All
+            </button>
+          </div>
+        </div>
+        
+        <div class="track-grid">
+          \${playlist.tracks.map((track, index) => \`
+            <div class="track-card">
+              <div class="track-thumbnail">
+                \${track.thumbnail ? 
+                  \`<img src="\${track.thumbnail}" alt="\${track.title}" onerror="this.style.display='none'" />\` :
+                  \`<i class="fas fa-music fallback-icon"></i>\`
+                }
+              </div>
+              <div class="track-info">
+                <div class="track-title">\${track.title}</div>
+                <div class="track-artist">\${track.author}</div>
+              </div>
+              <div class="track-meta">
+                <span class="track-source">
+                  <i class="fab fa-\${playlist.source === 'spotify' ? 'spotify' : 'youtube'}"></i>
+                  \${playlist.source}
+                </span>
+                <span>\${track.duration || 'Unknown'}</span>
+              </div>
+              <div class="track-actions">
+                <button class="play-btn" onclick="playTrack('\${track.url}', this)">
+                  <i class="fas fa-play"></i> Play
+                </button>
+                <button class="queue-btn" onclick="queueTrack('\${track.url}')">
+                  <i class="fas fa-plus"></i>
+                </button>
+              </div>
+            </div>
+          \`).join('')}
+        </div>
+      \`;
+      
+      // Store current playlist for queue/play all functions
+      window.currentPlaylist = playlist;
+    }
+
+    window.queuePlaylist = async () => {
+      if (!window.currentPlaylist || !currentGuild || !currentChannel) {
+        showNotification('Please select a server and channel first', 'error');
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + '/api/playlist/queue', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            guildId: currentGuild,
+            channelId: currentChannel,
+            tracks: window.currentPlaylist.tracks
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+          showNotification(\`Added \${window.currentPlaylist.tracks.length} tracks to queue!\`, 'success');
+          updateStatus();
+        } else {
+          showNotification(result.error || 'Failed to queue playlist', 'error');
+        }
+      } catch (error) {
+        showNotification('Failed to queue playlist', 'error');
+      }
+    };
+
+    window.playPlaylist = async () => {
+      if (!window.currentPlaylist || !currentGuild || !currentChannel) {
+        showNotification('Please select a server and channel first', 'error');
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + '/api/playlist/play', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            guildId: currentGuild,
+            channelId: currentChannel,
+            tracks: window.currentPlaylist.tracks
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+          showNotification(\`Playing playlist: \${window.currentPlaylist.name}\`, 'success');
+          updateStatus();
+        } else {
+          showNotification(result.error || 'Failed to play playlist', 'error');
+        }
+      } catch (error) {
+        showNotification('Failed to play playlist', 'error');
+      }
+    };
+
+    // Make functions globally available
+    window.selectServer = selectServer;
 
     // Player Functions
     window.playTrack = async (url, button) => {
@@ -1392,12 +2284,6 @@ class WebPortalServer {
     };
 
     // Event Listeners
-    els.guild.addEventListener('change', () => {
-      currentGuild = els.guild.value;
-      localStorage.setItem('musicBot_guildId', currentGuild); // Save to localStorage
-      loadChannels();
-    });
-
     els.channel.addEventListener('change', () => {
       currentChannel = els.channel.value;
       localStorage.setItem('musicBot_channelId', currentChannel); // Save to localStorage
@@ -1412,6 +2298,19 @@ class WebPortalServer {
     document.getElementById('search-btn').addEventListener('click', searchMusic);
     document.getElementById('connect').addEventListener('click', () => control('connect'));
     document.getElementById('disconnect').addEventListener('click', () => control('disconnect'));
+    document.getElementById('change-server').addEventListener('click', showServerSelection);
+    
+    // Tab switching
+    document.getElementById('tab-search').addEventListener('click', () => switchTab('search'));
+    document.getElementById('tab-playlist').addEventListener('click', () => switchTab('playlist'));
+    
+    // Playlist functionality
+    document.getElementById('import-playlist-btn').addEventListener('click', importPlaylist);
+    document.getElementById('playlist-url').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        importPlaylist();
+      }
+    });
 
     els.btnPlay.addEventListener('click', () => {
       if (isPlaying) {
@@ -1434,17 +2333,35 @@ class WebPortalServer {
     }
     
     els.btnAutoplay.addEventListener('click', async () => {
-      const result = await control('autoplay');
-      if (result && result.autoPlayEnabled !== undefined) {
-        updateAutoplayButton(result.autoPlayEnabled);
-        showNotification('Auto-play ' + (result.autoPlayEnabled ? 'enabled' : 'disabled'), 'success');
+      try {
+        const response = await fetch(BASE + '/api/control', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            guildId: currentGuild,
+            channelId: currentChannel,
+            action: 'autoplay'
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.success && result.autoPlayEnabled !== undefined) {
+          updateAutoplayButton(result.autoPlayEnabled);
+          showNotification('Auto-play ' + (result.autoPlayEnabled ? 'enabled' : 'disabled'), 'success');
+        } else {
+          showNotification(result.error || 'Failed to toggle auto-play', 'error');
+        }
+      } catch (error) {
+        showNotification('Failed to toggle auto-play', 'error');
       }
     });
     
     // Initialize auto-play button status on page load
     async function loadAutoplayStatus() {
       try {
-        const response = await fetch(BASE + '/api/status');
+        const params = new URLSearchParams({ guildId: currentGuild || '', channelId: currentChannel || '' });
+        const response = await fetch(BASE + '/api/status?' + params.toString());
         if (response.ok) {
           const status = await response.json();
           if (status.currentTrack && status.autoPlayEnabled !== undefined) {
@@ -1518,14 +2435,22 @@ class WebPortalServer {
       const fillEl = document.getElementById('download-fill');
       const percentEl = document.getElementById('download-percent');
       
+      // Ignore progress for other servers/channels if context is provided
+      if (data.guildId && currentGuild && data.guildId !== currentGuild) return;
+      if (data.channelId && currentChannel && data.channelId !== currentChannel) return;
+
+      const isCurrentTrack = currentTrack && data.title && (currentTrack.title === data.title);
+      const isPrefetch = Boolean(data.prefetch) || !isCurrentTrack;
+
       if (!isProcessingTrack && data.progress < 100) {
         // Show progress bar when processing starts
         isProcessingTrack = true;
         progressSection.style.display = 'block';
       }
       
-      titleEl.textContent = data.title || 'Processing track...';
-      statusEl.textContent = data.status || 'Processing...';
+      // Visual hint when prefetching vs preparing the current track
+      titleEl.textContent = (isPrefetch ? 'Warming next track: ' : '') + (data.title || 'Processing track...');
+      statusEl.textContent = (isPrefetch ? 'Prefetching • ' : '') + (data.status || 'Processing...');
       fillEl.style.width = data.progress + '%';
       percentEl.textContent = data.progress + '%';
       
@@ -1541,8 +2466,8 @@ class WebPortalServer {
     // Connect to progress stream on page load
     connectToProgressStream();
 
-    // Auto-refresh status
-    setInterval(updateStatus, 2000);
+    // Auto-refresh status more frequently for better sync
+    setInterval(updateStatus, 1000);
   </script>
 </body>
 </html>`;
@@ -1553,19 +2478,64 @@ class WebPortalServer {
     // API Routes
     this.app.get('/api/guilds', this.auth, (req, res) => {
       try {
-        const guilds = this.bot.client.guilds.cache.map(guild => ({
-          id: guild.id,
-          name: guild.name,
-          memberCount: guild.memberCount
-        }));
-        res.json(guilds);
+        // Check if Discord client is ready and has guilds
+        if (this.bot.client && this.bot.client.guilds && this.bot.client.guilds.cache.size > 0) {
+          const guilds = this.bot.client.guilds.cache.map(guild => ({
+            id: guild.id,
+            name: guild.name,
+            memberCount: guild.memberCount,
+            iconURL: guild.iconURL({ size: 256, extension: 'png' }) || null
+          }));
+          res.json(guilds);
+        } else {
+          // Return empty array or demo server when Discord is not connected
+          res.json([{
+            id: 'demo',
+            name: 'Demo Server (Discord Disconnected)',
+            memberCount: 0,
+            iconURL: null
+          }]);
+        }
       } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error in /api/guilds:', error);
+        // Return fallback response
+        res.json([{
+          id: 'error',
+          name: 'Error Loading Servers',
+          memberCount: 0,
+          iconURL: null
+        }]);
       }
     });
 
     this.app.get('/api/channels/:guildId', this.auth, (req, res) => {
       try {
+        // Handle demo server case when Discord is not connected
+        if (req.params.guildId === 'demo' || req.params.guildId === 'error') {
+          return res.json({ 
+            channels: [{
+              id: 'demo-channel',
+              name: 'Demo Voice Channel',
+              memberCount: 0,
+              connected: false
+            }],
+            connectedChannel: null
+          });
+        }
+
+        // Check if Discord client is available
+        if (!this.bot.client || !this.bot.client.guilds) {
+          return res.json({ 
+            channels: [{
+              id: 'unavailable',
+              name: 'Voice channels unavailable (Discord disconnected)',
+              memberCount: 0,
+              connected: false
+            }],
+            connectedChannel: null
+          });
+        }
+
         const guild = this.bot.client.guilds.cache.get(req.params.guildId);
         if (!guild) return res.status(404).json({ error: 'Guild not found' });
 
@@ -1592,7 +2562,16 @@ class WebPortalServer {
           connectedChannel: connectedChannelId // Send the connected channel ID
         });
       } catch (error) {
-        res.status(500).json({ error: error.message });
+        console.error('Error in /api/channels:', error);
+        res.json({ 
+          channels: [{
+            id: 'error',
+            name: 'Error loading channels',
+            memberCount: 0,
+            connected: false
+          }],
+          connectedChannel: null
+        });
       }
     });
 
@@ -1840,12 +2819,25 @@ class WebPortalServer {
 
     this.app.get('/api/status', this.auth, (req, res) => {
       try {
-        // Get the first connected voice channel (simplified)
-        const connections = Array.from(this.bot.stayConnectedManager.connections.values());
-        const connection = connections[0];
-        
+        const { guildId, channelId } = req.query || {};
+        // Prefer explicit guild/channel
+        let connection = null;
+        if (guildId && channelId) {
+          const existing = this.bot.stayConnectedManager.connections.get(guildId);
+          if (existing && existing.joinConfig?.channelId === channelId) {
+            connection = existing;
+          }
+        }
+        // Fallback to any connection
+        if (!connection) {
+          const connections = Array.from(this.bot.stayConnectedManager.connections.values());
+          connection = connections[0];
+        }
+
         let status = {
           connected: !!connection,
+          guildId: guildId || (connection?.joinConfig?.guildId || null),
+          channelId: channelId || (connection?.joinConfig?.channelId || null),
           channel: null,
           currentTrack: null,
           isPlaying: false,
@@ -1856,15 +2848,17 @@ class WebPortalServer {
           autoPlayEnabled: true // Default value
         };
 
-        if (connection && connection.joinConfig) {
-          const guild = this.bot.client.guilds.cache.get(connection.joinConfig.guildId);
-          const channel = guild?.channels.cache.get(connection.joinConfig.channelId);
+        const targetGuildId = guildId || connection?.joinConfig?.guildId;
+        const targetChannelId = channelId || connection?.joinConfig?.channelId;
+        if (targetGuildId && targetChannelId) {
+          const guild = this.bot.client.guilds.cache.get(targetGuildId);
+          const channel = guild?.channels.cache.get(targetChannelId);
           
           if (channel) {
             status.channel = channel.name;
             
             // Get music manager for this channel
-            const musicManager = this.bot.musicManagers?.get(channel.id);
+            const musicManager = this.bot.musicManagers?.get(targetChannelId);
             if (musicManager) {
               status.currentTrack = musicManager.currentTrack;
               status.isPlaying = musicManager.isPlaying && !musicManager.isPaused;
@@ -1971,6 +2965,86 @@ class WebPortalServer {
         this.progressClients.delete(client);
       }
     }
+  }
+
+  setupPlaylistRoutes() {
+    // Playlist API endpoints
+    this.app.post('/api/playlist/import', this.auth, async (req, res) => {
+      try {
+        const { url } = req.body;
+        
+        if (!url) {
+          return res.status(400).json({ success: false, error: 'URL is required' });
+        }
+
+        // Check if playlistManager is available
+        if (!this.bot.playlistManager) {
+          console.error('PlaylistManager not available');
+          return res.status(503).json({ 
+            success: false, 
+            error: 'Playlist service not available - bot not fully initialized' 
+          });
+        }
+
+        console.log(`📥 Processing playlist import request: ${url}`);
+        const playlist = await this.bot.playlistManager.importPlaylist(url);
+        console.log(`✅ Playlist import successful: ${playlist.name} (${playlist.tracks.length} tracks)`);
+        res.json({ success: true, playlist });
+      } catch (error) {
+        console.error('Playlist import error:', error);
+        res.status(500).json({ 
+          success: false, 
+          error: `Failed to import playlist: ${error.message}`,
+          message: error.message 
+        });
+      }
+    });
+
+    this.app.post('/api/playlist/queue', this.auth, async (req, res) => {
+      try {
+        const { guildId, channelId, tracks } = req.body;
+        
+        if (!guildId || !channelId || !tracks?.length) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Guild ID, channel ID, and tracks are required' 
+          });
+        }
+
+        const result = await this.bot.playlistManager.queuePlaylist(guildId, channelId, tracks);
+        res.json(result);
+      } catch (error) {
+        console.error('Playlist queue error:', error);
+        res.status(500).json({ 
+          success: false, 
+          error: 'Failed to queue playlist',
+          message: error.message 
+        });
+      }
+    });
+
+    this.app.post('/api/playlist/play', this.auth, async (req, res) => {
+      try {
+        const { guildId, channelId, tracks } = req.body;
+        
+        if (!guildId || !channelId || !tracks?.length) {
+          return res.status(400).json({ 
+            success: false, 
+            error: 'Guild ID, channel ID, and tracks are required' 
+          });
+        }
+
+        const result = await this.bot.playlistManager.playPlaylist(guildId, channelId, tracks);
+        res.json(result);
+      } catch (error) {
+        console.error('Playlist play error:', error);
+        res.status(500).json({ 
+          success: false, 
+          error: 'Failed to play playlist',
+          message: error.message 
+        });
+      }
+    });
   }
 
   start() {

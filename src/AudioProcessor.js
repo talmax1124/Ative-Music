@@ -51,7 +51,22 @@ class AudioProcessor extends EventEmitter {
         return null;
     }
 
-    async downloadAndConvert(url, title = 'Unknown') {
+    deleteCachedByUrl(url) {
+        try {
+            const cacheKey = this.generateCacheKey(url);
+            const mp3Path = path.join(this.cacheDir, `${cacheKey}.mp3`);
+            if (fs.existsSync(mp3Path)) {
+                fs.unlinkSync(mp3Path);
+                console.log(`🗑️ Deleted cached MP3 for url: ${url}`);
+                return true;
+            }
+        } catch (e) {
+            console.log(`⚠️ Failed to delete cached MP3: ${e.message}`);
+        }
+        return false;
+    }
+
+    async downloadAndConvert(url, title = 'Unknown', meta = {}) {
         const cachedFile = this.getCachedFile(url);
         if (cachedFile) {
             return { path: cachedFile, cached: true };
@@ -63,20 +78,20 @@ class AudioProcessor extends EventEmitter {
 
         try {
             // Mark as processing
-            this.processingTracks.set(cacheKey, { title, progress: 0, status: 'starting' });
-            this.emit('progress', { cacheKey, title, progress: 0, status: 'Starting download...' });
+            this.processingTracks.set(cacheKey, { title, progress: 0, status: 'starting', meta });
+            this.emit('progress', { cacheKey, title, progress: 0, status: 'Starting download...', ...meta });
             
             console.log(`⬇️ Downloading audio for: ${title}`);
-            this.emit('progress', { cacheKey, title, progress: 10, status: 'Downloading audio...' });
+            this.emit('progress', { cacheKey, title, progress: 10, status: 'Downloading audio...', ...meta });
             
             // Download audio-only format
-            await this.downloadAudio(url, tempFile, cacheKey, title);
+            await this.downloadAudio(url, tempFile, cacheKey, title, meta);
             
             console.log(`🔄 Converting to MP3: ${title}`);
-            this.emit('progress', { cacheKey, title, progress: 70, status: 'Converting to MP3...' });
+            this.emit('progress', { cacheKey, title, progress: 70, status: 'Converting to MP3...', ...meta });
             
             // Convert to MP3
-            await this.convertToMp3(tempFile, mp3Path, cacheKey, title);
+            await this.convertToMp3(tempFile, mp3Path, cacheKey, title, meta);
             
             // Clean up temp file
             if (fs.existsSync(tempFile)) {
@@ -84,7 +99,7 @@ class AudioProcessor extends EventEmitter {
             }
             
             console.log(`✅ Audio ready: ${cacheKey}.mp3`);
-            this.emit('progress', { cacheKey, title, progress: 100, status: 'Ready to play!' });
+            this.emit('progress', { cacheKey, title, progress: 100, status: 'Ready to play!', ...meta });
             
             // Remove from processing map
             this.processingTracks.delete(cacheKey);
@@ -103,7 +118,7 @@ class AudioProcessor extends EventEmitter {
         }
     }
 
-    async downloadAudio(url, outputPath, cacheKey, title) {
+    async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
                 // Audio-only format selection
@@ -152,7 +167,8 @@ class AudioProcessor extends EventEmitter {
                             cacheKey, 
                             title, 
                             progress: Math.floor(downloadProgress), 
-                            status: `Downloading... ${percent.toFixed(1)}%` 
+                            status: `Downloading... ${percent.toFixed(1)}%`,
+                            ...meta
                         });
                     }
                 }
@@ -177,7 +193,7 @@ class AudioProcessor extends EventEmitter {
         });
     }
 
-    async convertToMp3(inputPath, outputPath, cacheKey, title) {
+    async convertToMp3(inputPath, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
                 '-i', inputPath,
@@ -205,7 +221,8 @@ class AudioProcessor extends EventEmitter {
                         cacheKey, 
                         title, 
                         progress: conversionProgress, 
-                        status: 'Converting to MP3...' 
+                        status: 'Converting to MP3...',
+                        ...meta
                     });
                 }
             });
@@ -218,7 +235,8 @@ class AudioProcessor extends EventEmitter {
                         cacheKey, 
                         title, 
                         progress: 98, 
-                        status: 'Finalizing...' 
+                        status: 'Finalizing...',
+                        ...meta
                     });
                     resolve();
                 } else {
@@ -243,12 +261,16 @@ class AudioProcessor extends EventEmitter {
             files.forEach(file => {
                 const filePath = path.join(this.cacheDir, file);
                 const stats = fs.statSync(filePath);
-                const ageInHours = (now - stats.mtime.getTime()) / (1000 * 60 * 60);
                 
-                if (ageInHours > maxAgeHours) {
-                    fs.unlinkSync(filePath);
-                    cleaned++;
-                    totalSize += stats.size;
+                // Only process files, skip directories
+                if (stats.isFile()) {
+                    const ageInHours = (now - stats.mtime.getTime()) / (1000 * 60 * 60);
+                    
+                    if (ageInHours > maxAgeHours) {
+                        fs.unlinkSync(filePath);
+                        cleaned++;
+                        totalSize += stats.size;
+                    }
                 }
             });
             

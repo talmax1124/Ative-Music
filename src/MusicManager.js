@@ -35,6 +35,12 @@ class MusicManager {
         this.firebaseService = firebaseService;
         this.isSeeking = false;
         this.shuffleEnabled = false;
+        this._stopReason = null; // Reason for forced stop (e.g., 'skip')
+        this._prefetchTimer = null;
+        this._prefetched = new Set(); // track url -> prefetched
+        this._scheduledDeletes = new Map(); // url -> timeoutId
+        this._lastSaveKey = null;
+        this._lastSaveAt = 0;
         
         this.setupPlayerEvents();
         // Disabled auto-loading queue on startup for fresh sessions
@@ -45,7 +51,13 @@ class MusicManager {
         this.player.on(AudioPlayerStatus.Playing, () => {
             this.isPlaying = true;
             this.isPaused = false;
-            this.trackStartTime = Date.now(); // Track when playback actually starts
+            // Preserve seek position if a seek just occurred
+            if (typeof this._pendingSeekMs === 'number') {
+                this.trackStartTime = Date.now() - this._pendingSeekMs;
+                delete this._pendingSeekMs;
+            } else {
+                this.trackStartTime = Date.now(); // Track when playback actually starts
+            }
             console.log(`🎵 Now playing: ${this.currentTrack?.title || 'Unknown'}`);
             
             // Reset error counters on successful playback
@@ -66,6 +78,12 @@ class MusicManager {
         });
 
         this.player.on(AudioPlayerStatus.Idle, (oldState, newState) => {
+            // Ignore Idle event triggered by intentional skip or seek
+            if (this._stopReason === 'skip' || this._stopReason === 'seek') {
+                this._stopReason = null;
+                console.log('⏭️ Idle due to skip/seek — ignoring track-end handler');
+                return;
+            }
             // Only handle track end if we were actually playing
             if (oldState.status === AudioPlayerStatus.Playing) {
                 this.isPlaying = false;
@@ -168,6 +186,27 @@ class MusicManager {
         }
         
         console.log(`📝 Added to queue: ${track.title} (Position: ${this.queue.length})`);
+
+        // Background resolution/prefetch for Spotify tracks near the front
+        try {
+            const idx = (position === -1) ? (this.queue.length - 1) : position;
+            const distanceFromCurrent = (this.currentTrackIndex < 0) ? idx : (idx - this.currentTrackIndex);
+            if (track.source === 'spotify' && distanceFromCurrent >= 0 && distanceFromCurrent <= Math.max(2, Number(config.settings.prefetchDepth || 2))) {
+                setTimeout(async () => {
+                    try {
+                        const resolved = await this.sourceHandlers.resolveForPlayback(track);
+                        if (resolved) {
+                            track._prefetchResolved = resolved;
+                            if (this.sourceHandlers?.audioProcessor) {
+                                await this.sourceHandlers.audioProcessor.downloadAndConvert(resolved.url, resolved.title, { guildId: this.guildId, channelId: this.channelId, prefetch: true });
+                            }
+                        }
+                    } catch (e) {
+                        console.log('⚠️ Background resolve/prefetch failed:', e?.message || e);
+                    }
+                }, 0);
+            }
+        } catch (_) {}
         
         // Track user preference if user context is provided
         if (userContext && userContext.userId && userContext.guildId) {
@@ -288,7 +327,7 @@ class MusicManager {
                 return false;
             }
             
-            const stream = await this.sourceHandlers.getStream(this.currentTrack);
+            const stream = await this.sourceHandlers.getStream(this.currentTrack, { meta: { guildId: this.guildId, channelId: this.channelId, current: true } });
             
             if (!stream) {
                 console.error('❌ Failed to get stream for track - no stream returned');
@@ -306,6 +345,11 @@ class MusicManager {
 
             // Enhanced stream error handlers including EPIPE protection
             stream.on('error', (error) => {
+                // Suppress noisy errors caused by intentional seek/skip restarts
+                if (this.isSeeking || this._stopReason) {
+                    console.log(`⚠️ Stream error during ${this.isSeeking ? 'seek' : this._stopReason}: ${error?.message || error}`);
+                    return;
+                }
                 console.error('❌ Stream error:', error.message);
                 if (error.code === 'EPIPE' || error.message.includes('EPIPE')) {
                     console.log('🔧 Stream EPIPE error - connection issue detected');
@@ -354,6 +398,8 @@ class MusicManager {
             resource.volume?.setVolume(this.volume / 100);
 
             this.player.play(resource);
+            // Schedule prefetch of the next track near the end of current
+            this.schedulePrefetchNext();
             
             this.playHistory.push({
                 ...this.currentTrack,
@@ -398,6 +444,55 @@ class MusicManager {
         }
     }
 
+    schedulePrefetchNext() {
+        try {
+            if (this._prefetchTimer) {
+                clearTimeout(this._prefetchTimer);
+                this._prefetchTimer = null;
+            }
+            const lead = Number(config.settings.prefetchLeadMs || 30000);
+            const depth = Math.max(1, Math.min(5, Number(config.settings.prefetchDepth || 2)));
+            const durationMs = Number(this.currentTrack?.durationMS || this.parseDuration(this.currentTrack?.duration || '0:00'));
+            const elapsed = Math.max(0, Date.now() - (this.trackStartTime || Date.now()));
+            const msUntilPrefetch = Math.max(0, durationMs - elapsed - lead);
+
+            const prefetchTrack = async (t) => {
+                if (!t || !t.url) return;
+                if (this._prefetched.has(t.url)) return;
+                try {
+                    if (t.source === 'spotify') {
+                        // Resolve and store for later
+                        const resolved = await this.sourceHandlers.resolveForPlayback(t);
+                        if (resolved) {
+                            t._prefetchResolved = resolved;
+                            // Warm MP3
+                            if (this.sourceHandlers?.audioProcessor) {
+                                await this.sourceHandlers.audioProcessor.downloadAndConvert(resolved.url, resolved.title, { guildId: this.guildId, channelId: this.channelId, prefetch: true });
+                            }
+                        }
+                    } else if (t.source === 'youtube' && this.sourceHandlers?.audioProcessor) {
+                        await this.sourceHandlers.audioProcessor.downloadAndConvert(t.url, t.title, { guildId: this.guildId, channelId: this.channelId, prefetch: true });
+                    }
+                    this._prefetched.add(t.url);
+                    console.log(`✅ Prefetched: ${t.title}`);
+                } catch (e) {
+                    console.log(`⚠️ Prefetch failed for ${t?.title || 'Unknown'}: ${e?.message || e}`);
+                }
+            };
+
+            const doPrefetch = async () => {
+                const nextStart = this.currentTrackIndex + 1;
+                const end = Math.min(this.queue.length, nextStart + depth);
+                for (let i = nextStart; i < end; i++) {
+                    await prefetchTrack(this.queue[i]);
+                }
+            };
+
+            if (msUntilPrefetch <= 0) doPrefetch();
+            else this._prefetchTimer = setTimeout(doPrefetch, msUntilPrefetch);
+        } catch (_) { /* ignore */ }
+    }
+
     // Jump to a specific index in the queue and start playing
     async jumpTo(index) {
         if (typeof index !== 'number' || index < 0 || index >= this.queue.length) return false;
@@ -435,7 +530,8 @@ class MusicManager {
         }
         this.isSeeking = true;
         try {
-            // Stop current playback cleanly
+            // Stop current playback cleanly (mark reason to suppress idle handler)
+            this._stopReason = 'seek';
             this.player.stop(true);
         } catch {}
 
@@ -475,8 +571,11 @@ class MusicManager {
 
             resource.volume?.setVolume(this.volume / 100);
             // Adjust start time so progress reflects seek position
-            this.trackStartTime = Date.now() - Math.floor(seconds * 1000);
+            this._pendingSeekMs = Math.floor(seconds * 1000);
+            this.trackStartTime = Date.now() - this._pendingSeekMs;
             this.player.play(resource);
+            // Clear the stop reason once new playback has begun
+            this._stopReason = null;
             this.isPlaying = true;
             this.isPaused = false;
             return true;
@@ -496,6 +595,8 @@ class MusicManager {
         clearTimeout(this.autoPlayTimeout);
         this.isTransitioning = false;
         
+        // Mark reason so Idle handler doesn't treat this as a natural end
+        this._stopReason = 'skip';
         this.player.stop(true);
 
         if (this.loopMode === 'track') {
@@ -563,6 +664,10 @@ class MusicManager {
         this.isPaused = false;
         this.currentTrack = null;
         this.currentTrackIndex = -1;
+        if (this._prefetchTimer) {
+            clearTimeout(this._prefetchTimer);
+            this._prefetchTimer = null;
+        }
         
         // Disable auto-play if user manually stopped
         if (userInitiated) {
@@ -576,6 +681,10 @@ class MusicManager {
     clearQueue(userInitiated = false) {
         this.queue = [];
         this.currentTrackIndex = -1;
+        if (this._prefetchTimer) {
+            clearTimeout(this._prefetchTimer);
+            this._prefetchTimer = null;
+        }
         
         // Disable auto-play if user manually cleared
         if (userInitiated) {
@@ -761,42 +870,94 @@ class MusicManager {
     }
 
     async handleTrackEnd() {
-        console.log('🎵 Track ended, clearing queue for fresh session...');
-        
         if (this.isTransitioning) {
             console.log('⚠️ Track end ignored - already transitioning');
             return;
         }
-        
         this.isTransitioning = true;
         clearTimeout(this.autoPlayTimeout);
-        
-        const transitionTimeout = setTimeout(() => {
-            console.log('⚠️ Transition timeout - forcing reset');
+
+        try {
+            const finishedTrack = this.currentTrack;
+            // Remove finished track from queue to keep it clean
+            if (typeof this.currentTrackIndex === 'number' && this.currentTrackIndex >= 0 && this.currentTrackIndex < this.queue.length) {
+                this.queue.splice(this.currentTrackIndex, 1);
+                console.log(`🗑️ Removed finished track from queue: ${finishedTrack?.title || 'Unknown'}`);
+                this.scheduleTrackCleanup(finishedTrack);
+                // Persist updated queue
+                this.saveQueue();
+            }
+
+            // Play next track if it exists at same index
+            if (this.currentTrackIndex < this.queue.length) {
+                console.log(`▶️ Advancing to next track: ${this.queue[this.currentTrackIndex]?.title || 'Unknown'}`);
+                await this.play();
+                return;
+            }
+
+            // Loop entire queue if enabled
+            if (this.loopMode === 'queue' && this.queue.length > 0) {
+                this.currentTrackIndex = 0;
+                console.log('🔁 Loop mode: queue - restarting from beginning');
+                await this.play();
+                return;
+            }
+
+            // Try recommendation if enabled
+            const endBehavior = (config.settings.endOfQueueBehavior || 'recommendations').toLowerCase();
+            if (this.autoPlayEnabled && this.continuousPlayback && endBehavior === 'recommendations') {
+                const lastTrack = this.currentTrack || this.playHistory[this.playHistory.length - 1] || null;
+                console.log('🤖 Queue finished - attempting recommendation');
+                await this.findAndPlayRecommendation(lastTrack);
+                return;
+            }
+
+            // Otherwise stop cleanly
+            console.log('⏹️ End of queue - stopping');
+            this.stop(false);
+        } catch (e) {
+            console.error('❌ Error handling track end:', e);
+        } finally {
             this.isTransitioning = false;
-            this.isPlaying = false;
-        }, 10000);
-        
-        // Store current track before clearing for recommendation purposes
-        const lastTrack = this.currentTrack;
-        
-        // Emit track end event for UI updates
-        if (this.onTrackEnd) {
-            this.onTrackEnd(lastTrack);
         }
-        
-        // Clear queue and stop playback for fresh session
-        console.log('🧹 Clearing queue after track completion - ready for fresh session');
-        this.clearQueue(false); // Don't mark as user-initiated to preserve auto-play settings
-        this.clearCurrentPosition();
-        
-        // Stop playback completely
-        this.stop(false);
-        
-        console.log('✅ Queue cleared and playback stopped - ready for new session');
-        
-        this.isTransitioning = false;
-        clearTimeout(transitionTimeout);
+    }
+
+    scheduleTrackCleanup(track) {
+        try {
+            if (!track || !track.url) return;
+            if (!config.settings.autoDeleteFinishedTrack) return;
+            const delay = Number(config.settings.deleteDelayMs || 60000);
+            const url = track.url;
+            const existing = this._scheduledDeletes.get(url);
+            if (existing) clearTimeout(existing);
+            const timer = setTimeout(() => {
+                try {
+                    if (track.source === 'youtube') {
+                        if (this.sourceHandlers?.audioProcessor) {
+                            this.sourceHandlers.audioProcessor.deleteCachedByUrl(url);
+                        }
+                        // Also remove fallback cache if it exists
+                        try {
+                            const dc = this.sourceHandlers?.downloadCache;
+                            const vid = dc?.extractVideoId ? dc.extractVideoId(url) : null;
+                            if (dc && vid) {
+                                const fp = dc.getCacheFilePath(vid);
+                                const fs = require('fs');
+                                if (fs.existsSync(fp)) {
+                                    fs.unlinkSync(fp);
+                                    console.log(`🗑️ Deleted fallback cache for video ${vid}`);
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                } catch (e) {
+                    console.log(`⚠️ Cleanup failed: ${e?.message || e}`);
+                } finally {
+                    this._scheduledDeletes.delete(url);
+                }
+            }, delay);
+            this._scheduledDeletes.set(url, timer);
+        } catch (_) {}
     }
 
     async findAndPlayRecommendation(lastTrack = null, userContext = {}) {
@@ -999,6 +1160,20 @@ class MusicManager {
                 source: track.source || 'unknown',
                 type: track.type || 'track'
             }));
+            // Throttle redundant saves to reduce log spam
+            const signature = JSON.stringify({
+                q: sanitizedQueue.map(t => ({ u: t.url, s: t.source })),
+                i: this.currentTrackIndex,
+                l: this.loopMode,
+                v: this.volume,
+                a: this.autoPlayEnabled,
+                c: this.continuousPlayback
+            });
+            const now = Date.now();
+            const minInterval = Number(config.settings.queueSaveThrottleMs || 3000);
+            if (signature === this._lastSaveKey && (now - this._lastSaveAt) < minInterval) {
+                return; // skip redundant save
+            }
             
             const queueData = {
                 queue: sanitizedQueue,
@@ -1010,6 +1185,8 @@ class MusicManager {
             };
             await this.firebaseService.saveQueue(this.guildId, this.channelId, queueData);
             console.log(`💾 Queue saved for channel ${this.channelId} (guild ${this.guildId})`);
+            this._lastSaveKey = signature;
+            this._lastSaveAt = now;
         } catch (error) {
             console.error('❌ Failed to save queue:', error);
         }

@@ -136,12 +136,16 @@ class DownloadCacheManager {
                 const filepath = path.join(this.cacheDir, file);
                 try {
                     const stats = fs.statSync(filepath);
-                    totalSize += stats.size;
-                    fileStats.push({
-                        filepath,
-                        size: stats.size,
-                        age: Date.now() - stats.mtime.getTime()
-                    });
+                    
+                    // Only process files, skip directories
+                    if (stats.isFile()) {
+                        totalSize += stats.size;
+                        fileStats.push({
+                            filepath,
+                            size: stats.size,
+                            age: Date.now() - stats.mtime.getTime()
+                        });
+                    }
                 } catch (e) {
                     // File might have been deleted
                 }

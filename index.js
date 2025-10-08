@@ -107,6 +107,8 @@ class AtiveMusicBot {
         this.localVideoServer = new LocalVideoServer(3000);
         this.errorHandler = new ErrorHandler();
         this.playlistManager = new PlaylistManager();
+        // Provide bot context to playlist manager for queue/play operations
+        this.playlistManager.bot = this;
         this.lyricsHandler = new LyricsHandler();
         this.discordPlayer = new DiscordPlayerManager(this.client);
         this.webPortal = new WebPortalServer(this);
@@ -163,21 +165,8 @@ class AtiveMusicBot {
             
             this.client.user.setActivity('🎵 Ative Music | /play', { type: 2 }); // 2 = ActivityType.Listening
             
-            // Start local video server
-            try {
-                const serverUrl = await this.localVideoServer.start();
-                console.log(`📺 Video server started: ${serverUrl}`);
-            } catch (error) {
-                console.error('❌ Failed to start video server:', error);
-            }
-
-            // Start web portal (search + play via browser)
-            try {
-                const portalUrl = await this.webPortal.start();
-                console.log(`🕸️ Web portal started: ${portalUrl}`);
-            } catch (error) {
-                console.error('❌ Failed to start web portal:', error);
-            }
+            // Web portal and video server already started in startWebPortal() method
+            console.log('🎵 Discord bot is now fully operational!');
             
             // Disabled auto-reconnect on startup - bot will only connect when commanded
             // if (config.settings.stayInChannel) {
@@ -493,7 +482,7 @@ class AtiveMusicBot {
                 await interaction.editReply(`Repeat is now ${newMode === 'track' ? 'enabled for current track' : 'off'}.`);
                 break;
             }
-            case 'web-portal': {
+            case 'website': {
                 const host = process.env.PUBLIC_HOST || process.env.SERVER_HOST || process.env.HOST || 'localhost';
                 const port = process.env.PUBLIC_PORT || process.env.SERVER_PORT || process.env.WEB_PORT || process.env.PORT || 25567;
                 const base = `http://${host}:${port}`;
@@ -2894,237 +2883,20 @@ class AtiveMusicBot {
                         .setRequired(false)
                 ),
             new SlashCommandBuilder()
-                .setName('clear')
-                .setDescription('Remove a specific track from the queue')
-                .addStringOption(option =>
-                    option.setName('id')
-                        .setDescription('Track ID to remove from queue')
-                        .setRequired(true)
-                        .setAutocomplete(true)
-                ),
-            new SlashCommandBuilder()
-                .setName('search')
-                .setDescription('Search for music')
-                .addStringOption(option =>
-                    option.setName('query')
-                        .setDescription('Search query')
-                        .setRequired(true)
-                        .setAutocomplete(true)
-                ),
-            new SlashCommandBuilder()
-                .setName('queue')
-                .setDescription('Show the current music queue'),
-            new SlashCommandBuilder()
-                .setName('repeat')
-                .setDescription('Toggle repeat current track (restart from beginning)'),
-            new SlashCommandBuilder()
-                .setName('web-portal')
-                .setDescription('Get a link to the Web Portal for this bot'),
-            new SlashCommandBuilder()
-                .setName('repeatqueue')
-                .setDescription('Toggle repeat for the entire queue'),
-            new SlashCommandBuilder()
-                .setName('setpanel')
-                .setDescription('Set the text channel for music panels for your current voice channel')
-                .addChannelOption(option =>
-                    option.setName('channel')
-                        .setDescription('Text channel to post music panels')
-                        .setRequired(true)
-                ),
-            new SlashCommandBuilder()
-                .setName('playnext')
-                .setDescription('Queue a track to play next')
-                .addStringOption(option =>
-                    option.setName('query')
-                        .setDescription('Song name, URL, or search query')
-                        .setRequired(true)
-                        .setAutocomplete(true)
-                ),
-            new SlashCommandBuilder()
-                .setName('move')
-                .setDescription('Move a track in the queue by index')
-                .addIntegerOption(option => option.setName('from').setDescription('From index (0-based)').setRequired(true))
-                .addIntegerOption(option => option.setName('to').setDescription('To index (0-based)').setRequired(true)),
-            new SlashCommandBuilder()
-                .setName('removeindex')
-                .setDescription('Remove a track from queue by index')
-                .addIntegerOption(option => option.setName('index').setDescription('Index (0-based)').setRequired(true)),
-            new SlashCommandBuilder()
-                .setName('skip')
-                .setDescription('Skip the current track'),
-            new SlashCommandBuilder()
                 .setName('stop')
                 .setDescription('Stop the music and clear queue'),
-            new SlashCommandBuilder()
-                .setName('pause')
-                .setDescription('Pause the current track'),
-            new SlashCommandBuilder()
-                .setName('resume')
-                .setDescription('Resume the current track'),
-            new SlashCommandBuilder()
-                .setName('volume')
-                .setDescription('Set the volume')
-                .addIntegerOption(option =>
-                    option.setName('level')
-                        .setDescription('Volume level (0-100)')
-                        .setRequired(true)
-                ),
-            new SlashCommandBuilder()
-                .setName('shuffle')
-                .setDescription('Shuffle the queue'),
-            new SlashCommandBuilder()
-                .setName('loop')
-                .setDescription('Toggle loop mode')
-                .addStringOption(option =>
-                    option.setName('mode')
-                        .setDescription('Loop mode')
-                        .addChoices(
-                            { name: 'Off', value: 'off' },
-                            { name: 'Track', value: 'track' },
-                            { name: 'Queue', value: 'queue' }
-                        )
-                ),
-            new SlashCommandBuilder()
-                .setName('nowplaying')
-                .setDescription('Show the currently playing track'),
-            new SlashCommandBuilder()
-                .setName('join')
-                .setDescription('Join your voice channel'),
-            new SlashCommandBuilder()
-                .setName('leave')
-                .setDescription('Leave the voice channel'),
             new SlashCommandBuilder()
                 .setName('help')
                 .setDescription('Show all available commands and features'),
             new SlashCommandBuilder()
-                .setName('playlist')
-                .setDescription('Manage your playlists')
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('create')
-                        .setDescription('Create a new playlist')
-                        .addStringOption(option =>
-                            option.setName('name')
-                                .setDescription('Playlist name')
-                                .setRequired(true))
-                        .addStringOption(option =>
-                            option.setName('description')
-                                .setDescription('Playlist description')
-                                .setRequired(false))
-                        .addBooleanOption(option =>
-                            option.setName('public')
-                                .setDescription('Make playlist public')
-                                .setRequired(false)))
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('list')
-                        .setDescription('Show your playlists'))
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('play')
-                        .setDescription('Play a playlist')
-                        .addStringOption(option =>
-                            option.setName('name')
-                                .setDescription('Playlist name or ID')
-                                .setRequired(true)
-                                .setAutocomplete(true)))
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('add')
-                        .setDescription('Add current track to playlist')
-                        .addStringOption(option =>
-                            option.setName('playlist')
-                                .setDescription('Playlist name')
-                                .setRequired(true)
-                                .setAutocomplete(true)))
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('remove')
-                        .setDescription('Remove track from playlist')
-                        .addStringOption(option =>
-                            option.setName('playlist')
-                                .setDescription('Playlist name')
-                                .setRequired(true)
-                                .setAutocomplete(true))
-                        .addIntegerOption(option =>
-                            option.setName('track')
-                                .setDescription('Track number to remove')
-                                .setRequired(true)))
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('delete')
-                        .setDescription('Delete a playlist')
-                        .addStringOption(option =>
-                            option.setName('name')
-                                .setDescription('Playlist name')
-                                .setRequired(true)
-                                .setAutocomplete(true)))
-                .addSubcommand(subcommand =>
-                    subcommand
-                        .setName('import')
-                        .setDescription('Import playlist from URL')
-                        .addStringOption(option =>
-                            option.setName('url')
-                                .setDescription('Spotify or YouTube playlist URL')
-                                .setRequired(true))
-                        .addStringOption(option =>
-                            option.setName('name')
-                                .setDescription('Custom playlist name')
-                                .setRequired(false))),
+                .setName('website')
+                .setDescription('Get a link to the Web Portal for this bot'),
             new SlashCommandBuilder()
-                .setName('video')
-                .setDescription('Get video information for the current track'),
+                .setName('leave')
+                .setDescription('Leave the voice channel'),
             new SlashCommandBuilder()
-                .setName('autoplay')
-                .setDescription('Control smart auto-play and continuous music')
-                .addStringOption(option =>
-                    option.setName('action')
-                        .setDescription('Auto-play action')
-                        .setRequired(true)
-                        .addChoices(
-                            { name: 'Enable 24/7 Auto-Play', value: 'enable' },
-                            { name: 'Disable Auto-Play', value: 'disable' },
-                            { name: 'Check Status', value: 'status' },
-                            { name: 'Fill Queue with Recommendations', value: 'fill' }
-                        )
-                )
-                .addIntegerOption(option =>
-                    option.setName('count')
-                        .setDescription('Number of recommendations to add (for fill action)')
-                        .setMinValue(1)
-                        .setMaxValue(50)
-                ),
-            new SlashCommandBuilder()
-                .setName('lyrics')
-                .setDescription('Get lyrics for a song or search songs by lyrics')
-                .addStringOption(option =>
-                    option.setName('query')
-                        .setDescription('Song name/artist or lyrics fragment to search')
-                        .setRequired(true)
-                        .setAutocomplete(true)
-                )
-                .addStringOption(option =>
-                    option.setName('type')
-                        .setDescription('Search type')
-                        .setRequired(false)
-                        .addChoices(
-                            { name: 'Get lyrics for song', value: 'song' },
-                            { name: 'Search by lyrics', value: 'lyrics' }
-                        )
-                ),
-            new SlashCommandBuilder()
-                .setName('tts')
-                .setDescription('Speak text in your voice channel (requires discord-player-tts)')
-                .addStringOption(option =>
-                    option.setName('text')
-                        .setDescription('What to say')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option.setName('voice')
-                        .setDescription('Voice/language code (e.g., en, en-US, es, fr)')
-                        .setRequired(false)
-                )
+                .setName('join')
+                .setDescription('Join your voice channel')
         ].map(command => command.toJSON());
 
         const rest = new REST({ version: '10' }).setToken(config.token);
@@ -3762,10 +3534,40 @@ class AtiveMusicBot {
     async start() {
         try {
             firebaseService.initialize();
+            
+            // Always start the web portal, even if Discord fails
+            await this.startWebPortal();
+            
+            // Try to start Discord bot
             await this.client.login(config.token);
         } catch (error) {
-            console.error('❌ Failed to start bot:', error);
-            process.exit(1);
+            console.error('❌ Discord bot failed to start:', error);
+            console.log('🌐 Web portal is still running for playlist functionality');
+            // Don't exit - let web portal continue running
+        }
+    }
+
+    async startWebPortal() {
+        try {
+            console.log('🚀 Starting web portal...');
+            
+            // Start local video server
+            try {
+                const serverUrl = await this.localVideoServer.start();
+                console.log(`📺 Video server started: ${serverUrl}`);
+            } catch (error) {
+                console.error('❌ Failed to start video server:', error);
+            }
+
+            // Start web portal (search + play via browser)
+            try {
+                const portalUrl = await this.webPortal.start();
+                console.log(`🕸️ Web portal started: ${portalUrl}`);
+            } catch (error) {
+                console.error('❌ Failed to start web portal:', error);
+            }
+        } catch (error) {
+            console.error('❌ Failed to start web services:', error);
         }
     }
 }

@@ -62,6 +62,141 @@ class SourceHandlers {
         
         console.log('🎵 SourceHandlers initialized for YouTube and Spotify only');
     }
+
+    extractSpotifyPlaylistId(url) {
+        const m = String(url).match(/spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
+        return m ? m[1] : null;
+    }
+
+    extractYouTubePlaylistId(url) {
+        const u = new URL(url.startsWith('http') ? url : ('https://' + url));
+        const list = u.searchParams.get('list');
+        return list || null;
+    }
+
+    async getSpotifyPlaylist(url) {
+        const playlistId = this.extractSpotifyPlaylistId(url);
+        if (!playlistId) throw new Error('Invalid Spotify playlist URL');
+
+        // Try multiple markets to avoid regional 404s
+        const marketPref = process.env.SPOTIFY_MARKET || 'US';
+        const markets = [marketPref, 'GB', 'DE', 'ES', 'FR', 'CA'];
+
+        let lastError = null;
+        for (const market of markets) {
+            try {
+                // Metadata
+                const playlistResp = await this.spotify.getPlaylist(playlistId, { market });
+                const playlist = playlistResp.body;
+
+                // Tracks
+                const tracks = [];
+                let offset = 0;
+                const limit = 100;
+                while (true) {
+                    const page = await this.spotify.getPlaylistTracks(playlistId, { offset, limit, market });
+                    const items = page?.body?.items || [];
+                    for (const item of items) {
+                        const t = item.track;
+                        if (!t) continue;
+                        tracks.push({
+                            title: t.name,
+                            author: (t.artists || []).map(a => a.name).join(', ') || 'Unknown',
+                            duration: this.formatDuration(t.duration_ms),
+                            url: t.external_urls?.spotify || `https://open.spotify.com/track/${t.id}`,
+                            thumbnail: t.album?.images?.[0]?.url || null,
+                            source: 'spotify',
+                            type: 'track',
+                            id: t.id
+                        });
+                    }
+                    offset += items.length;
+                    if (!page.body.next || items.length === 0) break;
+                }
+
+                return {
+                    name: playlist.name || 'Spotify Playlist',
+                    description: playlist.description || '',
+                    image: playlist.images?.[0]?.url || null,
+                    source: 'spotify',
+                    tracks
+                };
+            } catch (error) {
+                lastError = error;
+                const status = error?.body?.error?.status || error?.statusCode;
+                const message = error?.body?.error?.message || error?.message;
+                console.log(`⚠️ Spotify API failed for market ${market}: ${status} ${message}`);
+                // Try next market on 404s and similar
+                continue;
+            }
+        }
+
+        console.error('❌ Spotify playlist fetch error (all markets):', lastError?.message || lastError);
+        throw lastError || new Error('Spotify playlist fetch failed');
+    }
+
+    async getYouTubePlaylist(url) {
+        try {
+            const listId = this.extractYouTubePlaylistId(url);
+            if (!listId) throw new Error('Invalid YouTube playlist URL');
+
+            // youtube-sr playlist fetch
+            const playlist = await YouTube.getPlaylist(`https://www.youtube.com/playlist?list=${listId}`);
+            await playlist.fetch();
+
+            const tracks = (playlist.videos || []).map(v => ({
+                title: v.title || 'Unknown',
+                author: v.channel?.name || 'Unknown',
+                duration: v.durationFormatted || '0:00',
+                url: `https://www.youtube.com/watch?v=${v.id}`,
+                thumbnail: v.thumbnail?.url || null,
+                source: 'youtube',
+                type: 'track',
+                id: v.id
+            }));
+
+            return {
+                name: playlist.title || 'YouTube Playlist',
+                description: playlist.description || '',
+                image: playlist.thumbnail?.url || null,
+                source: 'youtube',
+                tracks
+            };
+        } catch (error) {
+            console.error('❌ YouTube playlist fetch error:', error?.message || error);
+            throw error;
+        }
+    }
+
+    async searchYouTubePlaylistByName(query, trackLimit = 100) {
+        try {
+            const results = await YouTube.search(query, { limit: 1, type: 'playlist' });
+            if (!results || results.length === 0) return null;
+            const pl = results[0];
+            const playlist = await YouTube.getPlaylist(`https://www.youtube.com/playlist?list=${pl.id}`);
+            await playlist.fetch();
+            const videos = (playlist.videos || []).slice(0, trackLimit);
+            return {
+                name: playlist.title || query,
+                description: playlist.description || '',
+                image: playlist.thumbnail?.url || null,
+                source: 'youtube',
+                tracks: videos.map(v => ({
+                    title: v.title || 'Unknown',
+                    author: v.channel?.name || 'Unknown',
+                    duration: v.durationFormatted || '0:00',
+                    url: `https://www.youtube.com/watch?v=${v.id}`,
+                    thumbnail: v.thumbnail?.url || null,
+                    source: 'youtube',
+                    type: 'track',
+                    id: v.id
+                }))
+            };
+        } catch (error) {
+            console.log('⚠️ YouTube playlist search by name failed:', error?.message || error);
+            return null;
+        }
+    }
     
     clearStreamCache(trackId) {
         if (this.streamCache.has(trackId)) {
@@ -548,7 +683,8 @@ class SourceHandlers {
             console.log(`🎵 Getting YouTube stream for: ${track.title}`);
             
             // Use the new AudioProcessor to download and convert
-            const result = await this.audioProcessor.downloadAndConvert(track.url, track.title);
+            const meta = (options && options.meta) ? options.meta : {};
+            const result = await this.audioProcessor.downloadAndConvert(track.url, track.title, meta);
             
             if (result.cached) {
                 console.log(`📂 Using cached MP3: ${track.title}`);
@@ -627,19 +763,37 @@ class SourceHandlers {
         try {
             console.log(`🎵 Finding YouTube equivalent for Spotify track: ${track.title}`);
             
-            // Search for YouTube equivalent
-            const searchQuery = `${track.title} ${track.author}`;
-            const youtubeResults = await this.searchYouTube(searchQuery, 1);
-            
-            if (youtubeResults.length > 0) {
-                console.log(`✅ Found YouTube equivalent: ${youtubeResults[0].title}`);
-                return await this.getYouTubeStream(youtubeResults[0], options);
+            // If we have a pre-resolved equivalent, use it
+            if (track._prefetchResolved && track._prefetchResolved.source === 'youtube') {
+                console.log(`✅ Using pre-resolved YouTube equivalent: ${track._prefetchResolved.title}`);
+                return await this.getYouTubeStream(track._prefetchResolved, options);
+            }
+
+            // Otherwise, resolve now
+            const resolved = await this.resolveForPlayback(track);
+            if (resolved) {
+                console.log(`✅ Resolved YouTube equivalent: ${resolved.title}`);
+                return await this.getYouTubeStream(resolved, options);
             } else {
                 throw new Error('No YouTube equivalent found for Spotify track');
             }
         } catch (error) {
             console.error(`❌ Spotify stream error: ${error.message}`);
             throw error;
+        }
+    }
+
+    async resolveForPlayback(track) {
+        try {
+            if (!track) return null;
+            if (track.source === 'youtube') return track;
+            // Resolve Spotify (and others in future) to a YouTube track object
+            const q = `${track.title || ''} ${track.author || ''}`.trim();
+            const res = await this.searchYouTube(q, 1);
+            return res && res[0] ? res[0] : null;
+        } catch (e) {
+            console.log(`⚠️ resolveForPlayback failed: ${e?.message || e}`);
+            return null;
         }
     }
 

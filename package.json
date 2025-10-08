@@ -20,6 +20,7 @@
     "@discordjs/voice": "^0.19.0",
     "@distube/ytdl-core": "^4.16.12",
     "@snazzah/davey": "^0.1.7",
+    "axios": "^1.12.2",
     "cheerio": "^1.1.2",
     "discord-player": "^7.1.0",
     "discord-player-tts": "^1.0.9",

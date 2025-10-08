@@ -22,6 +22,11 @@ class FirebaseService {
             });
 
             this.db = admin.firestore();
+            try {
+                this.db.settings({ ignoreUndefinedProperties: true });
+            } catch (e) {
+                // Older SDKs may not support settings here; ignore if so
+            }
             this.initialized = true;
             console.log('✅ Firebase initialized successfully');
         } catch (error) {

@@ -14,7 +14,19 @@ module.exports = {
         maxQueueSize: 100,
         searchLimit: 10,
         videoQuality: 'highest',
-        audioQuality: 'highestaudio'
+        audioQuality: 'highestaudio',
+        // Behavior when queue finishes: 'stop' or 'recommendations'
+        endOfQueueBehavior: process.env.END_OF_QUEUE_BEHAVIOR || 'recommendations',
+        // Prefetch next track this many ms before current ends
+        prefetchLeadMs: Number(process.env.PREFETCH_LEAD_MS || 30000),
+        // How many upcoming tracks to prefetch (1-3 recommended)
+        prefetchDepth: Number(process.env.PREFETCH_DEPTH || 3),
+        // Auto-delete finished track's cached files
+        autoDeleteFinishedTrack: (process.env.AUTO_DELETE_FINISHED || 'true') === 'true',
+        // Delay before deleting finished track files (ms)
+        deleteDelayMs: Number(process.env.DELETE_DELAY_MS || 60000),
+        // Throttle queue saves to reduce spam (ms)
+        queueSaveThrottleMs: Number(process.env.QUEUE_SAVE_THROTTLE_MS || 3000)
     },
     
     colors: {
