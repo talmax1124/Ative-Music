@@ -430,18 +430,60 @@ class SourceHandlers {
                     id: videoId
                 };
             } catch (metaErr) {
-                console.log(`⚠️ YouTube metadata fetch failed, using minimal info: ${metaErr?.message || metaErr}`);
-                return {
-                    title: videoId,
-                    author: 'YouTube',
-                    duration: '0:00',
-                    url: fullUrl,
-                    thumbnail: null, // Use null instead of undefined for Firestore compatibility
-                    source: 'youtube',
-                    type: 'track',
-                    viewCount: 0,
-                    id: videoId
-                };
+                // Fallback: use ytdl-core to retrieve metadata before giving up
+                try {
+                    const info = await ytdl.getInfo(fullUrl, {
+                        requestOptions: {
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                                'Accept-Language': 'en-US,en;q=0.9'
+                            }
+                        }
+                    });
+
+                    const details = info?.videoDetails || {};
+                    const seconds = Number(details.lengthSeconds || 0);
+                    const duration = seconds > 0
+                        ? (seconds >= 3600
+                            ? `${Math.floor(seconds / 3600)}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+                            : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`)
+                        : '0:00';
+
+                    // Pick the highest resolution thumbnail available
+                    let thumb = null;
+                    try {
+                        const thumbs = details?.thumbnails || [];
+                        if (Array.isArray(thumbs) && thumbs.length > 0) {
+                            thumb = thumbs.reduce((a, b) => (a?.width || 0) > (b?.width || 0) ? a : b)?.url || thumbs[0]?.url || null;
+                        }
+                    } catch {}
+
+                    return {
+                        title: details.title || videoId,
+                        author: details.author?.name || details.ownerChannelName || 'YouTube',
+                        duration,
+                        url: fullUrl,
+                        thumbnail: thumb,
+                        source: 'youtube',
+                        type: 'track',
+                        viewCount: Number(details.viewCount || 0),
+                        id: videoId
+                    };
+                } catch (ytdlErr) {
+                    console.log(`⚠️ YouTube metadata fetch failed (youtube-sr: ${metaErr?.message || metaErr}; ytdl-core: ${ytdlErr?.message || ytdlErr}). Falling back to minimal info.`);
+                    return {
+                        title: videoId,
+                        author: 'YouTube',
+                        duration: '0:00',
+                        url: fullUrl,
+                        thumbnail: null, // Use null instead of undefined for Firestore compatibility
+                        source: 'youtube',
+                        type: 'track',
+                        viewCount: 0,
+                        id: videoId
+                    };
+                }
             }
         } catch (error) {
             console.error(`❌ Error handling YouTube URL:`, error.message);
