@@ -4,17 +4,28 @@ const optimizedConfig = {
     player: {
         ytdlOptions: {
             quality: 'highestaudio',
-            highWaterMark: 1 << 26, // 64MB buffer for highest quality smooth playback
+            highWaterMark: 1 << 27, // 128MB buffer for ultra-fast downloads
             requestOptions: {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive'
+                },
+                // Optimize connection settings for speed
+                timeout: 30000,
+                maxSockets: 10,
+                keepAlive: true
             },
             filter: 'audioonly',
-            dlChunkSize: 0, // Download full audio at once for reliability
+            dlChunkSize: 0, // Download full audio at once for maximum speed
             opusEncoded: false,
-            // Prefer highest quality audio formats
-            format: 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
+            // Prefer fastest downloadable formats while maintaining quality
+            format: 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            // Add parallel download options
+            concurrent: 4, // Download 4 segments concurrently
+            retries: 3,
+            // Use fastest available options
+            preferFreeFormats: true
         },
         skipFFmpeg: false,
         useLegacyFFmpeg: false,
@@ -64,20 +75,26 @@ const optimizedConfig = {
         
         // Cache frequently played tracks
         enableCache: true,
-        maxCacheSize: 100, // MB
-        cacheTimeout: 3600000, // 1 hour
+        maxCacheSize: 200, // Increased to 200MB for more caching
+        cacheTimeout: 7200000, // 2 hours for longer cache retention
         
         // Search optimizations
         searchLimit: 1, // Only get first result for instant playback
-        searchTimeout: 5000, // 5 second timeout for searches
+        searchTimeout: 3000, // Reduced to 3 seconds for faster response
         
         // Connection optimizations
-        maxRetries: 2,
-        retryDelay: 1000,
+        maxRetries: 3, // Increased retries for reliability
+        retryDelay: 500, // Faster retry delay
         
         // Memory management
         gcInterval: 300000, // 5 minutes
-        maxQueueSize: 1000
+        maxQueueSize: 1000,
+        
+        // Download optimizations
+        downloadConcurrency: 4, // Download multiple tracks simultaneously
+        downloadTimeout: 45000, // 45 second timeout for downloads
+        streamBuffer: 2048, // 2KB stream buffer for responsive playback
+        enableFastStart: true // Enable fast start for immediate playback
     },
 
     // UI optimizations
@@ -124,10 +141,22 @@ const optimizedConfig = {
             clientVersion: '2.0.0'
         },
         ytdlp: {
-            // yt-dlp specific options for better reliability
+            // yt-dlp specific options for maximum download speed
             rawOptions: [
                 '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                '--extractor-args', 'youtube:player_client=ios,web'
+                '--extractor-args', 'youtube:player_client=ios,web',
+                '--concurrent-fragments', '8', // Download 8 fragments simultaneously
+                '--fragment-retries', '3',
+                '--retries', '3',
+                '--socket-timeout', '30',
+                '--file-access-retries', '3',
+                '--http-chunk-size', '10M', // 10MB chunks for faster streaming
+                '--throttled-rate', '100K', // Minimum rate to avoid throttling
+                '--buffer-size', '64K', // Larger buffer for network efficiency
+                '--no-part', // Don't use .part files for faster access
+                '--no-mtime', // Don't set file modification time for speed
+                '--prefer-free-formats', // Prefer formats that download faster
+                '--format', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
             ]
         }
     }

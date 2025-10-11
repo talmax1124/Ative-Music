@@ -200,6 +200,16 @@ class DiscordPlayerManager {
     setupPlayerEvents() {
         this.player.events.on('playerStart', (queue, track) => {
             console.log(`🎵 Now playing: ${track.title} by ${track.author}`);
+            
+            // Show download completion message
+            const textChannel = queue.metadata?.textChannel;
+            if (textChannel) {
+                textChannel.send({
+                    content: `✅ **Download Complete!** Now playing: **${track.title}**`,
+                    allowedMentions: { repliedUser: false }
+                }).catch(() => {});
+            }
+            
             this.updateNowPlayingPanel(queue, track);
         });
 
@@ -331,7 +341,7 @@ class DiscordPlayerManager {
 
             // Show immediate loading state
             await interaction.editReply({
-                content: '🚀 **Fast Mode Activated** - Searching for instant playback...',
+                content: '🔍 **Searching for music...** - This will only take a moment!',
                 ephemeral: false
             });
 
@@ -420,10 +430,25 @@ class DiscordPlayerManager {
                 });
             } else {
                 queue.addTrack(searchResult.tracks[0]);
+                
+                // Show download alert
                 await interaction.editReply({
-                    embeds: [this.createTrackAddedEmbed(searchResult.tracks[0])],
-                    components: this.createAdvancedControls(queue)
+                    content: `📥 **Downloading:** ${searchResult.tracks[0].title}\n*Preparing high-quality audio stream...*`,
+                    ephemeral: false
                 });
+                
+                // Brief delay to show download message, then show track added embed
+                setTimeout(async () => {
+                    try {
+                        await interaction.editReply({
+                            content: null,
+                            embeds: [this.createTrackAddedEmbed(searchResult.tracks[0])],
+                            components: this.createAdvancedControls(queue)
+                        });
+                    } catch (e) {
+                        // Ignore if interaction expired
+                    }
+                }, 1500);
             }
 
             if (wasEmpty) {

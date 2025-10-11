@@ -60,7 +60,191 @@ class SourceHandlers {
         // Proxy configuration
         this.proxyConfig = this.setupProxyConfig();
         
+        // Check yt-dlp availability on startup
+        this.checkYtDlpAvailability();
+        
         console.log('🎵 SourceHandlers initialized for YouTube and Spotify only');
+    }
+
+    async checkYtDlpAvailability() {
+        try {
+            const { spawn } = require('child_process');
+            const ytdlp = spawn('yt-dlp', ['--version']);
+            
+            return new Promise((resolve) => {
+                ytdlp.on('close', (code) => {
+                    this.ytDlpAvailable = (code === 0);
+                    if (this.ytDlpAvailable) {
+                        console.log('✅ yt-dlp is available');
+                    } else {
+                        console.log('⚠️ yt-dlp not available');
+                    }
+                    resolve(this.ytDlpAvailable);
+                });
+                
+                ytdlp.on('error', () => {
+                    this.ytDlpAvailable = false;
+                    console.log('⚠️ yt-dlp not available');
+                    resolve(false);
+                });
+            });
+        } catch (error) {
+            this.ytDlpAvailable = false;
+            return false;
+        }
+    }
+
+    async isYtDlpAvailable() {
+        if (this.ytDlpAvailable === undefined) {
+            await this.checkYtDlpAvailability();
+        }
+        return this.ytDlpAvailable;
+    }
+
+    async getYouTubeMetadataWithYtDlp(url) {
+        return new Promise((resolve, reject) => {
+            const { spawn } = require('child_process');
+            const ytdlp = spawn('yt-dlp', [
+                '--print', '%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s\n%(thumbnail)s\n%(view_count)s',
+                '--no-warnings',
+                '--concurrent-fragments', '8',
+                '--socket-timeout', '15',
+                '--fragment-retries', '2',
+                '--retries', '2',
+                '--http-chunk-size', '5M',
+                '--buffer-size', '32K',
+                '--prefer-free-formats',
+                url
+            ]);
+
+            let output = '';
+            let error = '';
+
+            ytdlp.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+
+            ytdlp.stderr.on('data', (data) => {
+                error += data.toString();
+            });
+
+            ytdlp.on('close', (code) => {
+                if (code !== 0) {
+                    reject(new Error(`yt-dlp failed with code ${code}: ${error}`));
+                    return;
+                }
+
+                try {
+                    const lines = output.trim().split('\n');
+                    if (lines.length >= 4) {
+                        const title = lines[0] || 'Unknown Title';
+                        const uploader = lines[1] || 'Unknown';
+                        const duration = lines[2] || '0:00';
+                        const webpage_url = lines[3] || url;
+                        const thumbnail = lines[4] || null;
+                        const viewCount = parseInt(lines[5]) || 0;
+                        
+                        const durationSeconds = parseFloat(duration) || 0;
+                        const durationMS = durationSeconds * 1000;
+                        
+                        resolve({
+                            title,
+                            author: uploader,
+                            duration: this.formatDuration(durationMS),
+                            durationMS: durationMS,
+                            url: webpage_url,
+                            thumbnail,
+                            source: 'youtube',
+                            type: 'track',
+                            viewCount,
+                            id: this.extractYouTubeVideoId(url) || ''
+                        });
+                    } else {
+                        reject(new Error('Insufficient metadata from yt-dlp'));
+                    }
+                } catch (parseError) {
+                    reject(new Error(`Failed to parse yt-dlp output: ${parseError.message}`));
+                }
+            });
+
+            ytdlp.on('error', (err) => {
+                reject(new Error(`Failed to spawn yt-dlp: ${err.message}`));
+            });
+        });
+    }
+
+    async searchWithYtDlp(query, limit = 5) {
+        return new Promise((resolve, reject) => {
+            const { spawn } = require('child_process');
+            const ytdlp = spawn('yt-dlp', [
+                '--flat-playlist',
+                '--print', '%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s\n%(thumbnail)s',
+                '--no-warnings',
+                '--concurrent-fragments', '4',
+                '--socket-timeout', '10',
+                '--fragment-retries', '1',
+                '--retries', '1',
+                '--prefer-free-formats',
+                `ytsearch${limit}:${query}`
+            ]);
+
+            let output = '';
+            let error = '';
+
+            ytdlp.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+
+            ytdlp.stderr.on('data', (data) => {
+                error += data.toString();
+            });
+
+            ytdlp.on('close', (code) => {
+                if (code !== 0) {
+                    reject(new Error(`yt-dlp failed with code ${code}: ${error}`));
+                    return;
+                }
+
+                try {
+                    const results = [];
+                    const lines = output.trim().split('\n').filter(line => line.trim());
+                    
+                    for (let i = 0; i < lines.length; i += 5) {
+                        if (i + 3 < lines.length) {
+                            const title = lines[i] || 'Unknown Title';
+                            const uploader = lines[i + 1] || 'Unknown';
+                            const duration = lines[i + 2] || '0:00';
+                            const url = lines[i + 3] || '';
+                            const thumbnail = lines[i + 4] || null;
+                            
+                            const durationSeconds = parseFloat(duration) || 0;
+                            const durationMS = durationSeconds * 1000;
+                            
+                            results.push({
+                                title,
+                                author: uploader,
+                                duration: this.formatDuration(durationMS),
+                                durationMS: durationMS,
+                                url,
+                                thumbnail,
+                                source: 'youtube',
+                                type: 'track',
+                                viewCount: 0,
+                                id: this.extractYouTubeVideoId(url) || ''
+                            });
+                        }
+                    }
+                    
+                    resolve(results);
+                } catch (parseError) {
+                    reject(new Error(`Failed to parse yt-dlp output: ${parseError.message}`));
+                }
+            });
+
+            ytdlp.on('error', (err) => {
+                reject(new Error(`Failed to spawn yt-dlp: ${err.message}`));
+            });
+        });
     }
 
     extractSpotifyPlaylistId(url) {
@@ -103,6 +287,7 @@ class SourceHandlers {
                             title: t.name,
                             author: (t.artists || []).map(a => a.name).join(', ') || 'Unknown',
                             duration: this.formatDuration(t.duration_ms),
+                            durationMS: t.duration_ms || 0,
                             url: t.external_urls?.spotify || `https://open.spotify.com/track/${t.id}`,
                             thumbnail: t.album?.images?.[0]?.url || null,
                             source: 'spotify',
@@ -416,74 +601,96 @@ class SourceHandlers {
             }
 
             const fullUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            
+            // Try yt-dlp first as it's most reliable against bot detection
+            if (await this.isYtDlpAvailable()) {
+                try {
+                    const metadata = await this.getYouTubeMetadataWithYtDlp(fullUrl);
+                    if (metadata) {
+                        console.log('✅ yt-dlp successfully fetched metadata');
+                        return metadata;
+                    }
+                } catch (ytdlpError) {
+                    console.log(`⚠️ yt-dlp metadata fetch failed: ${ytdlpError?.message || ytdlpError}`);
+                }
+            }
+
+            // Fallback to YouTube-SR
             try {
                 const video = await YouTube.getVideo(fullUrl);
-                return {
-                    title: video.title || videoId,
-                    author: video.channel?.name || 'Unknown',
-                    duration: video.durationFormatted || '0:00',
-                    url: fullUrl,
-                    thumbnail: video.thumbnail?.url || null,
-                    source: 'youtube',
-                    type: 'track',
-                    viewCount: video.views || 0,
-                    id: videoId
-                };
-            } catch (metaErr) {
-                // Fallback: use ytdl-core to retrieve metadata before giving up
-                try {
-                    const info = await ytdl.getInfo(fullUrl, {
-                        requestOptions: {
-                            headers: {
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                                'Accept-Language': 'en-US,en;q=0.9'
-                            }
-                        }
-                    });
-
-                    const details = info?.videoDetails || {};
-                    const seconds = Number(details.lengthSeconds || 0);
-                    const duration = seconds > 0
-                        ? (seconds >= 3600
-                            ? `${Math.floor(seconds / 3600)}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
-                            : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`)
-                        : '0:00';
-
-                    // Pick the highest resolution thumbnail available
-                    let thumb = null;
-                    try {
-                        const thumbs = details?.thumbnails || [];
-                        if (Array.isArray(thumbs) && thumbs.length > 0) {
-                            thumb = thumbs.reduce((a, b) => (a?.width || 0) > (b?.width || 0) ? a : b)?.url || thumbs[0]?.url || null;
-                        }
-                    } catch {}
-
+                if (video && video.title) {
                     return {
-                        title: details.title || videoId,
-                        author: details.author?.name || details.ownerChannelName || 'YouTube',
-                        duration,
+                        title: video.title || videoId,
+                        author: video.channel?.name || 'Unknown',
+                        duration: video.durationFormatted || '0:00',
+                        durationMS: (video.duration && typeof video.duration === 'number') ? video.duration * 1000 : 0,
                         url: fullUrl,
-                        thumbnail: thumb,
+                        thumbnail: video.thumbnail?.url || null,
                         source: 'youtube',
                         type: 'track',
-                        viewCount: Number(details.viewCount || 0),
-                        id: videoId
-                    };
-                } catch (ytdlErr) {
-                    console.log(`⚠️ YouTube metadata fetch failed (youtube-sr: ${metaErr?.message || metaErr}; ytdl-core: ${ytdlErr?.message || ytdlErr}). Falling back to minimal info.`);
-                    return {
-                        title: videoId,
-                        author: 'YouTube',
-                        duration: '0:00',
-                        url: fullUrl,
-                        thumbnail: null, // Use null instead of undefined for Firestore compatibility
-                        source: 'youtube',
-                        type: 'track',
-                        viewCount: 0,
+                        viewCount: video.views || 0,
                         id: videoId
                     };
                 }
+            } catch (metaErr) {
+                console.log(`⚠️ YouTube-SR failed: ${metaErr?.message || metaErr}`);
+            }
+
+            // Final fallback: use ytdl-core to retrieve metadata before giving up
+            try {
+                const info = await ytdl.getInfo(fullUrl, {
+                    requestOptions: {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.9'
+                        }
+                    }
+                });
+
+                const details = info?.videoDetails || {};
+                const seconds = Number(details.lengthSeconds || 0);
+                const duration = seconds > 0
+                    ? (seconds >= 3600
+                        ? `${Math.floor(seconds / 3600)}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+                        : `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`)
+                    : '0:00';
+
+                // Pick the highest resolution thumbnail available
+                let thumb = null;
+                try {
+                    const thumbs = details?.thumbnails || [];
+                    if (Array.isArray(thumbs) && thumbs.length > 0) {
+                        thumb = thumbs.reduce((a, b) => (a?.width || 0) > (b?.width || 0) ? a : b)?.url || thumbs[0]?.url || null;
+                    }
+                } catch {}
+
+                return {
+                    title: details.title || videoId,
+                    author: details.author?.name || details.ownerChannelName || 'YouTube',
+                    duration,
+                    durationMS: seconds * 1000,
+                    url: fullUrl,
+                    thumbnail: thumb,
+                    source: 'youtube',
+                    type: 'track',
+                    viewCount: Number(details.viewCount || 0),
+                    id: videoId
+                };
+            } catch (ytdlErr) {
+                console.log(`⚠️ YouTube metadata fetch failed (youtube-sr: Cannot read properties of null (reading 'title'); ytdl-core: ${ytdlErr?.message || ytdlErr}). Falling back to minimal info.`);
+                return {
+                    title: videoId,
+                    author: 'YouTube',
+                    duration: '0:00',
+                    durationMS: 0,
+                    url: fullUrl,
+                    thumbnail: null,
+                    source: 'youtube',
+                    type: 'track',
+                    viewCount: 0,
+                    id: videoId
+                };
             }
         } catch (error) {
             console.error(`❌ Error handling YouTube URL:`, error.message);
@@ -503,6 +710,7 @@ class SourceHandlers {
                 title: track.body.name,
                 author: track.body.artists.map(artist => artist.name).join(', '),
                 duration: this.formatDuration(track.body.duration_ms),
+                durationMS: track.body.duration_ms || 0,
                 url: track.body.external_urls.spotify,
                 thumbnail: track.body.album.images[0]?.url || null,
                 source: 'spotify',
@@ -650,17 +858,22 @@ class SourceHandlers {
                 
                 if (ytsResults && ytsResults.videos && Array.isArray(ytsResults.videos) && ytsResults.videos.length > 0) {
                     console.log(`✅ yt-search found ${ytsResults.videos.length} results`);
-                    return ytsResults.videos.slice(0, limit).map(video => ({
-                        title: video.title || 'Unknown Title',
-                        author: video.author?.name || video.author || 'Unknown',
-                        duration: video.duration?.timestamp || video.timestamp || '0:00',
-                        url: video.url,
-                        thumbnail: video.thumbnail || null,
-                        source: 'youtube',
-                        type: 'track',
-                        viewCount: video.views || 0,
-                        id: video.videoId
-                    }));
+                    return ytsResults.videos.slice(0, limit).map(video => {
+                        const durationSeconds = video.duration?.seconds || 0;
+                        const durationMS = durationSeconds * 1000;
+                        return {
+                            title: video.title || 'Unknown Title',
+                            author: video.author?.name || video.author || 'Unknown',
+                            duration: video.duration?.timestamp || video.timestamp || '0:00',
+                            durationMS: durationMS,
+                            url: video.url,
+                            thumbnail: video.thumbnail || null,
+                            source: 'youtube',
+                            type: 'track',
+                            viewCount: video.views || 0,
+                            id: video.videoId
+                        };
+                    });
                 } else {
                     console.log('⚠️ yt-search returned no results');
                 }
@@ -674,25 +887,35 @@ class SourceHandlers {
                 
                 if (results && Array.isArray(results) && results.length > 0) {
                     console.log(`✅ YouTube-SR found ${results.length} results`);
-                    return results.map(video => ({
-                        title: video.title || 'Unknown Title',
-                        author: video.channel?.name || 'Unknown',
-                        duration: video.durationFormatted || '0:00',
-                        url: `https://www.youtube.com/watch?v=${video.id}`,
-                        thumbnail: video.thumbnail?.url || null,
-                        source: 'youtube',
-                        type: 'track',
-                        viewCount: video.views || 0,
-                        id: video.id
-                    }));
+                    return results.map(video => {
+                        const durationSeconds = video.duration || 0;
+                        const durationMS = durationSeconds * 1000;
+                        return {
+                            title: video.title || 'Unknown Title',
+                            author: video.channel?.name || 'Unknown',
+                            duration: video.durationFormatted || '0:00',
+                            durationMS: durationMS,
+                            url: `https://www.youtube.com/watch?v=${video.id}`,
+                            thumbnail: video.thumbnail?.url || null,
+                            source: 'youtube',
+                            type: 'track',
+                            viewCount: video.views || 0,
+                            id: video.id
+                        };
+                    });
                 } else {
                     console.log('⚠️ YouTube-SR returned no results');
                 }
             } catch (srError) {
-                console.log(`⚠️ YouTube-SR failed: ${srError?.message || 'Unknown error'}`);
+                const errorMsg = srError?.message || 'Unknown error';
+                if (errorMsg.includes('Cannot read properties of null') && errorMsg.includes('title')) {
+                    console.log('⚠️ YouTube-SR failed: Bot detection - Cannot read properties of null (reading \'title\')');
+                } else {
+                    console.log(`⚠️ YouTube-SR failed: ${errorMsg}`);
+                }
             }
 
-            console.log('❌ All YouTube search methods failed');
+            console.log('❌ All YouTube search methods failed (likely due to bot detection). Consider using yt-dlp.');
             return [];
         } catch (error) {
             console.error('❌ YouTube search error:', error?.message || String(error) || 'Unknown error');
