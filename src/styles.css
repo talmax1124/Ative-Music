@@ -1,0 +1,151 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom CSS Variables for Dark Theme */
+:root {
+  --bg-primary: theme('colors.surface.900');
+  --bg-secondary: theme('colors.surface.800');
+  --bg-tertiary: theme('colors.surface.700');
+  --text-primary: theme('colors.slate.100');
+  --text-secondary: theme('colors.slate.300');
+  --text-muted: theme('colors.slate.400');
+  --border: theme('colors.surface.600');
+  --accent: theme('colors.primary.500');
+  --accent-light: theme('colors.primary.400');
+  --accent-dark: theme('colors.primary.600');
+  --success: theme('colors.green.500');
+  --warning: theme('colors.yellow.500');
+  --error: theme('colors.red.500');
+}
+
+/* Base layer customizations */
+@layer base {
+  body {
+    @apply bg-surface-900 text-slate-100 font-sans;
+  }
+  
+  * {
+    @apply scrollbar-thin scrollbar-track-surface-800 scrollbar-thumb-surface-600;
+  }
+}
+
+/* Component layer for reusable components */
+@layer components {
+  /* Button Components */
+  .btn {
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface-900;
+  }
+  
+  .btn-primary {
+    @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
+  }
+  
+  .btn-secondary {
+    @apply btn bg-surface-700 text-slate-200 border border-surface-600 hover:bg-surface-600 focus:ring-surface-500;
+  }
+  
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500;
+  }
+  
+  .btn-sm {
+    @apply px-3 py-1.5 text-sm;
+  }
+  
+  .btn-lg {
+    @apply px-6 py-3 text-lg;
+  }
+  
+  .btn-icon {
+    @apply w-10 h-10 p-0;
+  }
+  
+  /* Card Components */
+  .card {
+    @apply bg-surface-800 rounded-xl border border-surface-700 p-6 shadow-lg;
+  }
+  
+  .card-compact {
+    @apply p-4;
+  }
+  
+  .card-hover {
+    @apply transition-transform duration-200 hover:scale-105 hover:shadow-xl;
+  }
+  
+  /* Input Components */
+  .input {
+    @apply w-full px-4 py-3 bg-surface-800 border border-surface-600 rounded-lg text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all duration-200;
+  }
+  
+  .input-group {
+    @apply relative flex items-center;
+  }
+  
+  .input-icon {
+    @apply absolute left-3 text-slate-400 pointer-events-none;
+  }
+  
+  .input-with-icon {
+    @apply pl-10;
+  }
+  
+  /* Navigation Components */
+  .nav-tab {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 cursor-pointer;
+  }
+  
+  .nav-tab-active {
+    @apply bg-primary-600 text-white;
+  }
+  
+  .nav-tab-inactive {
+    @apply text-slate-400 hover:text-slate-200 hover:bg-surface-700;
+  }
+  
+  /* Notification Components */
+  .notification {
+    @apply fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg transform transition-all duration-300 z-50;
+  }
+  
+  .notification-success {
+    @apply bg-green-600 text-white;
+  }
+  
+  .notification-error {
+    @apply bg-red-600 text-white;
+  }
+  
+  .notification-warning {
+    @apply bg-yellow-600 text-white;
+  }
+  
+  .notification-info {
+    @apply bg-blue-600 text-white;
+  }
+}
+
+/* Utility layer for custom utilities */
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary-400 to-accent-400 bg-clip-text text-transparent;
+  }
+  
+  .bg-gradient-primary {
+    @apply bg-gradient-to-r from-primary-600 to-primary-700;
+  }
+  
+  .bg-gradient-accent {
+    @apply bg-gradient-to-r from-accent-600 to-accent-700;
+  }
+  
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

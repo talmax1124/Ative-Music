@@ -50,7 +50,7 @@ class DiscordPlayerManager {
             // Skip problematic extractors that cause stream issues
             // YoutubeiExtractor has streaming issues - streams end immediately
             // Using DefaultExtractors which is more reliable
-            console.log('⚠️ Skipping additional YouTube extractors (using DefaultExtractors for stability)');
+            console.log('✅ Using stable DefaultExtractors for YouTube playback');
             
             // Try to load TTS plugin (discord-player-tts)
             try {

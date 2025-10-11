@@ -3553,16 +3553,14 @@ class AtiveMusicBot {
             
             // Start local video server
             try {
-                const serverUrl = await this.localVideoServer.start();
-                console.log(`📺 Video server started: ${serverUrl}`);
+                await this.localVideoServer.start();
             } catch (error) {
                 console.error('❌ Failed to start video server:', error);
             }
 
             // Start web portal (search + play via browser)
             try {
-                const portalUrl = await this.webPortal.start();
-                console.log(`🕸️ Web portal started: ${portalUrl}`);
+                await this.webPortal.start();
             } catch (error) {
                 console.error('❌ Failed to start web portal:', error);
             }

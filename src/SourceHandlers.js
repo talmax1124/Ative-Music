@@ -576,6 +576,7 @@ class SourceHandlers {
 
     sortByRelevance(results, query) {
         const queryLower = query.toLowerCase();
+        const queryWords = queryLower.split(/\s+/).filter(word => word.length > 2);
         
         return results.map(result => {
             let score = 0;
@@ -585,20 +586,51 @@ class SourceHandlers {
             // Exact title match
             if (titleLower === queryLower) score += 100;
             
-            // Title contains query
+            // Title starts with query
+            if (titleLower.startsWith(queryLower)) score += 80;
+            
+            // Title contains full query
             if (titleLower.includes(queryLower)) score += 50;
             
-            // Author relevance
+            // Word-by-word matching for better fuzzy search
+            let wordMatches = 0;
+            for (const word of queryWords) {
+                if (titleLower.includes(word)) {
+                    wordMatches++;
+                    score += 15;
+                }
+                if (authorLower.includes(word)) {
+                    wordMatches++;
+                    score += 10;
+                }
+            }
+            
+            // Bonus for matching most words
+            if (wordMatches >= queryWords.length * 0.8) score += 25;
+            
+            // Author exact match
+            if (authorLower === queryLower) score += 60;
+            
+            // Author contains query
             if (authorLower.includes(queryLower)) score += 30;
+            
+            // Duration preference (2-8 minutes)
+            if (result.durationMS) {
+                const minutes = result.durationMS / 60000;
+                if (minutes >= 2 && minutes <= 8) score += 5;
+            }
             
             // Source preference (YouTube > Spotify)
             if (result.source === 'youtube') score += 20;
             else if (result.source === 'spotify') score += 15;
             
-            // View count bonus for YouTube
-            if (result.viewCount) {
-                score += Math.min(result.viewCount / 1000000, 10); // Max 10 points for views
+            // View count bonus for YouTube (scaled logarithmically)
+            if (result.viewCount && result.viewCount > 1000) {
+                score += Math.min(Math.log10(result.viewCount) * 2, 15); // Max 15 points for views
             }
+            
+            // Penalize very long titles (likely to be low quality)
+            if (result.title.length > 100) score -= 5;
             
             return { ...result, relevanceScore: score };
         }).sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -769,14 +801,22 @@ class SourceHandlers {
                 return this.downloadCache.createReadStream(videoId);
             }
             
-            // Try direct streaming methods
-            const extractors = ['playdl', 'ytdlp'];
+            // Try direct streaming methods with enhanced fallbacks
+            const extractors = ['playdl', 'ytdlp', 'ytdlcore'];
             for (let i = 0; i < extractors.length; i++) {
                 const which = extractors[i];
                 try {
                     if (which === 'playdl') {
+                        console.log('🔄 Attempting play-dl stream...');
+                        
+                        // Validate URL before attempting play-dl
+                        if (!track.url || typeof track.url !== 'string' || !track.url.includes('youtube.com/watch')) {
+                            throw new Error(`Invalid YouTube URL for play-dl: ${track.url}`);
+                        }
+                        
                         const streamResult = await play.stream(track.url, {
                             quality: 2,
+                            discordPlayerCompatibility: true,
                             ...(typeof options.seekSeconds === 'number' && options.seekSeconds > 0 ? { seek: Math.floor(options.seekSeconds) } : {})
                         });
                         console.log('✅ play-dl fallback stream created');
@@ -786,8 +826,23 @@ class SourceHandlers {
                         if (await this.isYtDlpAvailable()) {
                             console.log(`🔄 Using yt-dlp fallback`);
                             const stream = await this.getYtDlpStream(track, 0);
-                            return stream;
+                            if (stream) return stream;
                         }
+                    }
+                    if (which === 'ytdlcore') {
+                        console.log('🔄 Attempting ytdl-core stream as last resort...');
+                        const stream = ytdl(track.url, {
+                            filter: 'audioonly',
+                            quality: 'lowestaudio',
+                            highWaterMark: 1 << 25,
+                            requestOptions: {
+                                headers: {
+                                    'User-Agent': this.getRandomUserAgent(),
+                                }
+                            }
+                        });
+                        console.log('✅ ytdl-core fallback stream created');
+                        return stream;
                     }
                 } catch (err) {
                     console.log(`⚠️ Fallback ${which} failed: ${err?.message || err}`);

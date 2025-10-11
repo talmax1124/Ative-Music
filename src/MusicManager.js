@@ -228,11 +228,11 @@ class MusicManager {
         }
         
         // Only queue more tracks if we're actually low and playing
-        if (this.queue.length <= 1 && this.autoPlayEnabled && this.continuousPlayback && this.isPlaying) {
+        if (this.queue.length <= 2 && this.autoPlayEnabled && this.continuousPlayback && (this.isPlaying || this.currentTrack)) {
             console.log('🔄 Queue running low, adding recommendations...');
             setTimeout(() => {
-                this.fillQueueWithRecommendations(3, userContext || {});
-            }, 2000);
+                this.fillQueueWithRecommendations(5, userContext || {});
+            }, 1000);
         }
         
         // Auto-save queue after changes
@@ -605,7 +605,14 @@ class MusicManager {
             return true;
         }
 
-        this.currentTrackIndex++;
+        // Remove the current track from queue when skipped
+        if (this.currentTrackIndex >= 0 && this.currentTrackIndex < this.queue.length) {
+            const skippedTrack = this.queue.splice(this.currentTrackIndex, 1)[0];
+            console.log(`🗑️ Removed skipped track from queue: ${skippedTrack?.title || 'Unknown'}`);
+            this.scheduleTrackCleanup(skippedTrack);
+            this.saveQueue();
+        }
+
         console.log(`📍 Skipped to track index ${this.currentTrackIndex} of ${this.queue.length} total tracks`);
         
         if (this.currentTrackIndex >= this.queue.length) {
@@ -1056,10 +1063,20 @@ class MusicManager {
         this.autoPlayEnabled = enabled;
         console.log(`🤖 Auto-play ${enabled ? 'enabled' : 'disabled'}`);
         
-        if (enabled && this.queue.length === 0 && this.connection) {
-            // Start auto-play immediately if queue is empty
-            this.findAndPlayRecommendation();
+        if (enabled && this.connection) {
+            if (this.queue.length === 0) {
+                // Start auto-play immediately if queue is empty
+                this.findAndPlayRecommendation();
+            } else if (this.queue.length <= 2 && (this.isPlaying || this.currentTrack)) {
+                // Fill queue with recommendations if we only have 1-2 songs
+                console.log('🎵 Auto-play enabled - filling queue with recommendations...');
+                setTimeout(() => {
+                    this.fillQueueWithRecommendations(5, {});
+                }, 1000);
+            }
         }
+        
+        return enabled;
     }
 
     setContinuousPlayback(enabled) {

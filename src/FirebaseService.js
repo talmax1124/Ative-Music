@@ -221,6 +221,95 @@ class FirebaseService {
             return [];
         }
     }
+
+    // User playlist management
+    async getUserPlaylists(userId) {
+        try {
+            if (!this.initialized) this.initialize();
+            
+            const snapshot = await this.db.collection('userPlaylists')
+                .where('createdBy', '==', userId)
+                .get();
+            
+            const playlists = [];
+            snapshot.forEach(doc => {
+                playlists.push({ id: doc.id, ...doc.data() });
+            });
+            // Sort by createdAt in descending order (client-side)
+            return playlists.sort((a, b) => {
+                let aTime = 0;
+                let bTime = 0;
+                
+                // Handle different timestamp formats
+                if (a.createdAt) {
+                    if (typeof a.createdAt.toMillis === 'function') {
+                        aTime = a.createdAt.toMillis();
+                    } else if (typeof a.createdAt === 'number') {
+                        aTime = a.createdAt;
+                    } else if (a.createdAt instanceof Date) {
+                        aTime = a.createdAt.getTime();
+                    }
+                }
+                
+                if (b.createdAt) {
+                    if (typeof b.createdAt.toMillis === 'function') {
+                        bTime = b.createdAt.toMillis();
+                    } else if (typeof b.createdAt === 'number') {
+                        bTime = b.createdAt;
+                    } else if (b.createdAt instanceof Date) {
+                        bTime = b.createdAt.getTime();
+                    }
+                }
+                
+                return bTime - aTime;
+            });
+        } catch (error) {
+            console.error('❌ Failed to get user playlists from Firebase:', error);
+            return [];
+        }
+    }
+
+    async saveUserPlaylist(userId, playlist) {
+        try {
+            if (!this.initialized) this.initialize();
+            
+            await this.db.collection('userPlaylists').doc(playlist.id).set({
+                ...playlist,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log(`✅ User playlist saved: ${playlist.name}`);
+        } catch (error) {
+            console.error('❌ Failed to save user playlist to Firebase:', error);
+            throw error;
+        }
+    }
+
+    async updateUserPlaylist(userId, playlist) {
+        try {
+            if (!this.initialized) this.initialize();
+            
+            await this.db.collection('userPlaylists').doc(playlist.id).update({
+                ...playlist,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log(`✅ User playlist updated: ${playlist.name}`);
+        } catch (error) {
+            console.error('❌ Failed to update user playlist in Firebase:', error);
+            throw error;
+        }
+    }
+
+    async deleteUserPlaylist(userId, playlistId) {
+        try {
+            if (!this.initialized) this.initialize();
+            
+            await this.db.collection('userPlaylists').doc(playlistId).delete();
+            console.log(`✅ User playlist deleted: ${playlistId}`);
+        } catch (error) {
+            console.error('❌ Failed to delete user playlist from Firebase:', error);
+            throw error;
+        }
+    }
 }
 
 module.exports = new FirebaseService();

@@ -138,10 +138,23 @@ class AudioProcessor extends EventEmitter {
                 '--http-chunk-size', '1M'
             ];
 
-            // Add cookies if available
+            // Add cookies if available and valid
             if (fs.existsSync(this.cookiesPath)) {
-                args.push('--cookies', this.cookiesPath);
-                console.log('🍪 Using cookies for download');
+                try {
+                    const cookiesContent = fs.readFileSync(this.cookiesPath, 'utf8');
+                    // Check for Netscape format header or actual cookie entries
+                    if (cookiesContent.trim() && 
+                        (cookiesContent.includes('Netscape HTTP Cookie File') || 
+                         cookiesContent.includes('.youtube.com') ||
+                         /^\.youtube\.com\t/m.test(cookiesContent))) {
+                        args.push('--cookies', this.cookiesPath);
+                        console.log('🍪 Using valid cookies for download');
+                    } else {
+                        console.log('⚠️ Cookies file appears empty or invalid, skipping');
+                    }
+                } catch (error) {
+                    console.log('⚠️ Failed to read cookies file, continuing without cookies');
+                }
             }
 
             // Add extractor args for better compatibility

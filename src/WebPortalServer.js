@@ -1,5 +1,7 @@
 const express = require('express');
 const { getVoiceConnection } = require('@discordjs/voice');
+const axios = require('axios');
+const firebaseService = require('./FirebaseService.js');
 
 class WebPortalServer {
   constructor(bot) {
@@ -10,18 +12,44 @@ class WebPortalServer {
     this.publicHost = process.env.PUBLIC_HOST || process.env.SERVER_HOST || process.env.HOST || 'localhost';
     this.publicPort = process.env.PUBLIC_PORT || process.env.SERVER_PORT || process.env.WEB_PORT || 25567;
     this.apiToken = process.env.WEB_API_TOKEN || null;
+    this.requireAuth = process.env.REQUIRE_DISCORD_AUTH === 'true';
+    
+    // Discord OAuth settings
+    this.discordClientId = process.env.DISCORD_CLIENT_ID;
+    this.discordClientSecret = process.env.DISCORD_CLIENT_SECRET;
+    this.discordRedirectUri = `http://${this.publicHost}:${this.publicPort}/auth/discord/callback`;
     
     // Store SSE clients for progress updates
     this.progressClients = new Set();
     
+    // In-memory session store (consider using Redis in production)
+    this.sessions = new Map();
+    
     this.setupRoutes();
+    this.setupAuthRoutes();
     this.setupPlaylistRoutes();
     this.setupProgressListener();
   }
 
-  auth(req, res, next) {
-    // Simple auth bypass for now
-    next();
+  auth = (req, res, next) => {
+    // Check for Discord auth session or API token
+    const sessionToken = req.headers['authorization']?.replace('Bearer ', '') || req.query.token;
+    const discordUser = req.session?.discordUser;
+    
+    // Always allow access if no auth is required (default for now)
+    if (!this.requireAuth) {
+      req.user = discordUser || null;
+      next();
+      return;
+    }
+    
+    // Check authentication if required
+    if (discordUser || sessionToken === this.apiToken) {
+      req.user = discordUser || null;
+      next();
+    } else {
+      res.status(401).json({ error: 'Authentication required' });
+    }
   }
 
   setupRoutes() {
@@ -32,6 +60,17 @@ class WebPortalServer {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+      next();
+    });
+
+    // Simple session middleware - set up early
+    this.app.use((req, res, next) => {
+      const sessionId = req.headers['x-session-id'];
+      if (sessionId && this.sessions.has(sessionId)) {
+        req.session = this.sessions.get(sessionId);
+      } else {
+        req.session = {};
+      }
       next();
     });
 
@@ -49,6 +88,32 @@ class WebPortalServer {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: {
+              50: '#f8fafc',
+              100: '#f1f5f9',
+              200: '#e2e8f0',
+              300: '#cbd5e1',
+              400: '#94a3b8',
+              500: '#64748b',
+              600: '#475569',
+              700: '#334155',
+              800: '#1e293b',
+              900: '#0f172a',
+            }
+          }
+        }
+      },
+      darkMode: 'class'
+    }
+  </script>
+  
   <style>
     :root {
       --primary-bg: #0d1117;
@@ -362,6 +427,7 @@ class WebPortalServer {
       gap: 0.5rem;
       margin-bottom: 2rem;
       border-bottom: 1px solid var(--border);
+      flex-wrap: wrap; /* Prevent icon/text overflow on narrow screens */
     }
 
     .tab-btn {
@@ -377,7 +443,13 @@ class WebPortalServer {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      min-width: 0; /* allow shrinking in flex row */
+      max-width: 100%;
+      overflow-wrap: anywhere; /* let label wrap under icon */
+      white-space: normal; /* allow text to wrap */
     }
+
+    .tab-btn i { flex: 0 0 auto; }
 
     .tab-btn:hover {
       color: var(--text-primary);
@@ -470,6 +542,7 @@ class WebPortalServer {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      flex-wrap: nowrap;
     }
 
     .playlist-icon {
@@ -488,7 +561,10 @@ class WebPortalServer {
       border-radius: 12px;
       color: var(--text-primary);
       font-size: 1rem;
+      height: 48px;
+      box-sizing: border-box;
       transition: all 0.2s ease;
+      min-width: 0;
     }
 
     .playlist-input:focus {
@@ -497,10 +573,10 @@ class WebPortalServer {
       box-shadow: 0 0 0 3px var(--accent-light);
     }
 
-    .playlist-btn {
-      background: var(--gradient-primary);
-      color: white;
-      border: none;
+    #import-playlist-btn {
+      background: var(--gradient-primary) !important;
+      color: white !important;
+      border: none !important;
       border-radius: 12px;
       padding: 1rem 1.5rem;
       font-weight: 500;
@@ -510,14 +586,33 @@ class WebPortalServer {
       align-items: center;
       gap: 0.5rem;
       white-space: nowrap;
+      min-width: 120px;
+      height: 48px;
+      justify-content: center;
+      font-size: 14px;
+      line-height: 1;
+      flex-shrink: 0;
+      box-sizing: border-box;
     }
 
-    .playlist-btn:hover {
+    #import-playlist-btn span {
+      display: inline-block;
+      margin: 0;
+      padding: 0;
+    }
+
+    #import-playlist-btn i {
+      font-size: 14px !important;
+      margin: 0;
+      padding: 0;
+    }
+
+    #import-playlist-btn:hover {
       transform: translateY(-1px);
       box-shadow: var(--shadow-md);
     }
 
-    .playlist-btn:disabled {
+    #import-playlist-btn:disabled {
       opacity: 0.6;
       cursor: not-allowed;
       transform: none;
@@ -699,10 +794,15 @@ class WebPortalServer {
     .track-actions {
       display: flex;
       gap: 0.5rem;
+      align-items: center;
+      overflow: hidden;
+      flex-wrap: wrap; /* Allow controls (incl. heart) to wrap instead of overflow */
+      width: 100%;
+      min-width: 0;
     }
     
     .play-btn {
-      flex: 1;
+      flex: 1 1 140px; /* Let it shrink and wrap with icons */
       background: var(--gradient-primary);
       color: white;
       border: none;
@@ -733,9 +833,15 @@ class WebPortalServer {
       color: var(--text-secondary);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 0.75rem;
+      padding: 0.5rem;
       cursor: pointer;
       transition: all 0.2s ease;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
     
     .queue-btn:hover {
@@ -1329,21 +1435,614 @@ class WebPortalServer {
       border-color: var(--danger);
       background: rgba(218, 54, 51, 0.15);
     }
+
+    /* User Playlists Styles */
+    .user-playlists-container {
+      padding: 1rem;
+    }
+
+    .playlist-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      gap: 1rem;
+      flex-wrap: wrap; /* avoid overflow with long titles/actions */
+    }
+
+    .playlist-header h3 {
+      margin: 0;
+      color: var(--text-primary);
+      font-size: 1.25rem;
+      display: flex; /* Keep heart and text inline without overflow */
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 0;
+    }
+
+    .create-playlist-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: background-color 0.2s;
+    }
+
+    .create-playlist-btn:hover {
+      background: var(--accent-dark);
+    }
+
+    .user-playlists-list {
+      display: grid;
+      gap: 1.5rem;
+      padding: 0.5rem 0;
+    }
+
+    .user-playlist-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      grid-template-areas: "icon details actions";
+      gap: 1rem;
+      align-items: center;
+      transition: all 0.2s ease;
+      position: relative;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 80px;
+      container-type: inline-size;
+    }
+
+    .user-playlist-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    .user-playlist-card .playlist-icon {
+      grid-area: icon;
+      width: 48px;
+      height: 48px;
+      background: linear-gradient(135deg, var(--accent-light), var(--accent));
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 18px;
+      flex-shrink: 0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .user-playlist-card .playlist-icon::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: inherit;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    .user-playlist-card:hover .playlist-icon::before {
+      opacity: 1;
+    }
+
+    .user-playlist-card .playlist-icon i {
+      font-size: 18px;
+      line-height: 1;
+      margin: 0;
+      display: block;
+      position: relative;
+      z-index: 1;
+    }
+
+    .user-playlist-card .playlist-details {
+      grid-area: details;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .user-playlist-card .playlist-details h4 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      line-height: 1.3;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .user-playlist-card .playlist-details p {
+      margin: 0;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .user-playlist-card .playlist-details small {
+      margin: 0;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      opacity: 0.8;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .user-playlist-card .playlist-actions {
+      grid-area: actions;
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .user-playlist-card .btn {
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-secondary);
+      transition: all 0.2s ease;
+      cursor: pointer;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .user-playlist-card .btn:hover {
+      background: var(--accent-light);
+      border-color: var(--accent);
+      color: var(--accent);
+      transform: scale(1.05);
+    }
+
+    .user-playlist-card .btn.btn-danger {
+      border-color: rgba(239, 68, 68, 0.3);
+      color: rgb(239, 68, 68);
+    }
+
+    .user-playlist-card .btn.btn-danger:hover {
+      background: rgba(239, 68, 68, 0.1);
+      border-color: rgb(239, 68, 68);
+      color: rgb(239, 68, 68);
+    }
+
+    @container (max-width: 500px) {
+      .user-playlist-card {
+        grid-template-columns: auto 1fr;
+        grid-template-areas: 
+          "icon details"
+          "actions actions";
+        gap: 0.75rem;
+      }
+      
+      .user-playlist-card .playlist-actions {
+        justify-content: center;
+        gap: 1rem;
+      }
+    }
+
+    @container (max-width: 350px) {
+      .user-playlist-card {
+        grid-template-columns: 1fr;
+        grid-template-areas: 
+          "details"
+          "actions";
+        text-align: center;
+      }
+      
+      .user-playlist-card .playlist-icon {
+        display: none;
+      }
+    }
+
+    .empty-playlists {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--text-muted);
+    }
+
+    .empty-playlists i {
+      font-size: 3rem;
+      margin-bottom: 1rem;
+      color: var(--accent);
+    }
+
+    .empty-playlists p {
+      margin: 0 0 0.5rem 0;
+      font-size: 1.125rem;
+      font-weight: 500;
+    }
+
+    .empty-playlists small {
+      font-size: 0.875rem;
+      opacity: 0.7;
+    }
+
+    /* Modal Styles */
+    .modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-content {
+      background: var(--surface);
+      border-radius: 12px;
+      max-width: 500px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h3 {
+      margin: 0;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      padding: 0.25rem;
+      line-height: 1;
+    }
+
+    .modal-close:hover {
+      color: var(--text-primary);
+    }
+
+    .modal-body {
+      padding: 1.5rem;
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 0.5rem;
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .form-group input,
+    .form-group textarea {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--background);
+      color: var(--text-primary);
+      font-family: inherit;
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-group input:focus,
+    .form-group textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .modal-footer {
+      display: flex;
+      gap: 0.75rem;
+      padding: 1.5rem;
+      border-top: 1px solid var(--border);
+      justify-content: flex-end;
+    }
+
+    .btn {
+      padding: 0.625rem 1rem;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-dark);
+    }
+
+    .btn-primary:disabled {
+      background: var(--border);
+      color: var(--text-muted);
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: var(--surface-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--border);
+    }
+
+    .btn-small {
+      padding: 0.5rem;
+      font-size: 0.875rem;
+      border-radius: 6px;
+    }
+
+    .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #d73027;
+    }
+
+    /* Add to Playlist Modal */
+    .track-preview {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      background: var(--surface-elevated);
+      border-radius: 8px;
+    }
+
+    .track-preview .track-thumbnail {
+      width: 64px;
+      height: 64px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+    }
+
+    .track-preview .track-thumbnail img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .track-details {
+      flex: 1;
+    }
+
+    .track-details strong {
+      display: block;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+    }
+
+    .track-details p {
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    .playlist-selection h4 {
+      margin: 0 0 1rem 0;
+      color: var(--text-primary);
+    }
+
+    .playlist-options {
+      display: grid;
+      gap: 0.5rem;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .playlist-option {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      gap: 0.5rem;
+    }
+
+    .playlist-option:hover {
+      border-color: var(--accent);
+    }
+
+    .playlist-option.selected {
+      border-color: var(--accent);
+      background: var(--accent-light);
+    }
+
+    .playlist-info strong {
+      display: block;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .playlist-info small {
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .playlist-option .playlist-info { flex: 1 1 auto; min-width: 0; }
+    .playlist-option i { flex: 0 0 auto; }
+
+    /* Ensure track cards never cause horizontal overflow */
+    .track-card { max-width: 100%; }
+
+    /* Responsive tweaks to avoid overflow on very narrow screens */
+    @media (max-width: 420px) {
+      .track-grid { grid-template-columns: 1fr; }
+      .track-actions { width: 100%; }
+      .play-btn { flex: 1 1 100%; }
+      .search-tabs { gap: 0.25rem; }
+      .tab-btn { padding: 0.75rem 1rem; }
+    }
+
+    .no-playlists {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-muted);
+    }
+
+    .no-playlists p {
+      margin: 0 0 1rem 0;
+    }
+
+    /* Playlist button in track cards */
+    .playlist-btn {
+      background: var(--surface-elevated);
+      color: var(--accent);
+      border: 1px solid var(--border);
+      padding: 0.5rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      flex-shrink: 0;
+      min-width: 40px;
+      max-width: 40px;
+      position: relative;
+      z-index: 1;
+      overflow: hidden;
+    }
+
+    .playlist-btn:hover {
+      background: var(--accent-light);
+      border-color: var(--accent);
+    }
+
+    .playlist-btn i {
+      font-size: 14px;
+      position: relative;
+      z-index: 2;
+    }
   </style>
+  
+  <!-- Component System -->
+  <script src="/src/components/ComponentManager.js"></script>
+  <script src="/src/components/PlaylistCard.js"></script>
+  <script src="/src/components/ImportForm.js"></script>
+  <script src="/src/components/PlaylistDetailView.js"></script>
+  <script src="/src/components/SuggestionsSection.js"></script>
+  <script src="/src/components/index.js"></script>
 </head>
-<body>
-  <!-- Header -->
-  <div class="header">
-    <div class="header-content">
-      <div class="logo">
-        <i class="fas fa-music"></i> Ative Music
-      </div>
-      <div class="connection-status">
-        <div class="status-dot" id="status-dot"></div>
-        <span id="connection-text">Disconnected</span>
-      </div>
+<body class="bg-surface-900 text-slate-100 font-sans min-h-screen">
+  <!-- Login Overlay -->
+  <div id="login-overlay" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.95); z-index: 10000; display: flex; align-items: center; justify-content: center;">
+    <div style="background: var(--secondary-bg); padding: 2rem; border-radius: 12px; max-width: 400px; width: 100%; text-align: center; border: 1px solid var(--border);">
+      <h2 style="color: var(--text-primary); margin-bottom: 1rem;">
+        <i class="fab fa-discord"></i> Discord Login Required
+      </h2>
+      <p style="color: var(--text-secondary); margin-bottom: 2rem;">
+        Sign in with Discord to save your personal playlists and preferences.
+      </p>
+      <button onclick="loginWithDiscord()" style="background: #5865F2; color: white; border: none; padding: 1rem 2rem; border-radius: 8px; font-size: 1rem; cursor: pointer; display: inline-flex; align-items: center; gap: 0.5rem; margin: 0 auto;">
+        <i class="fab fa-discord"></i> Login with Discord
+      </button>
     </div>
   </div>
+
+  <!-- Header -->
+  <header class="fixed top-0 left-0 right-0 z-50 bg-surface-900/95 backdrop-blur-lg border-b border-surface-700">
+    <div class="max-w-7xl mx-auto px-6 py-4">
+      <div class="flex items-center justify-between">
+        <!-- Logo -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center">
+            <i class="fas fa-music text-white text-lg"></i>
+          </div>
+          <div>
+            <h1 class="text-xl font-bold text-white">Ative Music</h1>
+            <p class="text-xs text-slate-400">Your personal music companion</p>
+          </div>
+        </div>
+
+        <!-- Right side -->
+        <div class="flex items-center gap-4">
+          <!-- User info -->
+          <div id="user-info" class="hidden items-center gap-3 bg-surface-800 rounded-full px-4 py-2 border border-surface-600">
+            <img id="user-avatar" src="" alt="" class="w-8 h-8 rounded-full hidden">
+            <span id="user-name" class="text-slate-200 font-medium"></span>
+            <button onclick="logout()" class="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-full transition-colors">
+              Logout
+            </button>
+          </div>
+          
+          <!-- Connection status -->
+          <div class="flex items-center gap-2 bg-surface-800 rounded-full px-4 py-2 border border-surface-600">
+            <div class="w-2 h-2 rounded-full bg-red-500 animate-pulse" id="status-dot"></div>
+            <span id="connection-text" class="text-sm text-slate-400">Disconnected</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
 
   <!-- Server Selection Container (full screen) -->
   <div id="server-selection-container" class="server-selection-container">
@@ -1365,119 +2064,227 @@ class WebPortalServer {
   </div>
 
   <!-- Music Interface Container (hidden initially) -->
-  <div id="music-interface-container" class="main-container" style="display: none;">
+  <div id="music-interface-container" class="fixed inset-0 top-20 grid grid-cols-[320px_1fr] bg-surface-900" style="display: none;">
     <!-- Sidebar -->
-    <div class="sidebar">
-      <div class="server-header">
-        <h3 id="current-server-name">Current Server</h3>
-        <button class="btn btn-outline btn-small" id="change-server">
-          <i class="fas fa-exchange-alt"></i> Change Server
+    <div class="bg-surface-800/50 border-r border-surface-700 p-6 overflow-y-auto">
+      <!-- Server Header -->
+      <div class="bg-surface-800 rounded-xl p-4 mb-6 border border-surface-700">
+        <h3 id="current-server-name" class="text-lg font-semibold text-slate-100 mb-3">Current Server</h3>
+        <button class="w-full px-4 py-2 bg-surface-700 hover:bg-surface-600 border border-surface-600 text-slate-200 rounded-lg transition-colors duration-200 text-sm flex items-center justify-center gap-2" id="change-server">
+          <i class="fas fa-exchange-alt"></i> 
+          <span>Change Server</span>
         </button>
       </div>
       
-      <div class="connection-section">
-        <h4>Voice Channel</h4>
-        <select class="form-control" id="channel" style="margin-bottom: 1rem;">
+      <!-- Voice Channel Section -->
+      <div class="bg-surface-800 rounded-xl p-4 mb-6 border border-surface-700">
+        <h4 class="text-md font-medium text-slate-200 mb-3 flex items-center gap-2">
+          <i class="fas fa-volume-up text-blue-400"></i>
+          Voice Channel
+        </h4>
+        <select class="w-full p-3 bg-surface-700 border border-surface-600 rounded-lg text-slate-100 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="channel">
           <option value="">Select voice channel...</option>
         </select>
         
-        <div style="display: flex; gap: 0.5rem; margin-bottom: 2rem;">
-          <button class="btn btn-small" id="connect">
-            <i class="fas fa-plug"></i> Connect
+        <div class="grid grid-cols-2 gap-2">
+          <button class="px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors duration-200 text-sm flex items-center justify-center gap-2" id="connect">
+            <i class="fas fa-plug"></i> 
+            <span>Connect</span>
           </button>
-          <button class="btn btn-secondary btn-small" id="disconnect">
-            <i class="fas fa-times"></i> Disconnect
+          <button class="px-3 py-2 bg-surface-700 hover:bg-surface-600 border border-surface-600 text-slate-200 rounded-lg transition-colors duration-200 text-sm flex items-center justify-center gap-2" id="disconnect">
+            <i class="fas fa-times"></i> 
+            <span>Disconnect</span>
           </button>
         </div>
       </div>
       
-      <h4>Music Controls</h4>
-      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-        <button class="btn btn-secondary btn-small" id="btn-shuffle">
-          <i class="fas fa-random"></i> Shuffle
-        </button>
-        <button class="btn btn-secondary btn-small" id="btn-repeat">
-          <i class="fas fa-repeat"></i> Repeat
-        </button>
-        <button class="btn btn-secondary btn-small" id="btn-autoplay" style="position: relative;">
-          <i class="fas fa-magic"></i> Auto-play
-          <span class="autoplay-status" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 0.7rem; opacity: 0.7;">OFF</span>
-        </button>
-        <button class="btn btn-danger btn-small" id="btn-clear-queue">
-          <i class="fas fa-trash"></i> Clear Queue
-        </button>
+      <!-- Music Controls -->
+      <div class="bg-surface-800 rounded-xl p-4 border border-surface-700">
+        <h4 class="text-md font-medium text-slate-200 mb-3 flex items-center gap-2">
+          <i class="fas fa-sliders-h text-purple-400"></i>
+          Music Controls
+        </h4>
+        <div class="space-y-2">
+          <button class="w-full px-4 py-2 bg-surface-700 hover:bg-surface-600 border border-surface-600 text-slate-200 rounded-lg transition-colors duration-200 text-sm flex items-center gap-3" id="btn-shuffle">
+            <i class="fas fa-random text-blue-400"></i> 
+            <span>Shuffle</span>
+          </button>
+          <button class="w-full px-4 py-2 bg-surface-700 hover:bg-surface-600 border border-surface-600 text-slate-200 rounded-lg transition-colors duration-200 text-sm flex items-center gap-3" id="btn-repeat">
+            <i class="fas fa-repeat text-green-400"></i> 
+            <span>Repeat</span>
+          </button>
+          <button class="w-full px-4 py-2 bg-surface-700 hover:bg-surface-600 border border-surface-600 text-slate-200 rounded-lg transition-colors duration-200 text-sm flex items-center justify-between" id="btn-autoplay">
+            <div class="flex items-center gap-3">
+              <i class="fas fa-magic text-purple-400"></i> 
+              <span>Auto-play</span>
+            </div>
+            <span class="autoplay-status text-xs bg-surface-600 px-2 py-1 rounded opacity-70">OFF</span>
+          </button>
+          <button class="w-full px-4 py-2 bg-surface-700 hover:bg-surface-600 border border-surface-600 text-slate-200 rounded-lg transition-colors duration-200 text-sm flex items-center gap-3" id="btn-fill-queue">
+            <i class="fas fa-sparkles text-yellow-400"></i> 
+            <span>Fill Queue</span>
+          </button>
+          <button class="w-full px-4 py-2 bg-red-600/20 hover:bg-red-600/30 border border-red-600/40 text-red-400 hover:text-red-300 rounded-lg transition-colors duration-200 text-sm flex items-center gap-3" id="btn-clear-queue">
+            <i class="fas fa-trash"></i> 
+            <span>Clear Queue</span>
+          </button>
+        </div>
       </div>
     </div>
 
-    <!-- Content -->
-    <div class="content">
-      <!-- Search Section -->
-      <div class="section">
-        <div class="section-header">
-          <h2 class="section-title">
-            <i class="fas fa-search"></i> Search Music
-          </h2>
-        </div>
-        
-        <div class="search-tabs">
-          <button class="tab-btn active" id="tab-search">
-            <i class="fas fa-search"></i> Search Music
-          </button>
-          <button class="tab-btn" id="tab-playlist">
-            <i class="fas fa-list-ul"></i> Import Playlist
-          </button>
-        </div>
-
-        <!-- Search Tab -->
-        <div id="search-tab" class="tab-content active">
-          <div class="search-container">
-            <i class="fas fa-search search-icon"></i>
-            <input type="text" class="search-input" id="search" placeholder="Search for songs, artists, or playlists..." />
-            <button class="search-btn" id="search-btn">Search</button>
+    <!-- Main Content -->
+    <div class="flex flex-col overflow-hidden">
+      <div class="flex-1 overflow-y-auto p-6 space-y-8">
+        <!-- Search Section -->
+        <div class="bg-surface-800/50 rounded-xl border border-surface-700 p-6">
+          <div class="flex items-center gap-3 mb-6">
+            <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">
+              <i class="fas fa-search text-white"></i>
+            </div>
+            <div>
+              <h2 class="text-xl font-bold text-slate-100">Search Music</h2>
+              <p class="text-sm text-slate-400">Find and play your favorite tracks</p>
+            </div>
           </div>
           
-          <div id="results" class="track-grid"></div>
-        </div>
+          <!-- Tabs Navigation -->
+          <div class="flex bg-surface-700/50 rounded-lg p-1 mb-6">
+            <button class="tab-btn flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 text-white bg-blue-600 shadow-sm" id="tab-search">
+              <i class="fas fa-search mr-2"></i> Search Music
+            </button>
+            <button class="tab-btn flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-surface-600" id="tab-playlist">
+              <i class="fas fa-list-ul mr-2"></i> Import Playlist
+            </button>
+            <button class="tab-btn flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-surface-600" id="tab-user-playlists">
+              <i class="fas fa-heart mr-2"></i> My Playlists
+            </button>
+          </div>
+
+          <!-- Search Tab -->
+          <div id="search-tab" class="tab-content active">
+            <div class="relative flex items-center gap-3 mb-6">
+              <div class="absolute left-4 z-10">
+                <i class="fas fa-search text-slate-400"></i>
+              </div>
+              <input type="text" class="flex-1 pl-12 pr-32 py-4 bg-surface-700 border border-surface-600 rounded-xl text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200" id="search" placeholder="Search for songs, artists, or playlists..." />
+              <button class="absolute right-2 top-1/2 -translate-y-1/2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105" id="search-btn">
+                Search
+              </button>
+            </div>
+            
+            <div id="results" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+          </div>
 
         <!-- Playlist Tab -->
         <div id="playlist-tab" class="tab-content">
           <div class="playlist-container">
-            <div class="playlist-input-section">
-              <label for="playlist-url">Playlist URL</label>
-              <div class="playlist-input-group">
-                <i class="fas fa-link playlist-icon"></i>
-                <input type="text" class="playlist-input" id="playlist-url" placeholder="Paste Spotify or YouTube playlist URL..." />
-                <button class="playlist-btn" id="import-playlist-btn">
-                  <i class="fas fa-download"></i> Import
-                </button>
+            <div class="bg-surface-800 border border-surface-700 rounded-xl p-6">
+              <!-- Header -->
+              <div class="flex items-center gap-3 mb-4">
+                <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">
+                  <i class="fas fa-download text-white"></i>
+                </div>
+                <div>
+                  <h3 class="text-lg font-semibold text-slate-100">Import Playlist</h3>
+                  <p class="text-sm text-slate-400">Add playlists from Spotify or YouTube</p>
+                </div>
               </div>
-              <div class="playlist-examples">
-                <small>
-                  <strong>Supported:</strong> 
-                  <span class="example-link">spotify.com/playlist/...</span> • 
-                  <span class="example-link">youtube.com/playlist?list=...</span>
-                </small>
+
+              <!-- URL Input -->
+              <div class="space-y-2">
+                <label for="playlist-url" class="block text-sm font-medium text-slate-300">
+                  Playlist URL
+                </label>
+                <div class="relative flex items-center gap-2">
+                  <div class="absolute left-3 z-10">
+                    <i class="fas fa-link text-slate-400"></i>
+                  </div>
+                  <input 
+                    type="text" 
+                    id="playlist-url"
+                    class="flex-1 pl-10 pr-32 py-3 bg-surface-700 border border-surface-600 rounded-lg text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200" 
+                    placeholder="Paste Spotify or YouTube playlist URL..."
+                  />
+                  <button 
+                    id="import-playlist-btn"
+                    class="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 flex items-center gap-2 min-w-[100px] justify-center"
+                  >
+                    <i class="fas fa-download"></i>
+                    <span>Import</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Examples -->
+              <div class="mt-4 bg-surface-900/50 rounded-lg p-4 border border-surface-600">
+                <h4 class="text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
+                  <i class="fas fa-info-circle text-blue-400"></i>
+                  Supported Formats
+                </h4>
+                <ul class="space-y-1 text-xs text-slate-500 font-mono">
+                  <li>Spotify: https://open.spotify.com/playlist/...</li>
+                  <li>YouTube: https://youtube.com/playlist?list=...</li>
+                  <li>YouTube Music: https://music.youtube.com/playlist?list=...</li>
+                </ul>
               </div>
             </div>
             
             <div id="playlist-results" class="playlist-results"></div>
           </div>
         </div>
-      </div>
 
-      <!-- Queue Section -->
-      <div class="section">
-        <div class="section-header">
-          <h2 class="section-title">
-            <i class="fas fa-list"></i> Queue
-          </h2>
+          <!-- User Playlists Tab -->
+          <div id="user-playlists-tab" class="tab-content">
+            <div class="flex items-center justify-between mb-6">
+              <div class="flex items-center gap-3">
+                <div class="w-8 h-8 bg-gradient-to-br from-pink-500 to-red-600 rounded-lg flex items-center justify-center">
+                  <i class="fas fa-heart text-white text-sm"></i>
+                </div>
+                <h3 class="text-lg font-semibold text-slate-100">My Playlists</h3>
+              </div>
+              <button class="px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105 flex items-center gap-2" id="create-playlist-btn">
+                <i class="fas fa-plus"></i> 
+                <span>Create Playlist</span>
+              </button>
+            </div>
+            
+            <div id="user-playlists-list" class="grid gap-6 py-2">
+              <div class="flex flex-col items-center justify-center py-12 text-center">
+                <div class="w-16 h-16 bg-surface-700/50 rounded-full flex items-center justify-center mb-4">
+                  <i class="fas fa-heart text-2xl text-slate-500"></i>
+                </div>
+                <p class="text-lg font-medium text-slate-300 mb-2">No playlists yet</p>
+                <small class="text-slate-500">Create your first playlist to get started!</small>
+              </div>
+            </div>
+          </div>
         </div>
         
-        <div id="queue" class="queue-list">
-          <div class="empty-state">
-            <i class="fas fa-music"></i>
-            <p>No tracks in queue</p>
+        <!-- Queue Section -->
+        <div class="bg-surface-800/50 rounded-xl border border-surface-700 p-6">
+          <div class="flex items-center gap-3 mb-6">
+            <div class="w-10 h-10 bg-gradient-to-br from-green-500 to-green-600 rounded-lg flex items-center justify-center">
+              <i class="fas fa-list text-white"></i>
+            </div>
+            <div>
+              <h2 class="text-xl font-bold text-slate-100">Queue</h2>
+              <p class="text-sm text-slate-400">Up next tracks</p>
+            </div>
           </div>
+          
+          <div id="queue" class="space-y-2">
+            <div class="flex flex-col items-center justify-center py-8 text-center">
+              <div class="w-12 h-12 bg-surface-700/50 rounded-full flex items-center justify-center mb-3">
+                <i class="fas fa-music text-xl text-slate-500"></i>
+              </div>
+              <p class="text-slate-400">No tracks in queue</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Suggestions Section -->
+        <div id="suggestions-container">
+          <!-- SuggestionsSection component will be rendered here -->
         </div>
       </div>
     </div>
@@ -1534,6 +2341,59 @@ class WebPortalServer {
   <!-- Notification Area -->
   <div id="notification" class="notification"></div>
 
+  <!-- Create Playlist Modal -->
+  <div id="create-playlist-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3><i class="fas fa-plus"></i> Create New Playlist</h3>
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="playlist-name">Playlist Name</label>
+          <input type="text" id="playlist-name" placeholder="Enter playlist name..." maxlength="50" />
+        </div>
+        <div class="form-group">
+          <label for="playlist-description">Description (optional)</label>
+          <textarea id="playlist-description" placeholder="Enter playlist description..." maxlength="200"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="cancel-playlist-btn">Cancel</button>
+        <button class="btn btn-primary" id="save-playlist-btn">
+          <i class="fas fa-save"></i> Create Playlist
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add to Playlist Modal -->
+  <div id="add-to-playlist-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3><i class="fas fa-plus"></i> Add to Playlist</h3>
+        <button class="modal-close" id="add-modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="track-info" id="add-track-info">
+          <!-- Track info will be populated here -->
+        </div>
+        <div class="playlist-selection">
+          <h4>Select Playlist:</h4>
+          <div id="playlist-options" class="playlist-options">
+            <!-- Playlists will be loaded here -->
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="cancel-add-btn">Cancel</button>
+        <button class="btn btn-primary" id="confirm-add-btn" disabled>
+          <i class="fas fa-plus"></i> Add to Playlist
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const BASE = '${base}';
     let currentGuild = null;
@@ -1543,6 +2403,187 @@ class WebPortalServer {
     let currentTime = 0;
     let totalTime = 0;
     let loadedServers = null; // Cache loaded servers
+    let sessionId = null;
+    let currentUser = null;
+
+    // Session storage with expiration (30 days)
+    function setSessionWithExpiry(sessionId, userInfo = null) {
+      const now = new Date();
+      const expiryDate = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days
+      const sessionData = {
+        sessionId: sessionId,
+        expiry: expiryDate.getTime(),
+        timestamp: now.getTime(),
+        user: userInfo
+      };
+      localStorage.setItem('discord_session_data', JSON.stringify(sessionData));
+      
+      // Also store in sessionStorage for better reliability
+      sessionStorage.setItem('discord_session_temp', sessionId);
+    }
+
+    function getSessionWithExpiry() {
+      // First check sessionStorage for immediate session
+      const tempSession = sessionStorage.getItem('discord_session_temp');
+      if (tempSession) {
+        return { sessionId: tempSession, user: null };
+      }
+      
+      const sessionDataStr = localStorage.getItem('discord_session_data');
+      if (!sessionDataStr) return null;
+      
+      try {
+        const sessionData = JSON.parse(sessionDataStr);
+        const now = new Date().getTime();
+        
+        if (now > sessionData.expiry) {
+          // Session expired, remove it
+          clearSession();
+          return null;
+        }
+        
+        return {
+          sessionId: sessionData.sessionId,
+          user: sessionData.user || null
+        };
+      } catch (e) {
+        // Invalid data, clean up
+        clearSession();
+        return null;
+      }
+    }
+
+    function clearSession() {
+      localStorage.removeItem('discord_session_data');
+      localStorage.removeItem('discord_session'); // Clean old format too
+      sessionStorage.removeItem('discord_session_temp');
+      
+      // Also clear any other auth-related storage
+      sessionStorage.removeItem('discord_user_cache');
+    }
+
+    // Check for session in URL params or localStorage
+    const urlParams = new URLSearchParams(window.location.search);
+    const sessionFromUrl = urlParams.get('session');
+    if (sessionFromUrl) {
+      sessionId = sessionFromUrl;
+      setSessionWithExpiry(sessionId);
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else {
+      const sessionData = getSessionWithExpiry();
+      if (sessionData) {
+        sessionId = sessionData.sessionId;
+        // If we have cached user data, restore it immediately
+        if (sessionData.user) {
+          currentUser = sessionData.user;
+          updateUserDisplay();
+        }
+      } else {
+        // Also check old format and migrate if exists
+        const oldSession = localStorage.getItem('discord_session');
+        if (oldSession) {
+          sessionId = oldSession;
+          setSessionWithExpiry(sessionId);
+          localStorage.removeItem('discord_session'); // Remove old format
+        }
+      }
+    }
+
+    // Authentication functions
+    async function checkAuth() {
+      if (!sessionId) {
+        document.getElementById('login-overlay').style.display = 'flex';
+        return false;
+      }
+
+      try {
+        const response = await fetch(\`\${BASE}/api/user\`, {
+          headers: { 'X-Session-Id': sessionId }
+        });
+        
+        if (response.status === 401) {
+          clearSession();
+          sessionId = null;
+          document.getElementById('login-overlay').style.display = 'flex';
+          return false;
+        }
+
+        const data = await response.json();
+        if (data.user) {
+          currentUser = data.user;
+          updateUserDisplay();
+          // Store user data with session for faster future loads
+          setSessionWithExpiry(sessionId, data.user);
+          document.getElementById('login-overlay').style.display = 'none';
+          return true;
+        } else {
+          document.getElementById('login-overlay').style.display = 'flex';
+          return false;
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        
+        // If it's a network error, don't immediately clear session
+        if (error.name === 'TypeError' || error.message.includes('fetch')) {
+          console.log('Network error during auth check, keeping session for retry');
+          // Don't show login overlay immediately on network errors
+          return false;
+        }
+        
+        // For other errors, clear session and show login
+        clearSession();
+        sessionId = null;
+        currentUser = null;
+        document.getElementById('login-overlay').style.display = 'flex';
+        return false;
+      }
+    }
+
+    function updateUserDisplay() {
+      if (currentUser) {
+        const userInfo = document.getElementById('user-info');
+        const userName = document.getElementById('user-name');
+        const userAvatar = document.getElementById('user-avatar');
+        
+        userInfo.style.display = 'flex';
+        userName.textContent = currentUser.username;
+        
+        if (currentUser.avatar) {
+          userAvatar.src = \`https://cdn.discordapp.com/avatars/\${currentUser.id}/\${currentUser.avatar}.png?size=64\`;
+          userAvatar.style.display = 'block';
+        }
+      }
+    }
+
+    function loginWithDiscord() {
+      console.log('Initiating Discord login...');
+      // Store a flag to indicate login attempt
+      sessionStorage.setItem('discord_login_attempt', 'true');
+      window.location.href = \`\${BASE}/auth/discord\`;
+    }
+
+    async function logout() {
+      await fetch(\`\${BASE}/api/logout\`, {
+        method: 'POST',
+        headers: { 'X-Session-Id': sessionId }
+      });
+      clearSession();
+      sessionId = null;
+      currentUser = null;
+      document.getElementById('user-info').style.display = 'none';
+      document.getElementById('login-overlay').style.display = 'flex';
+    }
+
+    // Add session header to all API calls
+    const originalFetch = window.fetch;
+    window.fetch = function(url, options = {}) {
+      if (sessionId && url.startsWith(BASE)) {
+        options.headers = options.headers || {};
+        options.headers['X-Session-Id'] = sessionId;
+      }
+      return originalFetch.call(this, url, options);
+    };
 
     // DOM Elements
     const els = {
@@ -1587,12 +2628,98 @@ class WebPortalServer {
       window.history.pushState({}, '', url);
     }
 
+    // Debug function to check session status
+    function debugSessionStatus() {
+      const sessionData = getSessionWithExpiry();
+      console.log('Session Debug Info:', {
+        hasSessionId: !!sessionId,
+        hasCurrentUser: !!currentUser,
+        sessionData: sessionData,
+        localStorage: localStorage.getItem('discord_session_data'),
+        sessionStorage: sessionStorage.getItem('discord_session_temp')
+      });
+    }
+
+    // Auto-restore session if available
+    async function autoRestoreSession() {
+      if (sessionId && !currentUser) {
+        console.log('Auto-restoring session...');
+        const authSuccess = await checkAuth();
+        if (authSuccess) {
+          console.log('Session restored successfully');
+          showNotification('Welcome back! Session restored.', 'success');
+        }
+      }
+    }
+
+    // Make debug function available globally for troubleshooting
+    window.debugSessionStatus = debugSessionStatus;
+
     // Initialize
-    window.addEventListener('load', () => {
+    window.addEventListener('load', async () => {
+      console.log('🎵 Ative Music initializing...');
+      
+      // Debug session info
+      debugSessionStatus();
+      
+      // Check authentication first - try to restore session automatically
+      let authSuccess = false;
+      if (sessionId) {
+        console.log('Found session ID, attempting authentication...');
+        authSuccess = await checkAuth();
+        
+        // If we have a sessionId but auth failed, try one more time after a short delay
+        if (!authSuccess) {
+          console.log('Initial auth failed, retrying in 1 second...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          authSuccess = await checkAuth();
+        }
+      }
+      
+      if (authSuccess) {
+        console.log('✅ Authentication successful');
+        showNotification('Welcome back! Session restored.', 'success');
+      } else {
+        console.log('❌ Authentication failed or no session');
+      }
+      
       // ALWAYS show server selection first
       loadServersForSelection();
       updateStatus();
       setInterval(updateStatus, 1000);
+      
+      // Initialize suggestions when page loads
+      setTimeout(() => {
+        loadSuggestions();
+      }, 2000);
+      
+      // Set up periodic session validation (every 10 minutes)
+      setInterval(async () => {
+        // Only validate if page is visible and user is logged in
+        if (sessionId && currentUser && !document.hidden) {
+          console.log('🔄 Periodic session validation...');
+          const stillValid = await checkAuth();
+          if (!stillValid) {
+            showNotification('Session expired. Please log in again.', 'warning');
+          }
+        }
+      }, 10 * 60 * 1000); // 10 minutes
+      
+      // Handle page visibility changes - check auth when page becomes visible
+      document.addEventListener('visibilitychange', async () => {
+        if (!document.hidden && sessionId && currentUser) {
+          console.log('👁️ Page visible, validating session...');
+          await checkAuth();
+        }
+      });
+      
+      // Force auth check on focus
+      window.addEventListener('focus', async () => {
+        if (sessionId && !currentUser) {
+          console.log('🎯 Window focused, checking auth...');
+          await checkAuth();
+        }
+      });
     });
 
     // Helper Functions
@@ -1780,15 +2907,25 @@ class WebPortalServer {
       try {
         const response = await fetch(BASE + '/api/channels/' + currentGuild);
         const data = await response.json();
-        const channels = data.channels || data; // Handle both old and new response formats
+        
+        // Ensure we have an array of channels
+        let channels = [];
+        if (Array.isArray(data)) {
+          channels = data;
+        } else if (data && data.channels && Array.isArray(data.channels)) {
+          channels = data.channels;
+        }
         
         els.channel.innerHTML = '<option value="">Select voice channel...</option>';
-        channels.forEach(channel => {
-          const option = document.createElement('option');
-          option.value = channel.id;
-          option.textContent = channel.name + (channel.connected ? ' (🔌 Connected)' : '');
-          els.channel.appendChild(option);
-        });
+        
+        if (channels.length > 0) {
+          channels.forEach(channel => {
+            const option = document.createElement('option');
+            option.value = channel.id;
+            option.textContent = channel.name + (channel.connected ? ' (🔌 Connected)' : '');
+            els.channel.appendChild(option);
+          });
+        }
         
         // Auto-select connected channel if available, otherwise restore from localStorage
         if (data.connectedChannel) {
@@ -1866,6 +3003,9 @@ class WebPortalServer {
             <button class="queue-btn" onclick="queueTrack('\${track.url}')">
               <i class="fas fa-plus"></i>
             </button>
+            <button class="playlist-btn" onclick="showAddToPlaylistModal({title: '\${track.title.replace(/'/g, '\\\\\\'')}', author: '\${track.author.replace(/'/g, '\\\\\\'')}', url: '\${track.url}', thumbnail: '\${track.thumbnail || ''}', duration: '\${track.duration || ''}'})">
+              <i class="fas fa-heart"></i>
+            </button>
           </div>
         </div>
       \`).join('');
@@ -1889,6 +3029,19 @@ class WebPortalServer {
         // Update auto-play button status
         if (data.autoPlayEnabled !== undefined) {
           updateAutoplayButton(data.autoPlayEnabled);
+          
+          // Auto-fill queue if autoplay is enabled and queue is low
+          if (data.autoPlayEnabled && data.queue && data.queue.length <= 1 && data.currentTrack && data.isPlaying) {
+            // Only auto-fill every 30 seconds to avoid spam
+            const now = Date.now();
+            if (!window.lastAutoFill || (now - window.lastAutoFill) > 30000) {
+              window.lastAutoFill = now;
+              console.log('🎵 Auto-filling queue due to low count...');
+              setTimeout(() => {
+                control('fillqueue').catch(e => console.log('Auto-fill failed:', e.message));
+              }, 2000);
+            }
+          }
         }
 
         // Update player - always update to ensure sync across users
@@ -1912,11 +3065,30 @@ class WebPortalServer {
       }
     }
 
+    let lastUpdateTime = 0;
+    let localCurrentTime = 0;
+    let isLocalTracking = false;
+
     function updatePlayer(track, playing, current, total) {
       currentTrack = track;
+      const wasPlaying = isPlaying;
       isPlaying = playing;
-      currentTime = current || 0;
       totalTime = total || 0;
+
+      // Handle time tracking more smoothly
+      if (current !== undefined && current !== null) {
+        currentTime = current;
+        localCurrentTime = current;
+        lastUpdateTime = Date.now();
+        isLocalTracking = false; // Reset local tracking when we get server update
+      }
+
+      // If we're switching from paused to playing, preserve the time
+      if (!wasPlaying && playing && currentTime > 0) {
+        localCurrentTime = currentTime;
+        lastUpdateTime = Date.now();
+        isLocalTracking = true;
+      }
 
       els.playerTitle.textContent = track.title || 'No track playing';
       els.playerArtist.textContent = track.author || 'Select a song to play';
@@ -1932,10 +3104,22 @@ class WebPortalServer {
         '<i class="fas fa-pause"></i>' : 
         '<i class="fas fa-play"></i>';
 
-      // Update progress
-      const progressPercent = totalTime > 0 ? (currentTime / totalTime) * 100 : 0;
+      // Update progress display
+      updateProgressDisplay();
+    }
+
+    function updateProgressDisplay() {
+      let displayTime = currentTime;
+      
+      // Use local tracking for smoother updates when playing
+      if (isPlaying && isLocalTracking) {
+        const elapsed = (Date.now() - lastUpdateTime) / 1000;
+        displayTime = Math.min(localCurrentTime + elapsed, totalTime);
+      }
+      
+      const progressPercent = totalTime > 0 ? (displayTime / totalTime) * 100 : 0;
       els.progressFill.style.width = progressPercent + '%';
-      els.currentTime.textContent = formatTime(currentTime);
+      els.currentTime.textContent = formatTime(displayTime);
       els.totalTime.textContent = formatTime(totalTime);
     }
 
@@ -1977,12 +3161,31 @@ class WebPortalServer {
     // Tab switching functionality
     function switchTab(tabName) {
       // Remove active class from all tabs and content
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+        // Update styling for inactive tabs
+        btn.className = 'tab-btn flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-surface-600';
+      });
       document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       
       // Add active class to selected tab and content
-      document.getElementById('tab-' + tabName).classList.add('active');
-      document.getElementById(tabName + '-tab').classList.add('active');
+      const activeTabBtn = document.getElementById('tab-' + tabName);
+      const activeTabContent = document.getElementById(tabName + '-tab');
+      
+      if (activeTabBtn) {
+        activeTabBtn.classList.add('active');
+        // Update styling for active tab
+        activeTabBtn.className = 'tab-btn flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all duration-200 text-white bg-blue-600 shadow-sm';
+      }
+      
+      if (activeTabContent) {
+        activeTabContent.classList.add('active');
+      }
+      
+      // Load user playlists when switching to that tab
+      if (tabName === 'user-playlists') {
+        loadUserPlaylists();
+      }
     }
 
     // Playlist functionality
@@ -2177,8 +3380,598 @@ class WebPortalServer {
       }
     };
 
+    // User Playlist Functions
+    let userPlaylists = [];
+    let selectedTrackForPlaylist = null;
+
+    async function loadUserPlaylists() {
+      if (!currentUser) {
+        document.getElementById('user-playlists-list').innerHTML = \`
+          <div class="empty-playlists">
+            <i class="fas fa-sign-in-alt"></i>
+            <p>Please log in to view your playlists</p>
+            <small>You need to be logged in with Discord to create and manage playlists</small>
+          </div>
+        \`;
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + '/api/user/playlists', {
+          method: 'GET',
+          headers: headers()
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to load playlists');
+        }
+        
+        userPlaylists = await response.json();
+        displayUserPlaylists();
+      } catch (error) {
+        console.error('Error loading user playlists:', error);
+        showNotification('Failed to load playlists', 'error');
+        document.getElementById('user-playlists-list').innerHTML = \`
+          <div class="empty-playlists">
+            <i class="fas fa-exclamation-triangle"></i>
+            <p>Failed to load playlists</p>
+            <small>Please try again later</small>
+          </div>
+        \`;
+      }
+    }
+
+    function displayUserPlaylists() {
+      const container = document.getElementById('user-playlists-list');
+      
+      if (!userPlaylists || userPlaylists.length === 0) {
+        container.innerHTML = \`
+          <div class="empty-playlists">
+            <i class="fas fa-heart"></i>
+            <p>No playlists yet</p>
+            <small>Create your first playlist to get started!</small>
+          </div>
+        \`;
+        return;
+      }
+
+      container.innerHTML = userPlaylists.map(playlist => \`
+        <div class="playlist-card bg-surface-800 border border-surface-700 rounded-xl p-4 hover:border-blue-500 hover:-translate-y-1 hover:shadow-xl transition-all duration-300 group cursor-pointer" data-playlist-id="\${playlist.id}" onclick="viewPlaylistDetails('\${playlist.id}')">
+          <div class="flex items-center gap-4">
+            <!-- Icon -->
+            <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg group-hover:shadow-blue-500/25 transition-all duration-300 flex-shrink-0">
+              <i class="fas fa-music text-lg"></i>
+            </div>
+            
+            <!-- Details -->
+            <div class="flex-1 min-w-0">
+              <h4 class="font-semibold text-slate-100 text-base leading-tight truncate mb-1" title="\${playlist.name}">
+                \${playlist.name}
+              </h4>
+              <p class="text-sm text-slate-400 truncate">
+                \${playlist.tracks?.length || 0} track\${playlist.tracks?.length === 1 ? '' : 's'}
+              </p>
+              \${playlist.description ? \`
+                <p class="text-xs text-slate-500 truncate mt-1" title="\${playlist.description}">
+                  \${playlist.description}
+                </p>
+              \` : ''}
+            </div>
+            
+            <!-- Actions -->
+            <div class="playlist-actions flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+              <button 
+                class="playlist-action-btn w-9 h-9 bg-surface-700 hover:bg-blue-600 border border-surface-600 hover:border-blue-500 text-slate-300 hover:text-white rounded-lg flex items-center justify-center transition-all duration-200 hover:scale-105" 
+                onclick="event.stopPropagation(); playUserPlaylist('\${playlist.id}')" 
+                title="Play playlist" 
+                aria-label="Play \${playlist.name}">
+                <i class="fas fa-play text-sm"></i>
+              </button>
+              <button 
+                class="playlist-action-btn w-9 h-9 bg-surface-700 hover:bg-green-600 border border-surface-600 hover:border-green-500 text-slate-300 hover:text-white rounded-lg flex items-center justify-center transition-all duration-200 hover:scale-105" 
+                onclick="event.stopPropagation(); queueUserPlaylist('\${playlist.id}')" 
+                title="Add to queue" 
+                aria-label="Add \${playlist.name} to queue">
+                <i class="fas fa-plus text-sm"></i>
+              </button>
+              <button 
+                class="playlist-action-btn w-9 h-9 bg-surface-700 hover:bg-red-600 border border-surface-600 hover:border-red-500 text-slate-300 hover:text-white rounded-lg flex items-center justify-center transition-all duration-200 hover:scale-105" 
+                onclick="event.stopPropagation(); deleteUserPlaylist('\${playlist.id}', '\${playlist.name}')" 
+                title="Delete playlist" 
+                aria-label="Delete \${playlist.name}">
+                <i class="fas fa-trash text-sm"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      \`).join('');
+    }
+
+    // Playlist detail view state
+    let currentPlaylistView = null;
+    let playlistDetailInstance = null;
+    let suggestionsInstance = null;
+
+    function viewPlaylistDetails(playlistId) {
+      const playlist = userPlaylists.find(p => p.id === playlistId);
+      if (!playlist) {
+        showNotification('Playlist not found', 'error');
+        return;
+      }
+
+      // Hide main content and show detail view
+      const mainContent = document.getElementById('user-playlists-tab');
+      const detailContainer = document.getElementById('playlist-detail-container') || createPlaylistDetailContainer();
+      
+      mainContent.style.display = 'none';
+      detailContainer.style.display = 'block';
+      
+      // Render playlist detail view
+      if (playlistDetailInstance) {
+        componentManager.destroy(playlistDetailInstance.instanceId);
+      }
+      
+      const { instance, instanceId } = componentManager.render('PlaylistDetailView', detailContainer, {
+        playlist: playlist,
+        onBack: () => {
+          mainContent.style.display = 'block';
+          detailContainer.style.display = 'none';
+          currentPlaylistView = null;
+        },
+        onPlaySong: (track, index) => {
+          console.log('Playing song:', track.title || track.name);
+          showNotification(\`Playing: \${track.title || track.name}\`, 'info');
+          // TODO: Implement actual play functionality
+        },
+        onQueueSong: (track) => {
+          console.log('Queuing song:', track.title || track.name);
+          showNotification(\`Added to queue: \${track.title || track.name}\`, 'success');
+          // TODO: Implement actual queue functionality
+        },
+        onRemoveSong: (track, index) => {
+          // Remove song from playlist
+          playlist.tracks.splice(index, 1);
+          playlistDetailInstance.instance.updatePlaylist(playlist);
+          showNotification(\`Removed: \${track.title || track.name}\`, 'success');
+          // TODO: Save to backend
+        },
+        onPlayAll: (playlist) => {
+          console.log('Playing all songs in playlist:', playlist.name);
+          showNotification(\`Playing all songs from \${playlist.name}\`, 'info');
+          // TODO: Implement actual play all functionality
+        },
+        onShuffleAll: (playlist) => {
+          console.log('Shuffling playlist:', playlist.name);
+          showNotification(\`Shuffling \${playlist.name}\`, 'info');
+          // TODO: Implement actual shuffle functionality
+        }
+      });
+      
+      playlistDetailInstance = { instance, instanceId };
+      currentPlaylistView = playlistId;
+    }
+
+    function createPlaylistDetailContainer() {
+      const container = document.createElement('div');
+      container.id = 'playlist-detail-container';
+      container.className = 'playlist-detail-container';
+      container.style.display = 'none';
+      
+      // Insert after the user playlists tab
+      const userPlaylistsTab = document.getElementById('user-playlists-tab');
+      userPlaylistsTab.parentNode.insertBefore(container, userPlaylistsTab.nextSibling);
+      
+      return container;
+    }
+
+    // Suggestions functionality
+    function loadSuggestions() {
+      // Mock suggestions for now - in real app, this would come from API
+      const mockSuggestions = [
+        {
+          title: "Blinding Lights",
+          artist: "The Weeknd",
+          duration: "3:20",
+          thumbnail: null,
+          url: "https://example.com/song1"
+        },
+        {
+          title: "Watermelon Sugar",
+          artist: "Harry Styles", 
+          duration: "2:54",
+          thumbnail: null,
+          url: "https://example.com/song2"
+        },
+        {
+          title: "Levitating",
+          artist: "Dua Lipa",
+          duration: "3:23",
+          thumbnail: null,
+          url: "https://example.com/song3"
+        },
+        {
+          title: "Good 4 U",
+          artist: "Olivia Rodrigo",
+          duration: "2:58",
+          thumbnail: null,
+          url: "https://example.com/song4"
+        },
+        {
+          title: "Stay",
+          artist: "The Kid LAROI, Justin Bieber",
+          duration: "2:21",
+          thumbnail: null,
+          url: "https://example.com/song5"
+        }
+      ];
+
+      const suggestionsContainer = document.getElementById('suggestions-container') || createSuggestionsContainer();
+      
+      if (suggestionsInstance) {
+        suggestionsInstance.instance.setLoading(true);
+      }
+      
+      // Simulate loading delay
+      setTimeout(() => {
+        if (suggestionsInstance) {
+          componentManager.destroy(suggestionsInstance.instanceId);
+        }
+        
+        const { instance, instanceId } = componentManager.render('SuggestionsSection', suggestionsContainer, {
+          suggestions: mockSuggestions,
+          loading: false,
+          onPlaySong: (song) => {
+            console.log('Playing suggested song:', song.title);
+            showNotification(\`Playing: \${song.title}\`, 'info');
+            // TODO: Implement actual play functionality
+          },
+          onQueueSong: (song) => {
+            console.log('Queuing suggested song:', song.title);
+            showNotification(\`Added to queue: \${song.title}\`, 'success');
+            // TODO: Implement actual queue functionality
+          },
+          onAddToPlaylist: (song) => {
+            // Show playlist selection modal
+            showAddToPlaylistModal(song);
+          },
+          onRefresh: () => {
+            loadSuggestions();
+          }
+        });
+        
+        suggestionsInstance = { instance, instanceId };
+      }, 1000);
+    }
+
+    function createSuggestionsContainer() {
+      // Use the existing suggestions container from the new layout
+      let container = document.getElementById('suggestions-container');
+      if (!container) {
+        // Fallback: create and add to content area if not found
+        container = document.createElement('div');
+        container.id = 'suggestions-container';
+        container.className = 'mt-8';
+        
+        const contentArea = document.querySelector('.flex-1.overflow-y-auto');
+        if (contentArea) {
+          const lastChild = contentArea.lastElementChild;
+          if (lastChild) {
+            lastChild.appendChild(container);
+          }
+        }
+      }
+      
+      return container;
+    }
+
+    function showAddToPlaylistModal(song) {
+      if (userPlaylists.length === 0) {
+        showNotification('Create a playlist first to add songs', 'warning');
+        return;
+      }
+      
+      // Simple playlist selection for now
+      const playlistNames = userPlaylists.map(p => p.name);
+      const selectedPlaylist = prompt(\`Add "\${song.title}" to which playlist?\\n\\nAvailable playlists:\\n\${playlistNames.join('\\n')}\`);
+      
+      if (selectedPlaylist) {
+        const playlist = userPlaylists.find(p => p.name === selectedPlaylist);
+        if (playlist) {
+          // Add song to playlist
+          if (!playlist.tracks) {
+            playlist.tracks = [];
+          }
+          playlist.tracks.push(song);
+          showNotification(\`Added "\${song.title}" to \${playlist.name}\`, 'success');
+          // TODO: Save to backend
+        } else {
+          showNotification('Playlist not found', 'error');
+        }
+      }
+    }
+
+    async function createPlaylist() {
+      const name = document.getElementById('playlist-name').value.trim();
+      const description = document.getElementById('playlist-description').value.trim();
+      
+      if (!name) {
+        showNotification('Please enter a playlist name', 'error');
+        return;
+      }
+      
+      if (!currentUser) {
+        showNotification('Please log in to create playlists', 'error');
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + '/api/user/playlists', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            name,
+            description,
+            tracks: []
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to create playlist');
+        }
+        
+        const newPlaylist = await response.json();
+        userPlaylists.unshift(newPlaylist);
+        displayUserPlaylists();
+        closeCreatePlaylistModal();
+        showNotification(\`Playlist "\${name}" created successfully!\`, 'success');
+      } catch (error) {
+        console.error('Error creating playlist:', error);
+        showNotification('Failed to create playlist', 'error');
+      }
+    }
+
+    async function deleteUserPlaylist(playlistId, playlistName) {
+      if (!confirm(\`Are you sure you want to delete the playlist "\${playlistName}"?\`)) {
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + \`/api/user/playlists/\${playlistId}\`, {
+          method: 'DELETE',
+          headers: headers()
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to delete playlist');
+        }
+        
+        userPlaylists = userPlaylists.filter(p => p.id !== playlistId);
+        displayUserPlaylists();
+        showNotification(\`Playlist "\${playlistName}" deleted\`, 'success');
+      } catch (error) {
+        console.error('Error deleting playlist:', error);
+        showNotification('Failed to delete playlist', 'error');
+      }
+    }
+
+    async function playUserPlaylist(playlistId) {
+      const playlist = userPlaylists.find(p => p.id === playlistId);
+      if (!playlist || !playlist.tracks || playlist.tracks.length === 0) {
+        showNotification('Playlist is empty', 'error');
+        return;
+      }
+
+      if (!currentGuild || !currentChannel) {
+        showNotification('Please select a server and channel first', 'error');
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + '/api/playlist/play', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            guildId: currentGuild,
+            channelId: currentChannel,
+            tracks: playlist.tracks
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+          showNotification(\`Playing playlist: \${playlist.name}\`, 'success');
+          updateStatus();
+        } else {
+          showNotification(result.error || 'Failed to play playlist', 'error');
+        }
+      } catch (error) {
+        showNotification('Failed to play playlist', 'error');
+      }
+    }
+
+    async function queueUserPlaylist(playlistId) {
+      const playlist = userPlaylists.find(p => p.id === playlistId);
+      if (!playlist || !playlist.tracks || playlist.tracks.length === 0) {
+        showNotification('Playlist is empty', 'error');
+        return;
+      }
+
+      if (!currentGuild || !currentChannel) {
+        showNotification('Please select a server and channel first', 'error');
+        return;
+      }
+
+      try {
+        const response = await fetch(BASE + '/api/playlist/queue', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            guildId: currentGuild,
+            channelId: currentChannel,
+            tracks: playlist.tracks
+          })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+          showNotification(\`Added \${playlist.tracks.length} tracks from "\${playlist.name}" to queue!\`, 'success');
+          updateStatus();
+        } else {
+          showNotification(result.error || 'Failed to queue playlist', 'error');
+        }
+      } catch (error) {
+        showNotification('Failed to queue playlist', 'error');
+      }
+    }
+
+    function showCreatePlaylistModal() {
+      document.getElementById('playlist-name').value = '';
+      document.getElementById('playlist-description').value = '';
+      document.getElementById('create-playlist-modal').style.display = 'flex';
+    }
+
+    function closeCreatePlaylistModal() {
+      document.getElementById('create-playlist-modal').style.display = 'none';
+    }
+
+    function showAddToPlaylistModal(trackData) {
+      if (!currentUser) {
+        showNotification('Please log in to add tracks to playlists', 'error');
+        return;
+      }
+
+      selectedTrackForPlaylist = trackData;
+      
+      // Show track info
+      document.getElementById('add-track-info').innerHTML = \`
+        <div class="track-preview">
+          <div class="track-thumbnail">
+            \${trackData.thumbnail ? 
+              \`<img src="\${trackData.thumbnail}" alt="\${trackData.title}" />\` :
+              \`<i class="fas fa-music"></i>\`
+            }
+          </div>
+          <div class="track-details">
+            <strong>\${trackData.title}</strong>
+            <p>\${trackData.author}</p>
+          </div>
+        </div>
+      \`;
+      
+      // Load playlist options
+      const playlistOptions = document.getElementById('playlist-options');
+      if (userPlaylists.length === 0) {
+        playlistOptions.innerHTML = \`
+          <div class="no-playlists">
+            <p>No playlists available</p>
+            <button class="btn btn-small" onclick="closeAddToPlaylistModal(); showCreatePlaylistModal();">
+              <i class="fas fa-plus"></i> Create First Playlist
+            </button>
+          </div>
+        \`;
+      } else {
+        playlistOptions.innerHTML = userPlaylists.map(playlist => \`
+          <div class="playlist-option" onclick="selectPlaylistOption('\${playlist.id}')">
+            <div class="playlist-info">
+              <strong>\${playlist.name}</strong>
+              <small>\${playlist.tracks?.length || 0} tracks</small>
+            </div>
+            <i class="fas fa-heart"></i>
+          </div>
+        \`).join('');
+      }
+      
+      document.getElementById('add-to-playlist-modal').style.display = 'flex';
+      document.getElementById('confirm-add-btn').disabled = true;
+    }
+
+    function closeAddToPlaylistModal() {
+      document.getElementById('add-to-playlist-modal').style.display = 'none';
+      selectedTrackForPlaylist = null;
+    }
+
+    function selectPlaylistOption(playlistId) {
+      // Remove previous selection
+      document.querySelectorAll('.playlist-option').forEach(opt => opt.classList.remove('selected'));
+      
+      // Add selection to clicked option
+      event.target.closest('.playlist-option').classList.add('selected');
+      
+      // Enable confirm button
+      document.getElementById('confirm-add-btn').disabled = false;
+      document.getElementById('confirm-add-btn').onclick = () => addTrackToPlaylist(playlistId);
+    }
+
+    async function addTrackToPlaylist(playlistId) {
+      if (!selectedTrackForPlaylist) return;
+
+      const playlist = userPlaylists.find(p => p.id === playlistId);
+      const playlistName = playlist ? playlist.name : 'playlist';
+      const trackTitle = selectedTrackForPlaylist.title || 'Track'; // Store track title before it gets cleared
+      
+      // Show loading state
+      const confirmBtn = document.getElementById('confirm-add-btn');
+      const originalText = confirmBtn.innerHTML;
+      confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...';
+      confirmBtn.disabled = true;
+
+      try {
+        const response = await fetch(BASE + \`/api/user/playlists/\${playlistId}/tracks\`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({
+            track: selectedTrackForPlaylist
+          })
+        });
+        
+        if (response.ok) {
+          // Success case
+          try {
+            const updatedPlaylist = await response.json();
+            // Update local playlist data
+            const playlistIndex = userPlaylists.findIndex(p => p.id === playlistId);
+            if (playlistIndex !== -1) {
+              userPlaylists[playlistIndex] = updatedPlaylist;
+              displayUserPlaylists();
+            }
+          } catch (parseError) {
+            console.log('Response parse failed but track was added successfully');
+            // Update local data manually
+            if (playlist) {
+              if (!playlist.tracks) playlist.tracks = [];
+              playlist.tracks.push(selectedTrackForPlaylist);
+              displayUserPlaylists();
+            }
+          }
+          
+          closeAddToPlaylistModal();
+          showNotification('✅ Added "' + trackTitle + '" to ' + playlistName + '!', 'success');
+        } else {
+          // Server returned error
+          const errorText = await response.text();
+          throw new Error(errorText || 'Server error');
+        }
+      } catch (error) {
+        console.error('Error adding track to playlist:', error);
+        confirmBtn.innerHTML = originalText;
+        confirmBtn.disabled = false;
+        
+        if (error.message.includes('already exists') || error.message.includes('duplicate')) {
+          showNotification('"' + trackTitle + '" is already in ' + playlistName, 'warning');
+        } else {
+          showNotification('❌ Failed to add track to ' + playlistName + ': ' + error.message, 'error');
+        }
+      }
+    }
+
     // Make functions globally available
     window.selectServer = selectServer;
+    window.playUserPlaylist = playUserPlaylist;
+    window.queueUserPlaylist = queueUserPlaylist;
+    window.deleteUserPlaylist = deleteUserPlaylist;
+    window.showAddToPlaylistModal = showAddToPlaylistModal;
 
     // Player Functions
     window.playTrack = async (url, button) => {
@@ -2303,12 +4096,36 @@ class WebPortalServer {
     // Tab switching
     document.getElementById('tab-search').addEventListener('click', () => switchTab('search'));
     document.getElementById('tab-playlist').addEventListener('click', () => switchTab('playlist'));
+    document.getElementById('tab-user-playlists').addEventListener('click', () => switchTab('user-playlists'));
     
     // Playlist functionality
     document.getElementById('import-playlist-btn').addEventListener('click', importPlaylist);
     document.getElementById('playlist-url').addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
         importPlaylist();
+      }
+    });
+
+    // User playlist modal functionality
+    document.getElementById('create-playlist-btn').addEventListener('click', showCreatePlaylistModal);
+    document.getElementById('modal-close-btn').addEventListener('click', closeCreatePlaylistModal);
+    document.getElementById('cancel-playlist-btn').addEventListener('click', closeCreatePlaylistModal);
+    document.getElementById('save-playlist-btn').addEventListener('click', createPlaylist);
+    
+    // Add to playlist modal functionality
+    document.getElementById('add-modal-close-btn').addEventListener('click', closeAddToPlaylistModal);
+    document.getElementById('cancel-add-btn').addEventListener('click', closeAddToPlaylistModal);
+
+    // Close modals when clicking outside
+    document.getElementById('create-playlist-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'create-playlist-modal') {
+        closeCreatePlaylistModal();
+      }
+    });
+    
+    document.getElementById('add-to-playlist-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'add-to-playlist-modal') {
+        closeAddToPlaylistModal();
       }
     });
 
@@ -2334,6 +4151,12 @@ class WebPortalServer {
     
     els.btnAutoplay.addEventListener('click', async () => {
       try {
+        // Check if we have required values
+        if (!currentGuild || !currentChannel) {
+          showNotification('Please connect to a voice channel first', 'warning');
+          return;
+        }
+
         const response = await fetch(BASE + '/api/control', {
           method: 'POST',
           headers: headers(),
@@ -2353,6 +4176,7 @@ class WebPortalServer {
           showNotification(result.error || 'Failed to toggle auto-play', 'error');
         }
       } catch (error) {
+        console.error('Auto-play toggle error:', error);
         showNotification('Failed to toggle auto-play', 'error');
       }
     });
@@ -2381,6 +4205,26 @@ class WebPortalServer {
         } else {
           showNotification('Failed to clear queue', 'error');
         }
+      }
+    });
+
+    document.getElementById('btn-fill-queue').addEventListener('click', async () => {
+      try {
+        // Check if we have required values
+        if (!currentGuild || !currentChannel) {
+          showNotification('Please connect to a voice channel first', 'warning');
+          return;
+        }
+
+        const result = await control('fillqueue');
+        if (result && result.success) {
+          showNotification('Queue filled with recommendations!', 'success');
+        } else {
+          showNotification(result?.error || 'Failed to fill queue', 'error');
+        }
+      } catch (error) {
+        console.error('Fill queue error:', error);
+        showNotification('Failed to fill queue', 'error');
       }
     });
 
@@ -2467,7 +4311,10 @@ class WebPortalServer {
     connectToProgressStream();
 
     // Auto-refresh status more frequently for better sync
-    setInterval(updateStatus, 1000);
+    setInterval(() => {
+      updateStatus();
+      updateProgressDisplay(); // Update progress display for smooth timeline
+    }, 1000);
   </script>
 </body>
 </html>`;
@@ -2476,25 +4323,68 @@ class WebPortalServer {
     });
 
     // API Routes
-    this.app.get('/api/guilds', this.auth, (req, res) => {
+    this.app.get('/api/guilds', this.auth, async (req, res) => {
       try {
-        // Check if Discord client is ready and has guilds
-        if (this.bot.client && this.bot.client.guilds && this.bot.client.guilds.cache.size > 0) {
-          const guilds = this.bot.client.guilds.cache.map(guild => ({
-            id: guild.id,
-            name: guild.name,
-            memberCount: guild.memberCount,
-            iconURL: guild.iconURL({ size: 256, extension: 'png' }) || null
-          }));
-          res.json(guilds);
+        // Check if user is authenticated and get their guild list from Discord
+        if (req.user && req.user.access_token) {
+          try {
+            // Get user's guilds from Discord API
+            const userGuildsResponse = await axios.get('https://discord.com/api/users/@me/guilds', {
+              headers: { Authorization: `Bearer ${req.user.access_token}` }
+            });
+            
+            const userGuilds = userGuildsResponse.data;
+            const userGuildIds = new Set(userGuilds.map(g => g.id));
+            
+            // Filter bot guilds to only include ones the user is a member of
+            if (this.bot.client && this.bot.client.guilds && this.bot.client.guilds.cache.size > 0) {
+              const filteredGuilds = this.bot.client.guilds.cache
+                .filter(guild => userGuildIds.has(guild.id))
+                .map(guild => ({
+                  id: guild.id,
+                  name: guild.name,
+                  memberCount: guild.memberCount,
+                  iconURL: guild.iconURL({ size: 256, extension: 'png' }) || null
+                }));
+              
+              res.json(filteredGuilds);
+            } else {
+              res.json([]);
+            }
+          } catch (authError) {
+            console.error('Error fetching user guilds:', authError);
+            // Fall back to showing all bot guilds if auth fails
+            if (this.bot.client && this.bot.client.guilds && this.bot.client.guilds.cache.size > 0) {
+              const guilds = this.bot.client.guilds.cache.map(guild => ({
+                id: guild.id,
+                name: guild.name,
+                memberCount: guild.memberCount,
+                iconURL: guild.iconURL({ size: 256, extension: 'png' }) || null
+              }));
+              res.json(guilds);
+            } else {
+              res.json([]);
+            }
+          }
         } else {
-          // Return empty array or demo server when Discord is not connected
-          res.json([{
-            id: 'demo',
-            name: 'Demo Server (Discord Disconnected)',
-            memberCount: 0,
-            iconURL: null
-          }]);
+          // No authentication - show all bot guilds (backward compatibility)
+          if (this.bot.client && this.bot.client.guilds && this.bot.client.guilds.cache.size > 0) {
+            const guilds = this.bot.client.guilds.cache.map(guild => ({
+              id: guild.id,
+              name: guild.name,
+              memberCount: guild.memberCount,
+              iconURL: guild.iconURL({ size: 256, extension: 'png' }) || null
+            }));
+            res.json(guilds);
+          } else {
+            // Return demo server when Discord is not connected
+            res.json([{
+              id: 'demo',
+              name: 'Demo Server (Discord Disconnected)',
+              memberCount: 0,
+              iconURL: null
+            }]);
+          }
         }
       } catch (error) {
         console.error('Error in /api/guilds:', error);
@@ -2778,6 +4668,14 @@ class WebPortalServer {
                 musicManager.clearQueue(true); // true indicates user-initiated
                 result = { success: true, message: 'Queue cleared successfully' };
               }
+              else if (action === 'fillqueue') {
+                if (musicManager.autoPlayEnabled) {
+                  musicManager.fillQueueWithRecommendations(5, {});
+                  result = { success: true, message: 'Queue filled with recommendations' };
+                } else {
+                  result = { success: false, error: 'Auto-play must be enabled to fill queue' };
+                }
+              }
             } else {
               result = { success: false, error: 'No active music session' };
             }
@@ -2863,9 +4761,21 @@ class WebPortalServer {
               status.currentTrack = musicManager.currentTrack;
               status.isPlaying = musicManager.isPlaying && !musicManager.isPaused;
               
-              // Calculate current time based on track start time
-              if (musicManager.trackStartTime && musicManager.isPlaying && !musicManager.isPaused) {
-                status.currentTime = Math.floor((Date.now() - musicManager.trackStartTime) / 1000);
+              // Calculate current time based on track start time and pause state
+              if (musicManager.trackStartTime && musicManager.currentTrack) {
+                if (musicManager.isPaused && typeof musicManager._lastPositionAtPauseMs === 'number') {
+                  // Use the position where we paused
+                  status.currentTime = Math.floor(musicManager._lastPositionAtPauseMs / 1000);
+                } else if (musicManager.isPlaying && !musicManager.isPaused) {
+                  // Calculate current time from track start
+                  status.currentTime = Math.floor((Date.now() - musicManager.trackStartTime) / 1000);
+                } else if (musicManager.isPaused) {
+                  // When paused but no explicit pause time, calculate from start time
+                  const pausedPosition = Date.now() - musicManager.trackStartTime;
+                  status.currentTime = Math.floor(pausedPosition / 1000);
+                } else {
+                  status.currentTime = 0;
+                }
               } else {
                 status.currentTime = 0;
               }
@@ -2967,6 +4877,232 @@ class WebPortalServer {
     }
   }
 
+  setupAuthRoutes() {
+    // Discord OAuth login route
+    this.app.get('/auth/discord', (req, res) => {
+      if (!this.discordClientId) {
+        return res.status(500).json({ error: 'Discord OAuth not configured. Please set DISCORD_CLIENT_ID in your .env file.' });
+      }
+      
+      const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${this.discordClientId}&redirect_uri=${encodeURIComponent(this.discordRedirectUri)}&response_type=code&scope=identify%20guilds`;
+      res.redirect(authUrl);
+    });
+
+    // Discord OAuth callback route
+    this.app.get('/auth/discord/callback', async (req, res) => {
+      try {
+        const { code } = req.query;
+        if (!code) {
+          return res.status(400).json({ error: 'No authorization code provided' });
+        }
+
+        // Exchange code for access token
+        const params = new URLSearchParams();
+        params.append('client_id', this.discordClientId);
+        params.append('client_secret', this.discordClientSecret);
+        params.append('grant_type', 'authorization_code');
+        params.append('code', code);
+        params.append('redirect_uri', this.discordRedirectUri);
+        
+        const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', params, {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+
+        const { access_token } = tokenResponse.data;
+
+        // Get user info
+        const userResponse = await axios.get('https://discord.com/api/users/@me', {
+          headers: { Authorization: `Bearer ${access_token}` }
+        });
+
+        const user = userResponse.data;
+        
+        // Create session
+        const sessionId = Math.random().toString(36).substring(2, 15);
+        this.sessions.set(sessionId, {
+          discordUser: {
+            id: user.id,
+            username: user.username,
+            discriminator: user.discriminator,
+            avatar: user.avatar,
+            access_token: access_token
+          }
+        });
+
+        // Redirect back to main page with session
+        res.redirect(`/?session=${sessionId}`);
+      } catch (error) {
+        console.error('Discord OAuth error:', error);
+        res.status(500).json({ error: 'Authentication failed' });
+      }
+    });
+
+    // Get current user info
+    this.app.get('/api/user', this.auth, (req, res) => {
+      if (req.user) {
+        const { access_token, ...userInfo } = req.user;
+        res.json({ user: userInfo });
+      } else {
+        res.json({ user: null });
+      }
+    });
+
+    // Logout route
+    this.app.post('/api/logout', (req, res) => {
+      const sessionId = req.headers['x-session-id'];
+      if (sessionId && this.sessions.has(sessionId)) {
+        this.sessions.delete(sessionId);
+      }
+      res.json({ success: true });
+    });
+
+    // User-specific playlist routes
+    this.app.get('/api/user/playlists', this.auth, async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        res.json(playlists || []);
+      } catch (error) {
+        console.error('Error fetching user playlists:', error);
+        res.status(500).json({ error: 'Failed to fetch playlists' });
+      }
+    });
+
+    this.app.post('/api/user/playlists', this.auth, async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const { name, description, tracks = [] } = req.body;
+        if (!name) {
+          return res.status(400).json({ error: 'Playlist name required' });
+        }
+
+        const playlist = {
+          id: Math.random().toString(36).substring(2, 15),
+          name,
+          description: description || '',
+          tracks,
+          createdBy: req.user.id,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        await firebaseService.saveUserPlaylist(req.user.id, playlist);
+        res.json(playlist);
+      } catch (error) {
+        console.error('Error creating user playlist:', error);
+        res.status(500).json({ error: 'Failed to create playlist' });
+      }
+    });
+
+    this.app.put('/api/user/playlists/:playlistId', this.auth, async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const { playlistId } = req.params;
+        const { name, description, tracks } = req.body;
+
+        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlist = playlists?.find(p => p.id === playlistId);
+
+        if (!playlist) {
+          return res.status(404).json({ error: 'Playlist not found' });
+        }
+
+        if (playlist.createdBy !== req.user.id) {
+          return res.status(403).json({ error: 'Not authorized to edit this playlist' });
+        }
+
+        const updatedPlaylist = {
+          ...playlist,
+          name: name || playlist.name,
+          description: description !== undefined ? description : playlist.description,
+          tracks: tracks || playlist.tracks,
+          updatedAt: new Date().toISOString()
+        };
+
+        await firebaseService.updateUserPlaylist(req.user.id, updatedPlaylist);
+        res.json(updatedPlaylist);
+      } catch (error) {
+        console.error('Error updating user playlist:', error);
+        res.status(500).json({ error: 'Failed to update playlist' });
+      }
+    });
+
+    this.app.delete('/api/user/playlists/:playlistId', this.auth, async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: 'User not authenticated' });
+        }
+
+        const { playlistId } = req.params;
+        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlist = playlists?.find(p => p.id === playlistId);
+
+        if (!playlist) {
+          return res.status(404).json({ error: 'Playlist not found' });
+        }
+
+        if (playlist.createdBy !== req.user.id) {
+          return res.status(403).json({ error: 'Not authorized to delete this playlist' });
+        }
+
+        await firebaseService.deleteUserPlaylist(req.user.id, playlistId);
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Error deleting user playlist:', error);
+        res.status(500).json({ error: 'Failed to delete playlist' });
+      }
+    });
+
+    // Add track to playlist
+    this.app.post('/api/user/playlists/:playlistId/tracks', this.auth, async (req, res) => {
+      try {
+        const { playlistId } = req.params;
+        const { track } = req.body;
+
+        if (!track) {
+          return res.status(400).json({ error: 'Track data is required' });
+        }
+
+        // Get current playlists to find the one to update
+        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlist = playlists.find(p => p.id === playlistId);
+
+        if (!playlist) {
+          return res.status(404).json({ error: 'Playlist not found' });
+        }
+
+        // Check ownership
+        if (playlist.createdBy !== req.user.id) {
+          return res.status(403).json({ error: 'Not authorized to modify this playlist' });
+        }
+
+        // Add the track to the playlist
+        const tracks = playlist.tracks || [];
+        tracks.push(track);
+
+        const updatedPlaylist = {
+          ...playlist,
+          tracks
+        };
+
+        await firebaseService.updateUserPlaylist(req.user.id, updatedPlaylist);
+        res.json(updatedPlaylist);
+      } catch (error) {
+        console.error('Error adding track to playlist:', error);
+        res.status(500).json({ error: 'Failed to add track to playlist' });
+      }
+    });
+  }
+
   setupPlaylistRoutes() {
     // Playlist API endpoints
     this.app.post('/api/playlist/import', this.auth, async (req, res) => {
@@ -3054,7 +5190,10 @@ class WebPortalServer {
           reject(err);
         } else {
           console.log(`🌐 Web portal listening on http://${this.host}:${this.port}`);
-          console.log(`🕸️ Web portal started: http://${this.publicHost}:${this.publicPort}`);
+          const publicUrl = this.publicHost && this.publicHost !== 'localhost' 
+            ? `http://${this.publicHost}:${this.publicPort}` 
+            : `http://localhost:${this.port}`;
+          console.log(`🕸️ Web portal started: ${publicUrl}`);
           resolve();
         }
       });
