@@ -187,6 +187,11 @@ class MusicManager {
         
         console.log(`📝 Added to queue: ${track.title} (Position: ${this.queue.length})`);
 
+        // Immediate prefetch trigger if we're currently playing
+        if (this.isPlaying && this.queue.length > 1) {
+            setTimeout(() => this.schedulePrefetchNext(), 100); // Trigger prefetch almost immediately
+        }
+
         // Background resolution/prefetch for Spotify tracks near the front
         try {
             const idx = (position === -1) ? (this.queue.length - 1) : position;
@@ -450,14 +455,18 @@ class MusicManager {
                 clearTimeout(this._prefetchTimer);
                 this._prefetchTimer = null;
             }
-            const lead = Number(config.settings.prefetchLeadMs || 30000);
-            const depth = Math.max(1, Math.min(5, Number(config.settings.prefetchDepth || 2)));
+            const lead = Number(config.settings.prefetchLeadMs || 15000); // Reduced from 30s to 15s
+            const depth = Math.max(1, Math.min(5, Number(config.settings.prefetchDepth || 3))); // Increased depth
             const durationMs = Number(this.currentTrack?.durationMS || this.parseDuration(this.currentTrack?.duration || '0:00'));
             const elapsed = Math.max(0, Date.now() - (this.trackStartTime || Date.now()));
             const msUntilPrefetch = Math.max(0, durationMs - elapsed - lead);
 
             const prefetchTrack = async (t) => {
                 if (!t || !t.url) return;
+                // Ensure track still in queue and manager still active
+                try {
+                    if (!this.queue.includes(t)) return;
+                } catch {}
                 if (this._prefetched.has(t.url)) return;
                 try {
                     if (t.source === 'spotify') {
@@ -686,14 +695,31 @@ class MusicManager {
     }
 
     clearQueue(userInitiated = false) {
+        // Immediately stop playback to avoid race conditions with retries/prefetch
+        this.stop(Boolean(userInitiated));
+
+        // Reset queue state
         this.queue = [];
         this.currentTrackIndex = -1;
         if (this._prefetchTimer) {
             clearTimeout(this._prefetchTimer);
             this._prefetchTimer = null;
         }
-        
-        // Disable auto-play if user manually cleared
+        // Clear any prefetched flags and scheduled deletes
+        try { this._prefetched?.clear?.(); } catch {}
+        try {
+            if (this._scheduledDeletes && this._scheduledDeletes.size > 0) {
+                for (const [, t] of this._scheduledDeletes.entries()) {
+                    try { clearTimeout(t); } catch {}
+                }
+                this._scheduledDeletes.clear();
+            }
+        } catch {}
+
+        // Cancel any active audio downloads/conversions for this context
+        try { this.sourceHandlers?.audioProcessor?.cancelByContext(this.guildId, this.channelId); } catch {}
+
+        // Disable auto-play if user manually cleared (already handled by stop(true), but keep explicit state)
         if (userInitiated) {
             this.autoPlayEnabled = false;
             console.log('🗑️ Queue cleared by user - auto-play disabled');
@@ -1076,6 +1102,8 @@ class MusicManager {
             }
         }
         
+        // Persist setting change
+        try { this.saveQueue(); } catch {}
         return enabled;
     }
 
@@ -1351,7 +1379,7 @@ class MusicManager {
             }
             
             // If this specific track has failed too many times, skip it
-            if (trackErrorCount >= 5) {
+            if (trackErrorCount >= 3) {
                 console.log(`🔄 Track "${this.currentTrack?.title}" failed ${trackErrorCount} times - skipping to next`);
                 
                 // Try next track if available
@@ -1398,14 +1426,25 @@ class MusicManager {
             } else {
                 // Check if this is a DRM or persistent streaming error - skip immediately
                 const currentTrack = this.getCurrentTrack();
+                const playDuration = Date.now() - (this.trackStartTime || 0);
+                const isCorruptedCache = playDuration < 100 && trackErrorCount >= 2; // Very short playback suggests corrupted cache
+                
                 const shouldSkipImmediately = currentTrack && (
                     currentTrack.lastError?.includes('DRM protected') ||
-                    (currentTrack.lastError?.includes('Status code: 403') && trackErrorCount >= 3) ||
-                    trackErrorCount >= 4 // Skip after 4 failed attempts
+                    (currentTrack.lastError?.includes('Status code: 403') && trackErrorCount >= 2) ||
+                    trackErrorCount >= 3 || // Skip after 3 failed attempts
+                    isCorruptedCache // Skip tracks with corrupted cache files
                 );
                 
                 if (shouldSkipImmediately) {
                     console.log(`⏭️ Skipping problematic track immediately: ${currentTrack.title}`);
+                    
+                    // If this is a corrupted cache issue, delete the cache file
+                    if (isCorruptedCache && this.sourceHandlers?.audioProcessor) {
+                        console.log(`🗑️ Deleting corrupted cache for: ${currentTrack.title}`);
+                        this.sourceHandlers.audioProcessor.deleteCachedByUrl(currentTrack.url);
+                    }
+                    
                     setTimeout(async () => {
                         try {
                             await this.skip();

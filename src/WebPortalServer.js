@@ -2130,6 +2130,17 @@ class WebPortalServer {
           </button>
         </div>
       </div>
+      
+      <!-- Environment Notices -->
+      <div id="cookies-warning" class="mt-4 hidden px-4 py-3 rounded-lg border text-amber-200 bg-amber-900/20 border-amber-600/40 text-sm">
+        <div class="flex items-start gap-3">
+          <i class="fas fa-cookie-bite pt-0.5"></i>
+          <div>
+            <div class="font-medium">YouTube cookies missing or invalid</div>
+            <div class="opacity-80">Add a valid cookies.txt (Netscape format) to improve playback reliability. See YOUTUBE-FIX.md.</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Main Content -->
@@ -3044,6 +3055,14 @@ class WebPortalServer {
           }
         }
 
+        // Show cookies warning when not valid
+        try {
+          const warn = document.getElementById('cookies-warning');
+          if (warn) {
+            warn.classList.toggle('hidden', Boolean(data.cookiesValid));
+          }
+        } catch (_) {}
+
         // Update player - always update to ensure sync across users
         if (data.currentTrack) {
           updatePlayer(data.currentTrack, data.isPlaying, data.currentTime, data.totalTime);
@@ -3135,7 +3154,7 @@ class WebPortalServer {
       }
 
       els.queue.innerHTML = queue.map((track, index) => \`
-        <div class="queue-item \${index === currentIndex ? 'current' : ''}">
+        <div class="queue-item \${index === currentIndex ? 'current' : ''}" data-url="\${track.url || ''}">
           <div style="width: 40px; height: 40px; background: var(--surface); border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
             \${track.thumbnail ? 
               \`<img src="\${track.thumbnail}" style="width: 100%; height: 100%; object-fit: cover;" />\` :
@@ -3143,7 +3162,10 @@ class WebPortalServer {
             }
           </div>
           <div style="flex: 1;">
-            <div style="font-weight: 500; color: var(--text-primary);">\${track.title}</div>
+            <div style="font-weight: 500; color: var(--text-primary); display:flex; align-items:center; gap:6px;">
+              <span>\${track.title}</span>
+              <span class="q-indicator" style="display:none; color:#93c5fd; font-size:0.9em;"><i class="fas fa-circle-notch fa-spin"></i></span>
+            </div>
             <div style="font-size: 0.875rem; color: var(--text-secondary);">\${track.author}</div>
           </div>
           <div style="display: flex; gap: 0.5rem;">
@@ -3156,6 +3178,34 @@ class WebPortalServer {
           </div>
         </div>
       \`).join('');
+      refreshQueueIndicators();
+    }
+
+    // Track prefetched URLs and their progress/status for inline indicators
+    window._prefetchingUrls = window._prefetchingUrls || new Set();
+    window._prefetchMeta = window._prefetchMeta || {}; // url -> { progress, status }
+
+    function refreshQueueIndicators() {
+      try {
+        const items = els.queue.querySelectorAll('.queue-item');
+        items.forEach((el) => {
+          const url = el.getAttribute('data-url') || '';
+          const badge = el.querySelector('.q-indicator');
+          if (!badge) return;
+          const active = window._prefetchingUrls.has(url);
+          if (active) {
+            const meta = window._prefetchMeta[url] || {};
+            const pct = Number(meta.progress || 0);
+            badge.style.display = 'inline-flex';
+            badge.title = String(meta.status || 'Preparing...');
+            badge.innerHTML = \`<i class="fas fa-circle-notch fa-spin"></i> \${Math.max(0, Math.min(100, Math.floor(pct)))}%\`;
+          } else {
+            badge.style.display = 'none';
+            badge.removeAttribute('title');
+            badge.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
+          }
+        });
+      } catch (_) {}
     }
 
     // Tab switching functionality
@@ -4188,8 +4238,8 @@ class WebPortalServer {
         const response = await fetch(BASE + '/api/status?' + params.toString());
         if (response.ok) {
           const status = await response.json();
-          if (status.currentTrack && status.autoPlayEnabled !== undefined) {
-            updateAutoplayButton(status.autoPlayEnabled);
+          if (status && status.autoPlayEnabled !== undefined) {
+            updateAutoplayButton(Boolean(status.autoPlayEnabled));
           }
         }
       } catch (error) {
@@ -4283,7 +4333,7 @@ class WebPortalServer {
       if (data.guildId && currentGuild && data.guildId !== currentGuild) return;
       if (data.channelId && currentChannel && data.channelId !== currentChannel) return;
 
-      const isCurrentTrack = currentTrack && data.title && (currentTrack.title === data.title);
+      const isCurrentTrack = (data.current === true) || (currentTrack && data.title && (currentTrack.title === data.title));
       const isPrefetch = Boolean(data.prefetch) || !isCurrentTrack;
 
       if (!isProcessingTrack && data.progress < 100) {
@@ -4294,10 +4344,50 @@ class WebPortalServer {
       
       // Visual hint when prefetching vs preparing the current track
       titleEl.textContent = (isPrefetch ? 'Warming next track: ' : '') + (data.title || 'Processing track...');
-      statusEl.textContent = (isPrefetch ? 'Prefetching • ' : '') + (data.status || 'Processing...');
+      const etaText = (typeof data.etaSeconds === 'number' && data.etaSeconds >= 1) ? \` • \${formatEta(data.etaSeconds)} left\` : '';
+      statusEl.textContent = (isPrefetch ? 'Prefetching • ' : '') + (data.status || 'Processing...') + etaText;
       fillEl.style.width = data.progress + '%';
-      percentEl.textContent = data.progress + '%';
+      percentEl.textContent = \`\${data.progress}%\`;
       
+      // Manage queue-item inline indicators for prefetch tasks
+      if (data.url && isPrefetch) {
+        if (data.progress < 100) {
+          window._prefetchingUrls.add(data.url);
+          window._prefetchMeta[data.url] = { progress: data.progress, status: data.status };
+        } else {
+          window._prefetchingUrls.delete(data.url);
+          try { delete window._prefetchMeta[data.url]; } catch (_) {}
+        }
+        refreshQueueIndicators();
+      }
+
+      // Toggle small spinner next to current track title
+      try {
+        const indicatorId = 'player-download-indicator';
+        let ind = document.getElementById(indicatorId);
+        if (!ind) {
+          const titleNode = els.playerTitle;
+          const span = document.createElement('span');
+          span.id = indicatorId;
+          span.style.marginLeft = '6px';
+          span.style.color = '#93c5fd';
+          span.style.display = 'none';
+          span.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> <span class="player-dl-pct">0%</span>';
+          titleNode.parentNode && titleNode.parentNode.insertBefore(span, titleNode.nextSibling);
+        }
+        ind = document.getElementById(indicatorId);
+        if (isCurrentTrack && data.progress < 100) {
+          ind.style.display = 'inline-flex';
+          // Update percent and tooltip
+          const pctEl = ind.querySelector('.player-dl-pct');
+          if (pctEl) pctEl.textContent = \`\${Math.max(0, Math.min(100, Math.floor(data.progress)))}%\`;
+          ind.title = String(data.status || 'Preparing...');
+        } else if (data.progress >= 100) {
+          ind.style.display = 'none';
+          ind.removeAttribute('title');
+        }
+      } catch (_) {}
+
       if (data.progress >= 100) {
         // Hide progress bar after a short delay
         setTimeout(() => {
@@ -4305,6 +4395,19 @@ class WebPortalServer {
           isProcessingTrack = false;
         }, 1500);
       }
+    }
+
+    function formatEta(totalSeconds) {
+      const s = Math.max(0, Math.floor(totalSeconds));
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      if (m >= 60) {
+        const h = Math.floor(m / 60);
+        const mm = m % 60;
+        return \`\${h}h \${mm}m\`;
+      }
+      if (m > 0) return \`\${m}m \${sec}s\`;
+      return \`\${sec}s\`;
     }
 
     // Connect to progress stream on page load
@@ -4718,6 +4821,8 @@ class WebPortalServer {
     this.app.get('/api/status', this.auth, (req, res) => {
       try {
         const { guildId, channelId } = req.query || {};
+        const fs = require('fs');
+        const path = require('path');
         // Prefer explicit guild/channel
         let connection = null;
         if (guildId && channelId) {
@@ -4732,6 +4837,16 @@ class WebPortalServer {
           connection = connections[0];
         }
 
+        // Validate cookies presence/format
+        let cookiesValid = false;
+        try {
+          const cookiesPath = process.env.COOKIES_PATH || path.join(__dirname, '..', 'cookies.txt');
+          if (fs.existsSync(cookiesPath)) {
+            const txt = fs.readFileSync(cookiesPath, 'utf8');
+            cookiesValid = Boolean(txt && (txt.includes('Netscape HTTP Cookie File') || txt.includes('.youtube.com') || /^\.youtube\.com\t/m.test(txt)));
+          }
+        } catch (_) {}
+
         let status = {
           connected: !!connection,
           guildId: guildId || (connection?.joinConfig?.guildId || null),
@@ -4743,7 +4858,8 @@ class WebPortalServer {
           totalTime: 0,
           queue: [],
           currentIndex: -1,
-          autoPlayEnabled: true // Default value
+          autoPlayEnabled: true, // Default value
+          cookiesValid
         };
 
         const targetGuildId = guildId || connection?.joinConfig?.guildId;

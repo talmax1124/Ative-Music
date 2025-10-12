@@ -8,6 +8,7 @@ const play = require('play-dl');
 const { spawn } = require('child_process');
 const { Readable, PassThrough } = require('stream');
 const fs = require('fs');
+const path = require('path');
 const DownloadCacheManager = require('./DownloadCacheManager');
 const AudioProcessor = require('./AudioProcessor');
 
@@ -48,6 +49,10 @@ class SourceHandlers {
         
         // Stream cache for failed tracks
         this.streamCache = new Map();
+
+        // Lightweight metadata cache (URL -> {data, ts})
+        this.metaCache = new Map();
+        this.metaCacheTTL = 5 * 60 * 1000; // 5 minutes
         
         // Session management for 403 mitigation
         this.sessionRotation = {
@@ -102,9 +107,16 @@ class SourceHandlers {
     }
 
     async getYouTubeMetadataWithYtDlp(url) {
+        // Simple in-memory cache
+        try {
+            const cached = this.metaCache.get(url);
+            if (cached && (Date.now() - cached.ts) < this.metaCacheTTL) {
+                return cached.data;
+            }
+        } catch (_) {}
         return new Promise((resolve, reject) => {
             const { spawn } = require('child_process');
-            const ytdlp = spawn('yt-dlp', [
+            const args = [
                 '--print', '%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s\n%(thumbnail)s\n%(view_count)s',
                 '--no-warnings',
                 '--concurrent-fragments', '8',
@@ -113,9 +125,31 @@ class SourceHandlers {
                 '--retries', '2',
                 '--http-chunk-size', '5M',
                 '--buffer-size', '32K',
-                '--prefer-free-formats',
-                url
-            ]);
+                '--prefer-free-formats'
+            ];
+
+            // Try to use cookies if available
+            try {
+                const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
+                const fs = require('fs');
+                if (fs.existsSync(cookiesPath)) {
+                    const txt = fs.readFileSync(cookiesPath, 'utf8');
+                    if (txt && (txt.includes('Netscape HTTP Cookie File') || txt.includes('.youtube.com') || /^\.youtube\.com\t/m.test(txt))) {
+                        args.push('--cookies', cookiesPath);
+                        console.log('🍪 Using cookies for metadata fetch');
+                    } else {
+                        console.log('⚠️ Cookies file appears empty or invalid (metadata fetch)');
+                    }
+                }
+            } catch (_) {}
+
+            // Prefer a client less likely to be blocked for metadata
+            args.push('--extractor-args', 'youtube:player_client=android');
+            args.push('--user-agent', this.getRandomUserAgent());
+
+            args.push(url);
+
+            const ytdlp = spawn('yt-dlp', args);
 
             let output = '';
             let error = '';
@@ -147,7 +181,7 @@ class SourceHandlers {
                         const durationSeconds = parseFloat(duration) || 0;
                         const durationMS = durationSeconds * 1000;
                         
-                        resolve({
+                        const data = {
                             title,
                             author: uploader,
                             duration: this.formatDuration(durationMS),
@@ -158,7 +192,9 @@ class SourceHandlers {
                             type: 'track',
                             viewCount,
                             id: this.extractYouTubeVideoId(url) || ''
-                        });
+                        };
+                        try { this.metaCache.set(url, { data, ts: Date.now() }); } catch (_) {}
+                        resolve(data);
                     } else {
                         reject(new Error('Insufficient metadata from yt-dlp'));
                     }
@@ -790,6 +826,7 @@ class SourceHandlers {
             let score = 0;
             const titleLower = result.title.toLowerCase();
             const authorLower = result.author.toLowerCase();
+            const channelHints = authorLower;
             
             // Exact title match
             if (titleLower === queryLower) score += 100;
@@ -839,6 +876,15 @@ class SourceHandlers {
             
             // Penalize very long titles (likely to be low quality)
             if (result.title.length > 100) score -= 5;
+
+            // Deprioritize noisy variants unless explicitly requested
+            const negativeHints = ['nightcore', 'sped up', '8d', 'slowed', 'reverb', 'remix', 'cover', 'live'];
+            for (const hint of negativeHints) {
+                if (titleLower.includes(hint) && !queryLower.includes(hint)) score -= 15;
+            }
+
+            // Prefer official/Topic-like channels
+            if (/official|vevo|topic/.test(channelHints)) score += 8;
             
             return { ...result, relevanceScore: score };
         }).sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -915,7 +961,18 @@ class SourceHandlers {
                 }
             }
 
-            console.log('❌ All YouTube search methods failed (likely due to bot detection). Consider using yt-dlp.');
+            console.log('🔄 Trying yt-dlp search fallback');
+            try {
+                const dlResults = await this.searchWithYtDlp(query, limit);
+                if (dlResults && dlResults.length > 0) {
+                    console.log(`✅ yt-dlp search found ${dlResults.length} results`);
+                    return dlResults;
+                }
+            } catch (e) {
+                console.log(`⚠️ yt-dlp search failed: ${e?.message || e}`);
+            }
+
+            console.log('❌ All YouTube search methods failed (likely due to bot detection).');
             return [];
         } catch (error) {
             console.error('❌ YouTube search error:', error?.message || String(error) || 'Unknown error');
@@ -976,107 +1033,206 @@ class SourceHandlers {
     }
 
     async getYouTubeStream(track, options = {}) {
+        console.log(`🎵 Getting YouTube stream for: ${track.title}`);
+        
+        // FIRST: Check if MP3 file already exists in cache (instant playback)
+        const crypto = require('crypto');
+        const cacheKey = crypto.createHash('md5').update(track.url).digest('hex');
+        const mp3Path = path.join(__dirname, '..', 'cache', 'audio', `${cacheKey}.mp3`);
+        
+        if (fs.existsSync(mp3Path)) {
+            // Validate cached file before using
+            const stats = fs.statSync(mp3Path);
+            if (stats.size === 0) {
+                console.log(`🗑️ Deleting corrupted empty cache file: ${cacheKey}.mp3`);
+                fs.unlinkSync(mp3Path);
+            } else {
+                console.log(`⚡ INSTANT PLAYBACK - Using cached MP3: ${track.title} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+                
+                // Emit instant ready progress
+                if (this.audioProcessor) {
+                    this.audioProcessor.emit('progress', {
+                        cacheKey,
+                        title: track.title,
+                        progress: 100,
+                        status: 'Ready! (cached)',
+                        url: track.url,
+                        guildId: track.guildId,
+                        channelId: track.channelId,
+                        cached: true
+                    });
+                }
+                
+                const stream = fs.createReadStream(mp3Path);
+                
+                // Handle seek if requested
+                if (options.seekSeconds && options.seekSeconds > 0) {
+                    console.log(`⏩ Seeking to ${options.seekSeconds} seconds in MP3 file`);
+                    return this.createSeekableMP3Stream(mp3Path, options.seekSeconds);
+                }
+                
+                return stream;
+            }
+        }
+        
+        // SECOND: Try direct streaming with play-dl only
         try {
-            console.log(`🎵 Getting YouTube stream for: ${track.title}`);
+            console.log(`⚡ Attempting play-dl streaming: ${track.title}`);
             
-            // Use the new AudioProcessor to download and convert
+            const videoId = this.extractYouTubeVideoId(track.url);
+            if (videoId && videoId.length === 11) {
+                const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                
+                const play = require('play-dl');
+                
+                // Skip validation and try direct streaming
+                const streamResult = await play.stream(cleanUrl, {
+                    quality: 2,
+                    discordPlayerCompatibility: true
+                });
+                console.log('🎉 play-dl instant stream created!');
+                return streamResult.stream;
+            }
+            throw new Error('Invalid video ID');
+            
+        } catch (streamError) {
+            // Silently fall through to download method
+            console.log(`🔄 play-dl not available, using download method`);
+        }
+        
+        // THIRD: Download & convert as final fallback (only if play-dl fails)
+        try {
+            console.log(`📥 Downloading & converting: ${track.title}`);
+            
+            // Emit initial progress for frontend
+            if (this.audioProcessor) {
+                this.audioProcessor.emit('progress', {
+                    cacheKey: crypto.createHash('md5').update(track.url).digest('hex'),
+                    title: track.title,
+                    progress: 0,
+                    status: 'Starting download...',
+                    url: track.url,
+                    ...((options && options.meta) ? options.meta : {})
+                });
+            }
+            
             const meta = (options && options.meta) ? options.meta : {};
             const result = await this.audioProcessor.downloadAndConvert(track.url, track.title, meta);
             
-            if (result.cached) {
-                console.log(`📂 Using cached MP3: ${track.title}`);
-            } else {
-                console.log(`✅ Downloaded and converted to MP3: ${track.title}`);
-            }
-            
-            // Create read stream from MP3 file
-            const stream = fs.createReadStream(result.path);
-            
-            // Handle seek if requested
-            if (options.seekSeconds && options.seekSeconds > 0) {
-                console.log(`⏩ Seeking to ${options.seekSeconds} seconds in MP3 file`);
-                return this.createSeekableMP3Stream(result.path, options.seekSeconds);
-            }
-            
-            return stream;
+            console.log(`✅ Downloaded and converted to MP3: ${track.title}`);
+            return fs.createReadStream(result.path);
             
         } catch (error) {
-            console.error(`❌ YouTube stream error: ${error.message}`);
-            
-            // Fallback to old streaming method if AudioProcessor fails
-            console.log(`🔄 Falling back to direct streaming for: ${track.title}`);
-            return await this.getYouTubeStreamFallback(track, options);
+            console.error(`❌ All methods failed: ${error.message}`);
+            throw error;
         }
     }
 
     async getYouTubeStreamFallback(track, options = {}) {
-        try {
-            console.log(`🔄 Using fallback streaming for: ${track.title}`);
-            
-            const videoId = this.downloadCache.extractVideoId(track.url);
-            if (!videoId) {
-                throw new Error('Could not extract video ID from URL');
-            }
-            
-            // Check if file is already cached in old system
-            if (this.downloadCache.isFileCached(videoId)) {
-                console.log(`📂 Streaming from old cache: ${track.title}`);
-                return this.downloadCache.createReadStream(videoId);
-            }
-            
-            // Try direct streaming methods with enhanced fallbacks
-            const extractors = ['playdl', 'ytdlp', 'ytdlcore'];
-            for (let i = 0; i < extractors.length; i++) {
-                const which = extractors[i];
-                try {
-                    if (which === 'playdl') {
-                        console.log('🔄 Attempting play-dl stream...');
-                        
-                        // Validate URL before attempting play-dl
-                        if (!track.url || typeof track.url !== 'string' || !track.url.includes('youtube.com/watch')) {
-                            throw new Error(`Invalid YouTube URL for play-dl: ${track.url}`);
-                        }
-                        
-                        const streamResult = await play.stream(track.url, {
-                            quality: 2,
-                            discordPlayerCompatibility: true,
-                            ...(typeof options.seekSeconds === 'number' && options.seekSeconds > 0 ? { seek: Math.floor(options.seekSeconds) } : {})
-                        });
-                        console.log('✅ play-dl fallback stream created');
-                        return streamResult.stream;
-                    }
-                    if (which === 'ytdlp') {
-                        if (await this.isYtDlpAvailable()) {
-                            console.log(`🔄 Using yt-dlp fallback`);
-                            const stream = await this.getYtDlpStream(track, 0);
-                            if (stream) return stream;
-                        }
-                    }
-                    if (which === 'ytdlcore') {
-                        console.log('🔄 Attempting ytdl-core stream as last resort...');
-                        const stream = ytdl(track.url, {
-                            filter: 'audioonly',
-                            quality: 'lowestaudio',
-                            highWaterMark: 1 << 25,
-                            requestOptions: {
-                                headers: {
-                                    'User-Agent': this.getRandomUserAgent(),
-                                }
-                            }
-                        });
-                        console.log('✅ ytdl-core fallback stream created');
-                        return stream;
-                    }
-                } catch (err) {
-                    console.log(`⚠️ Fallback ${which} failed: ${err?.message || err}`);
-                }
-            }
-            
-            throw new Error(`All fallback streaming methods failed for: ${track.title}`);
-        } catch (error) {
-            console.error(`❌ Fallback stream error: ${error.message}`);
-            throw error;
+        console.log(`⚡ INSTANT STREAMING for: ${track.title}`);
+        
+        const videoId = this.downloadCache.extractVideoId(track.url);
+        if (!videoId) {
+            throw new Error('Could not extract video ID from URL');
         }
+        
+        // Check if file is already cached (fastest option)
+        if (this.downloadCache.isFileCached(videoId)) {
+            console.log(`📂 Using cached file for instant playback`);
+            return this.downloadCache.createReadStream(videoId);
+        }
+        
+        // Try play-dl with proper URL formatting and validation
+        try {
+            console.log('⚡ Attempting play-dl with enhanced validation...');
+            
+            // Extract video ID and create clean URL
+            const videoId = this.extractYouTubeVideoId(track.url);
+            if (!videoId || videoId.length !== 11) {
+                throw new Error(`Invalid video ID extracted: ${videoId}`);
+            }
+            
+            const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            console.log(`🔗 Using clean URL: ${cleanUrl}`);
+            
+            // Emit progress for streaming start
+            if (this.audioProcessor) {
+                this.audioProcessor.emit('progress', {
+                    cacheKey: videoId,
+                    title: track.title,
+                    progress: 0,
+                    status: 'Connecting to stream...',
+                    url: track.url,
+                    guildId: track.guildId,
+                    channelId: track.channelId
+                });
+            }
+            
+            // Skip validation and try direct streaming
+            const play = require('play-dl');
+            
+            // Emit progress for stream preparation
+            if (this.audioProcessor) {
+                this.audioProcessor.emit('progress', {
+                    cacheKey: videoId,
+                    title: track.title,
+                    progress: 50,
+                    status: 'Preparing stream...',
+                    url: track.url,
+                    guildId: track.guildId,
+                    channelId: track.channelId
+                });
+            }
+            
+            const streamResult = await play.stream(cleanUrl, {
+                quality: 2,
+                discordPlayerCompatibility: true,
+                ...(typeof options.seekSeconds === 'number' && options.seekSeconds > 0 ? { seek: Math.floor(options.seekSeconds) } : {})
+            });
+            
+            // Emit progress for stream ready
+            if (this.audioProcessor) {
+                this.audioProcessor.emit('progress', {
+                    cacheKey: videoId,
+                    title: track.title,
+                    progress: 100,
+                    status: 'Stream ready!',
+                    url: track.url,
+                    guildId: track.guildId,
+                    channelId: track.channelId
+                });
+            }
+            
+            console.log('🎉 play-dl stream created successfully!');
+            return streamResult.stream;
+            
+        } catch (playDlError) {
+            console.log(`⚠️ play-dl failed: ${playDlError.message}`);
+        }
+        
+        // If play-dl fails, try using the cached MP3 file that was created in background
+        const crypto = require('crypto');
+        const cacheKey = crypto.createHash('md5').update(track.url).digest('hex');
+        const mp3Path = path.join(__dirname, '..', 'cache', 'audio', `${cacheKey}.mp3`);
+        
+        if (fs.existsSync(mp3Path)) {
+            console.log('📂 Using pre-downloaded MP3 file for instant playback!');
+            return fs.createReadStream(mp3Path);
+        }
+        
+        // Final fallback - wait for download to complete and use file
+        console.log('⏳ Waiting for MP3 download to complete...');
+        let attempts = 0;
+        while (attempts < 30) { // Wait up to 30 seconds
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (fs.existsSync(mp3Path)) {
+                console.log('✅ MP3 file ready - using for playback');
+                return fs.createReadStream(mp3Path);
+            }
+            attempts++;
+        }
+        
+        throw new Error('All streaming methods failed and no cached file available');
     }
 
     async getSpotifyStream(track, options = {}) {
@@ -1108,9 +1264,40 @@ class SourceHandlers {
             if (!track) return null;
             if (track.source === 'youtube') return track;
             // Resolve Spotify (and others in future) to a YouTube track object
-            const q = `${track.title || ''} ${track.author || ''}`.trim();
-            const res = await this.searchYouTube(q, 1);
-            return res && res[0] ? res[0] : null;
+            let query = `${track.title || ''} ${track.author || ''}`.trim();
+            let targetDuration = Number(track.durationMS || 0);
+            // Try to enrich with exact Spotify metadata for better matching
+            try {
+                if (track.source === 'spotify' && track.id) {
+                    const t = await this.spotify.getTrack(track.id);
+                    const name = t?.body?.name || track.title;
+                    const artists = (t?.body?.artists || []).map(a => a.name).join(' ');
+                    const isrc = t?.body?.external_ids?.isrc;
+                    query = `${name} ${artists} audio`;
+                    targetDuration = Number(t?.body?.duration_ms || targetDuration);
+                    if (isrc) {
+                        // Include ISRC in query (often helps find Topic uploads)
+                        query += ` ${isrc}`;
+                    }
+                }
+            } catch (_) {}
+
+            const results = await this.searchYouTube(query, 6);
+            if (!results || results.length === 0) return null;
+
+            // Prefer duration-closest match (within 8% tolerance), then highest relevance
+            let best = null;
+            let bestDelta = Infinity;
+            for (const r of results) {
+                if (targetDuration > 0 && r.durationMS) {
+                    const delta = Math.abs(r.durationMS - targetDuration);
+                    const tolerance = Math.max(8000, targetDuration * 0.08);
+                    if (delta <= tolerance && delta < bestDelta) {
+                        best = r; bestDelta = delta;
+                    }
+                }
+            }
+            return best || results[0] || null;
         } catch (e) {
             console.log(`⚠️ resolveForPlayback failed: ${e?.message || e}`);
             return null;
@@ -1122,12 +1309,12 @@ class SourceHandlers {
         this.handleSessionRotation();
         await this.waitForCooldown(track.url);
 
-        // Use formats that don't require authentication first
-        const formats = ['worst[height>=360]/worst', 'worst', '18', 'bestaudio', 'best', '140'];
-        // Start with android client - often works without auth
-        const clients = ['android', 'web', 'ios', 'tv_embedded'];
+        // Use streaming-optimized formats for fastest start - prioritize 18 (360p mp4) as it's most reliable
+        const formats = ['18', 'worst[height<=360]/worst', 'bestaudio', '140', '139', 'worstaudio'];
+        // Android client first - often bypasses restrictions
+        const clients = ['android', 'web'];
 
-        // Try format/client combinations
+        // Try format/client combinations with fast failure detection
         for (let i = 0; i < formats.length; i++) {
             const fmt = formats[(formatIndex + i) % formats.length];
             for (let c = 0; c < clients.length; c++) {
@@ -1135,13 +1322,27 @@ class SourceHandlers {
                 try {
                     const stream = await this.spawnYtDlp(track, fmt, client);
                     try { track._lastFormat = fmt; track._lastExtractor = 'ytdlp'; track._lastClient = client; } catch {}
+                    console.log(`✅ Stream success with format ${fmt} and client ${client}`);
                     return stream;
                 } catch (err) {
                     const msg = String(err?.message || err);
-                    console.log(`⚠️ yt-dlp failed (fmt=${fmt}, client=${client}): ${msg}`);
+                    console.log(`⚠️ yt-dlp failed (fmt=${fmt}, client=${client}): ${msg.substring(0, 100)}...`);
+                    
+                    // Fast failure for auth issues
                     if (/Please sign in|cookies/i.test(msg)) {
-                        // Cookies required; bubble up so caller can prompt
                         throw err;
+                    }
+                    
+                    // Skip remaining clients for this format if it's definitely not available
+                    if (/Requested format is not available|No video formats found/i.test(msg)) {
+                        console.log(`🚫 Skipping remaining clients for format ${fmt} - not available`);
+                        break;
+                    }
+                    
+                    // For 403 errors, try next client immediately
+                    if (/403|Forbidden/i.test(msg) && c === 0) {
+                        console.log(`🔄 Got 403 with ${client}, trying next client quickly`);
+                        continue;
                     }
                 }
             }
@@ -1167,6 +1368,18 @@ class SourceHandlers {
     spawnYtDlp(track, fmt, client = 'web') {
         return new Promise((resolve, reject) => {
             console.log(`🔄 Using yt-dlp for: ${track.title}`);
+            
+            // Emit progress for streaming start
+            if (this.audioProcessor) {
+                this.audioProcessor.emit('progress', {
+                    cacheKey: track.url,
+                    title: track.title,
+                    progress: 0,
+                    status: 'Preparing stream...',
+                    url: track.url,
+                    isStreaming: true
+                });
+            }
 
             const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
             const fs = require('fs');
@@ -1176,13 +1389,29 @@ class SourceHandlers {
                 try {
                     const cookiesContent = fs.readFileSync(cookiesPath, 'utf8');
                     // Check for Netscape format header or actual cookie entries
-                    if (cookiesContent.includes('Netscape HTTP Cookie File') || 
-                        cookiesContent.includes('.youtube.com') ||
-                        /^\.youtube\.com\t/m.test(cookiesContent)) {
+                    if (cookiesContent && cookiesContent.trim() && 
+                        (cookiesContent.includes('Netscape HTTP Cookie File') || 
+                         cookiesContent.includes('.youtube.com') ||
+                         /^\.youtube\.com\t/m.test(cookiesContent))) {
                         hasCookies = true;
-                        console.log(`🍪 Found valid cookies file with ${cookiesContent.split('\n').filter(l => l && !l.startsWith('#')).length} cookie entries`);
+                        const cookieLines = cookiesContent.split('\n').filter(l => l && !l.startsWith('#'));
+                        console.log(`🍪 Found valid cookies file with ${cookieLines.length} cookie entries`);
                     } else {
                         console.log('⚠️ Cookies file appears empty or invalid');
+                        // Try to restore from backup
+                        const backupPath = path.join(__dirname, '..', 'backup-cookies.txt');
+                        if (fs.existsSync(backupPath)) {
+                            try {
+                                const backupContent = fs.readFileSync(backupPath, 'utf8');
+                                if (backupContent && backupContent.includes('.youtube.com')) {
+                                    fs.writeFileSync(cookiesPath, backupContent);
+                                    console.log('🔄 Restored cookies from backup');
+                                    hasCookies = true;
+                                }
+                            } catch (restoreErr) {
+                                console.log('⚠️ Failed to restore cookies from backup');
+                            }
+                        }
                     }
                 } catch (error) {
                     console.log('⚠️ Failed to read cookies file, continuing without cookies');
@@ -1197,30 +1426,46 @@ class SourceHandlers {
                 '--no-check-certificates',
                 '--prefer-insecure',
                 '--force-ipv4',
-                '--hls-prefer-ffmpeg',
-                '--hls-use-mpegts',
-                '--concurrent-fragments', '8',  // More fragments for faster download
+                '--concurrent-fragments', '4',  // Reduced for stability
                 '--no-part',
                 '--geo-bypass',
                 '--geo-bypass-country', 'US',
                 '--no-update',
-                '--socket-timeout', '10',  // Faster timeout
-                '--retries', '2',  // Fewer retries for speed
-                '--fragment-retries', '2',
-                '--retry-sleep', '0',  // No sleep between retries
-                '--sleep-interval', '0',  // No rate limiting delay
-                '--max-sleep-interval', '0',  // No maximum sleep
+                '--socket-timeout', '15',  // Increased for stability
+                '--retries', '3',  // More retries for reliability
+                '--fragment-retries', '3',
+                '--retry-sleep', '1',  // Small delay between retries
+                '--sleep-interval', '0',
+                '--max-sleep-interval', '2',
                 '--ignore-errors',
                 '--no-abort-on-error',
                 '--no-progress',
-                '--extractor-retries', '1',  // Single extractor retry
-                '--buffer-size', '16K',  // Smaller buffer for faster start
-                '--http-chunk-size', '1M'  // Optimized chunk size
+                '--extractor-retries', '2',
+                '--buffer-size', '32K',  // Larger buffer for better streaming
+                '--http-chunk-size', '512K'  // Smaller chunks for faster start
             ];
 
             if (hasCookies) {
-                ytdlpArgs.push('--cookies', cookiesPath);
-                console.log(`🍪 Using cookies from: ${cookiesPath}`);
+                // Use a temporary copy to prevent corruption of original cookies
+                const tempCookiesPath = path.join(__dirname, '..', `temp-cookies-${Date.now()}.txt`);
+                try {
+                    const originalContent = fs.readFileSync(cookiesPath, 'utf8');
+                    fs.writeFileSync(tempCookiesPath, originalContent);
+                    ytdlpArgs.push('--cookies', tempCookiesPath);
+                    console.log(`🍪 Using temp cookies copy: ${tempCookiesPath}`);
+                    
+                    // Clean up temp file after a delay
+                    setTimeout(() => {
+                        try {
+                            if (fs.existsSync(tempCookiesPath)) {
+                                fs.unlinkSync(tempCookiesPath);
+                            }
+                        } catch (_) {}
+                    }, 30000); // Clean up after 30 seconds
+                } catch (copyErr) {
+                    console.log('⚠️ Failed to create temp cookies, using original');
+                    ytdlpArgs.push('--cookies', cookiesPath);
+                }
             }
 
             const proxy = this.getNextProxy();
@@ -1255,7 +1500,7 @@ class SourceHandlers {
                     ytdlp.kill();
                     reject(new Error(`yt-dlp timeout - no data received. Last error: ${errorBuffer}`));
                 }
-            }, 10000);  // Reduced timeout for faster failure detection
+            }, 3000);  // Ultra-fast timeout for immediate fallback to other methods
 
             ytdlp.stdout.on('data', (chunk) => {
                 hasData = true;
@@ -1263,6 +1508,19 @@ class SourceHandlers {
                     resolved = true;
                     clearTimeout(timeout);
                     console.log(`✅ yt-dlp stream started successfully`);
+                    
+                    // Emit progress for stream ready
+                    if (this.audioProcessor) {
+                        this.audioProcessor.emit('progress', {
+                            cacheKey: track.url,
+                            title: track.title,
+                            progress: 100,
+                            status: 'Streaming...',
+                            url: track.url,
+                            isStreaming: true
+                        });
+                    }
+                    
                     resolve(stream);
                 }
             });
@@ -1273,6 +1531,47 @@ class SourceHandlers {
                 const errorMsg = data.toString();
                 errorBuffer += errorMsg;
                 console.error(`yt-dlp stderr: ${errorMsg.trim()}`);
+                
+                // Parse stderr for progress indicators
+                if (this.audioProcessor && !resolved) {
+                    if (/Extracting URL:/i.test(errorMsg)) {
+                        this.audioProcessor.emit('progress', {
+                            cacheKey: track.url,
+                            title: track.title,
+                            progress: 20,
+                            status: 'Extracting URL...',
+                            url: track.url,
+                            isStreaming: true
+                        });
+                    } else if (/Downloading webpage/i.test(errorMsg)) {
+                        this.audioProcessor.emit('progress', {
+                            cacheKey: track.url,
+                            title: track.title,
+                            progress: 40,
+                            status: 'Fetching metadata...',
+                            url: track.url,
+                            isStreaming: true
+                        });
+                    } else if (/Downloading.*format/i.test(errorMsg)) {
+                        this.audioProcessor.emit('progress', {
+                            cacheKey: track.url,
+                            title: track.title,
+                            progress: 60,
+                            status: 'Starting stream...',
+                            url: track.url,
+                            isStreaming: true
+                        });
+                    } else if (/\[download\] Destination: -/i.test(errorMsg)) {
+                        this.audioProcessor.emit('progress', {
+                            cacheKey: track.url,
+                            title: track.title,
+                            progress: 80,
+                            status: 'Buffering...',
+                            url: track.url,
+                            isStreaming: true
+                        });
+                    }
+                }
 
                 if (!resolved && (/Requested format is not available/i.test(errorMsg) ||
                                   /No video formats found/i.test(errorMsg) ||

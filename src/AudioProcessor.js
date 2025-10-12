@@ -10,10 +10,12 @@ class AudioProcessor extends EventEmitter {
         this.cacheDir = path.join(__dirname, '..', 'cache', 'audio');
         this.tempDir = path.join(__dirname, '..', 'cache', 'temp');
         this.ytDlpPath = process.env.YTDLP_PATH || 'yt-dlp';
-        this.cookiesPath = path.join(__dirname, '..', 'cookies.txt');
+        // Allow overriding cookies path via env var, fallback to repo cookies.txt
+        this.cookiesPath = process.env.COOKIES_PATH || path.join(__dirname, '..', 'cookies.txt');
         
-        // Track processing status
-        this.processingTracks = new Map();
+        // Track processing status and processes for cancellation
+        this.processingTracks = new Map(); // cacheKey -> { title, progress, status, meta }
+        this.activeProcesses = new Map();   // cacheKey -> { ytdlp?, ffmpeg?, tempFile, mp3Path, meta }
         
         this.ensureDirectories();
     }
@@ -25,6 +27,17 @@ class AudioProcessor extends EventEmitter {
                 console.log(`📁 Created directory: ${dir}`);
             }
         });
+        
+        // Clean up any stuck .part files
+        try {
+            const partFiles = fs.readdirSync(this.tempDir).filter(f => f.endsWith('.part'));
+            partFiles.forEach(file => {
+                try {
+                    fs.unlinkSync(path.join(this.tempDir, file));
+                    console.log(`🧹 Cleaned up stuck file: ${file}`);
+                } catch (_) {}
+            });
+        } catch (_) {}
     }
 
     generateCacheKey(url) {
@@ -79,19 +92,20 @@ class AudioProcessor extends EventEmitter {
         try {
             // Mark as processing
             this.processingTracks.set(cacheKey, { title, progress: 0, status: 'starting', meta });
-            this.emit('progress', { cacheKey, title, progress: 0, status: 'Starting download...', ...meta });
+            this.activeProcesses.set(cacheKey, { tempFile, mp3Path, meta });
+            this.emit('progress', { cacheKey, title, progress: 0, status: 'Starting download...', url, ...meta });
             
             console.log(`⬇️ Downloading audio for: ${title}`);
-            this.emit('progress', { cacheKey, title, progress: 10, status: 'Downloading audio...', ...meta });
+            this.emit('progress', { cacheKey, title, progress: 10, status: 'Downloading audio...', url, ...meta });
             
             // Download audio-only format
             await this.downloadAudio(url, tempFile, cacheKey, title, meta);
             
             console.log(`🔄 Converting to MP3: ${title}`);
-            this.emit('progress', { cacheKey, title, progress: 70, status: 'Converting to MP3...', ...meta });
+            this.emit('progress', { cacheKey, title, progress: 70, status: 'Converting to MP3...', url, ...meta });
             
             // Convert to MP3
-            await this.convertToMp3(tempFile, mp3Path, cacheKey, title, meta);
+            await this.convertToMp3(tempFile, mp3Path, cacheKey, title, url, meta);
             
             // Clean up temp file
             if (fs.existsSync(tempFile)) {
@@ -99,10 +113,11 @@ class AudioProcessor extends EventEmitter {
             }
             
             console.log(`✅ Audio ready: ${cacheKey}.mp3`);
-            this.emit('progress', { cacheKey, title, progress: 100, status: 'Ready to play!', ...meta });
+            this.emit('progress', { cacheKey, title, progress: 100, status: 'Ready to play!', url, ...meta });
             
             // Remove from processing map
             this.processingTracks.delete(cacheKey);
+            this.activeProcesses.delete(cacheKey);
             
             return { path: mp3Path, cached: false };
             
@@ -113,6 +128,8 @@ class AudioProcessor extends EventEmitter {
                     fs.unlinkSync(file);
                 }
             });
+            this.processingTracks.delete(cacheKey);
+            this.activeProcesses.delete(cacheKey);
             
             throw error;
         }
@@ -121,8 +138,8 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
-                // Audio-only format selection
-                '--format', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+                // Audio-only format selection - prioritize faster formats
+                '--format', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[acodec^=opus]/bestaudio/best',
                 '--output', outputPath,
                 '--no-playlist',
                 '--no-warnings',
@@ -130,12 +147,18 @@ class AudioProcessor extends EventEmitter {
                 '--no-check-certificates',
                 '--geo-bypass',
                 '--no-update',
-                '--socket-timeout', '30',
-                '--retries', '3',
-                '--fragment-retries', '3',
-                '--concurrent-fragments', '4',
-                '--buffer-size', '16K',
-                '--http-chunk-size', '1M'
+                '--no-part',  // Prevent .part file issues
+                '--no-mtime',  // Don't preserve modification time
+                '--ignore-errors',  // Continue on errors
+                '--no-call-home',  // Don't contact YouTube for version updates
+                '--force-ipv4',  // Force IPv4 to avoid connection issues
+                '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 8),
+                '--retries', String(process.env.YTDLP_RETRIES || 1),
+                '--fragment-retries', String(process.env.YTDLP_FRAGMENT_RETRIES || 1),
+                '--concurrent-fragments', String(process.env.YTDLP_CONCURRENT_FRAGMENTS || 8),
+                '--buffer-size', '64K',
+                '--http-chunk-size', '1M',
+                '--no-range',  // Disable range requests to avoid HTTP 416 errors
             ];
 
             // Add cookies if available and valid
@@ -158,13 +181,24 @@ class AudioProcessor extends EventEmitter {
             }
 
             // Add extractor args for better compatibility
-            args.push('--extractor-args', 'youtube:player_client=tv_embedded');
+            // Prefer android client which is more tolerant without sign-in
+            args.push('--extractor-args', 'youtube:player_client=android');
+            // Randomize UA slightly
+            args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
             
             args.push(url);
 
             const ytdlp = spawn(this.ytDlpPath, args);
+            // track process for potential cancellation
+            try {
+                const ap = this.activeProcesses.get(cacheKey) || {};
+                ap.ytdlp = ytdlp;
+                this.activeProcesses.set(cacheKey, ap);
+            } catch {}
             let errorBuffer = '';
             let downloadProgress = 10;
+            let lastProgressAt = Date.now();
+            let lastProgressPct = 10;
 
             ytdlp.stderr.on('data', (data) => {
                 errorBuffer += data.toString();
@@ -176,11 +210,34 @@ class AudioProcessor extends EventEmitter {
                     if (percentMatch) {
                         const percent = parseFloat(percentMatch[1]);
                         downloadProgress = 10 + (percent * 0.6); // 10-70% range for download
+                        // Try to parse ETA if present, else estimate from rate of change
+                        let etaSeconds = null;
+                        const etaMatch = message.match(/ETA\s+(\d+):(\d{2})(?::(\d{2}))?/i);
+                        if (etaMatch) {
+                            const h = parseInt(etaMatch[1] || '0', 10);
+                            const m = parseInt(etaMatch[2] || '0', 10);
+                            const s = parseInt(etaMatch[3] || '0', 10);
+                            etaSeconds = (h * 3600) + (m * 60) + s;
+                        } else {
+                            // Estimate based on delta progress over time
+                            const now = Date.now();
+                            const dt = (now - lastProgressAt) / 1000;
+                            const dp = Math.max(0.0001, (downloadProgress - lastProgressPct));
+                            const rate = dp / dt; // percent per second (scaled 0-100)
+                            const remaining = Math.max(0, 70 - downloadProgress); // remaining percent in 10-70 band
+                            if (rate > 0 && isFinite(rate)) {
+                                etaSeconds = Math.round(remaining / rate);
+                            }
+                            lastProgressAt = now;
+                            lastProgressPct = downloadProgress;
+                        }
                         this.emit('progress', { 
                             cacheKey, 
                             title, 
                             progress: Math.floor(downloadProgress), 
                             status: `Downloading... ${percent.toFixed(1)}%`,
+                            etaSeconds,
+                            url,
                             ...meta
                         });
                     }
@@ -206,19 +263,27 @@ class AudioProcessor extends EventEmitter {
         });
     }
 
-    async convertToMp3(inputPath, outputPath, cacheKey, title, meta = {}) {
+    async convertToMp3(inputPath, outputPath, cacheKey, title, url, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
                 '-i', inputPath,
                 '-acodec', 'libmp3lame',
-                '-b:a', '192k',
+                '-b:a', '160k',  // Slightly lower bitrate for faster encoding
                 '-ar', '44100',
                 '-ac', '2',
+                '-threads', '0',  // Use all available cores
                 '-y', // Overwrite output
                 outputPath
             ];
 
             const ffmpeg = spawn('ffmpeg', args);
+            // track process for potential cancellation
+            try {
+                const ap = [...this.activeProcesses.entries()].find(([, v]) => v?.tempFile === inputPath)?.[1];
+                if (ap) {
+                    ap.ffmpeg = ffmpeg;
+                }
+            } catch {}
             let errorBuffer = '';
             let conversionProgress = 70;
 
@@ -243,24 +308,53 @@ class AudioProcessor extends EventEmitter {
             ffmpeg.on('close', (code) => {
                 if (code === 0 && fs.existsSync(outputPath)) {
                     const stats = fs.statSync(outputPath);
-                    console.log(`✅ Converted to MP3: ${(stats.size / 1024 / 1024).toFixed(2)}MB`);
-                    this.emit('progress', { 
-                        cacheKey, 
-                        title, 
-                        progress: 98, 
-                        status: 'Finalizing...',
-                        ...meta
-                    });
-                    resolve();
-                } else {
-                    reject(new Error(`FFmpeg conversion failed (code ${code}): ${errorBuffer}`));
+                    if (stats.size > 0) {
+                        console.log(`✅ Converted to MP3: ${(stats.size / 1024 / 1024).toFixed(2)}MB`);
+                        this.emit('progress', { 
+                            cacheKey, 
+                            title, 
+                            progress: 98, 
+                            status: 'Finalizing...',
+                            url,
+                            ...meta
+                        });
+                        resolve();
+                        return;
+                    }
                 }
+                // Only show error if conversion actually failed
+                const errorMsg = code !== 0 ? `Exit code ${code}` : 'Output file empty or missing';
+                reject(new Error(`FFmpeg conversion failed: ${errorMsg}`));
             });
 
             ffmpeg.on('error', (error) => {
                 reject(error);
             });
         });
+    }
+
+    // Cancel any active yt-dlp/ffmpeg processes matching guild/channel context
+    cancelByContext(guildId, channelId) {
+        try {
+            let cancelled = 0;
+            for (const [cacheKey, procInfo] of this.activeProcesses.entries()) {
+                const meta = (this.processingTracks.get(cacheKey) || procInfo || {}).meta || {};
+                if (!guildId || !channelId || (meta.guildId === guildId && meta.channelId === channelId)) {
+                    try { procInfo.ytdlp && procInfo.ytdlp.kill('SIGKILL'); } catch {}
+                    try { procInfo.ffmpeg && procInfo.ffmpeg.kill('SIGKILL'); } catch {}
+                    // attempt to clean temp if any
+                    try { procInfo.tempFile && fs.existsSync(procInfo.tempFile) && fs.unlinkSync(procInfo.tempFile); } catch {}
+                    this.processingTracks.delete(cacheKey);
+                    this.activeProcesses.delete(cacheKey);
+                    cancelled++;
+                }
+            }
+            if (cancelled > 0) {
+                console.log(`🛑 Cancelled ${cancelled} active download/conversion task(s)`);
+            }
+        } catch (e) {
+            console.log('⚠️ Failed to cancel active processes:', e?.message || e);
+        }
     }
 
     cleanCache(maxAgeHours = 24) {

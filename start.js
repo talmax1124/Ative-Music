@@ -27,10 +27,41 @@ for (const dir of requiredDirs) {
 }
 
 // Create cookies file from environment variable if provided (for Railway)
-if (process.env.YOUTUBE_COOKIES) {
+if (process.env.YOUTUBE_COOKIES && process.env.YOUTUBE_COOKIES.trim() !== '') {
     const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
-    fs.writeFileSync(cookiesPath, Buffer.from(process.env.YOUTUBE_COOKIES, 'base64').toString('utf-8'));
-    console.log('🍪 YouTube cookies loaded from environment');
+    
+    // Check if valid cookies already exist
+    let hasValidCookies = false;
+    try {
+        if (fs.existsSync(cookiesPath)) {
+            const existingCookies = fs.readFileSync(cookiesPath, 'utf8');
+            if (existingCookies && existingCookies.trim() && 
+                (existingCookies.includes('Netscape HTTP Cookie File') || 
+                 existingCookies.includes('.youtube.com') ||
+                 /^\.youtube\.com\t/m.test(existingCookies))) {
+                hasValidCookies = true;
+                console.log('🍪 Valid cookies already exist, skipping environment override');
+            }
+        }
+    } catch (error) {
+        console.log('⚠️ Failed to check existing cookies:', error.message);
+    }
+    
+    // Only overwrite if no valid cookies exist
+    if (!hasValidCookies) {
+        try {
+            const decodedCookies = Buffer.from(process.env.YOUTUBE_COOKIES, 'base64').toString('utf-8');
+            // Only write if the decoded content looks valid
+            if (decodedCookies && decodedCookies.length > 10) {
+                fs.writeFileSync(cookiesPath, decodedCookies);
+                console.log('🍪 YouTube cookies loaded from environment');
+            } else {
+                console.log('⚠️ YOUTUBE_COOKIES environment variable is set but appears empty or invalid');
+            }
+        } catch (error) {
+            console.log('⚠️ Failed to decode YOUTUBE_COOKIES from environment:', error.message);
+        }
+    }
 }
 
 // Check if Discord token is provided
