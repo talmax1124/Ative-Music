@@ -138,8 +138,7 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
-                // Simple, reliable format selection
-                '--format', 'bestaudio/best',
+                // No format specification - let yt-dlp choose automatically
                 '--output', outputPath,
                 '--no-playlist',
                 '--no-warnings',
