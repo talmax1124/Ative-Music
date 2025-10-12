@@ -155,10 +155,9 @@ class AudioProcessor extends EventEmitter {
                 '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 8),
                 '--retries', String(process.env.YTDLP_RETRIES || 1),
                 '--fragment-retries', String(process.env.YTDLP_FRAGMENT_RETRIES || 1),
-                '--concurrent-fragments', String(process.env.YTDLP_CONCURRENT_FRAGMENTS || 8),
-                '--buffer-size', '64K',
-                '--http-chunk-size', '1M',
-                '--no-range',  // Disable range requests to avoid HTTP 416 errors
+                '--concurrent-fragments', String(process.env.YTDLP_CONCURRENT_FRAGMENTS || 1),
+                '--buffer-size', '32K',
+                '--http-chunk-size', '512K'
             ];
 
             // Add cookies if available and valid
