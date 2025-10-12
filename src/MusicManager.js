@@ -1433,6 +1433,8 @@ class MusicManager {
                     currentTrack.lastError?.includes('DRM protected') ||
                     currentTrack.lastError?.includes('Requested format is not available') ||
                     currentTrack.lastError?.includes('Video unavailable') ||
+                    currentTrack.lastError?.includes('video unavailable') ||
+                    currentTrack.lastError?.includes('Cannot list formats') ||
                     (currentTrack.lastError?.includes('Status code: 403') && trackErrorCount >= 2) ||
                     trackErrorCount >= 3 || // Skip after 3 failed attempts
                     isCorruptedCache // Skip tracks with corrupted cache files

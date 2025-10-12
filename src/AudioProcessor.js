@@ -138,8 +138,8 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
-                // Audio-only format selection - very flexible fallback chain
-                '--format', 'bestaudio/best/worst[ext=mp4]/worst[ext=webm]/worst',
+                // Simple, reliable format selection
+                '--format', 'bestaudio/best',
                 '--output', outputPath,
                 '--no-playlist',
                 '--no-warnings',
@@ -148,15 +148,12 @@ class AudioProcessor extends EventEmitter {
                 '--geo-bypass',
                 '--no-update',
                 '--no-part',  // Prevent .part file issues
-                '--no-mtime',  // Don't preserve modification time
-                '--ignore-errors',  // Continue on errors
-                '--force-ipv4',  // Force IPv4 to avoid connection issues
-                '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 8),
-                '--retries', String(process.env.YTDLP_RETRIES || 1),
-                '--fragment-retries', String(process.env.YTDLP_FRAGMENT_RETRIES || 1),
-                '--concurrent-fragments', String(process.env.YTDLP_CONCURRENT_FRAGMENTS || 1),
-                '--buffer-size', '32K',
-                '--http-chunk-size', '512K'
+                '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 10),
+                '--retries', String(process.env.YTDLP_RETRIES || 3),
+                '--fragment-retries', String(process.env.YTDLP_FRAGMENT_RETRIES || 3),
+                '--concurrent-fragments', String(process.env.YTDLP_CONCURRENT_FRAGMENTS || 4),
+                '--buffer-size', '64K',
+                '--http-chunk-size', '1M'
             ];
 
             // Add cookies if available and valid
@@ -251,36 +248,6 @@ class AudioProcessor extends EventEmitter {
                     console.log('✅ Audio downloaded successfully');
                     resolve();
                 } else {
-                    // Check if it's a format availability issue and try without format specification
-                    if (errorBuffer.includes('Requested format is not available')) {
-                        console.log('⚠️ Format not available, trying without format specification...');
-                        
-                        // Try again without format specification as absolute fallback
-                        const fallbackArgs = args.filter(arg => !['--format', 'bestaudio/best/worst[ext=mp4]/worst[ext=webm]/worst'].includes(arg));
-                        
-                        const fallbackYtdlp = spawn(this.ytDlpPath, fallbackArgs);
-                        let fallbackError = '';
-                        
-                        fallbackYtdlp.stderr.on('data', (data) => {
-                            fallbackError += data.toString();
-                        });
-                        
-                        fallbackYtdlp.on('close', (fallbackCode) => {
-                            if (fallbackCode === 0 && fs.existsSync(outputPath)) {
-                                console.log('✅ Audio downloaded successfully (fallback)');
-                                resolve();
-                            } else {
-                                console.log('⚠️ Fallback also failed, video may be unavailable or restricted');
-                                reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
-                            }
-                        });
-                        
-                        fallbackYtdlp.on('error', () => {
-                            reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
-                        });
-                        
-                        return;
-                    }
                     reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
                 }
             });
