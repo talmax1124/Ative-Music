@@ -138,8 +138,8 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
-                // Audio-only format selection - prioritize faster formats
-                '--format', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio[acodec^=opus]/bestaudio/best',
+                // Audio-only format selection - more flexible fallback
+                '--format', 'bestaudio/best[height<=480]/worst',
                 '--output', outputPath,
                 '--no-playlist',
                 '--no-warnings',
@@ -150,7 +150,6 @@ class AudioProcessor extends EventEmitter {
                 '--no-part',  // Prevent .part file issues
                 '--no-mtime',  // Don't preserve modification time
                 '--ignore-errors',  // Continue on errors
-                '--no-call-home',  // Don't contact YouTube for version updates
                 '--force-ipv4',  // Force IPv4 to avoid connection issues
                 '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 8),
                 '--retries', String(process.env.YTDLP_RETRIES || 1),
@@ -252,6 +251,10 @@ class AudioProcessor extends EventEmitter {
                     console.log('✅ Audio downloaded successfully');
                     resolve();
                 } else {
+                    // Check if it's a format availability issue
+                    if (errorBuffer.includes('Requested format is not available')) {
+                        console.log('⚠️ Format not available, video may be unavailable or restricted');
+                    }
                     reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
                 }
             });
