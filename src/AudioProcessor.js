@@ -138,8 +138,8 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
-                // Audio-only format selection - more flexible fallback
-                '--format', 'bestaudio/best[height<=480]/worst',
+                // Audio-only format selection - very flexible fallback chain
+                '--format', 'bestaudio/best/worst[ext=mp4]/worst[ext=webm]/worst',
                 '--output', outputPath,
                 '--no-playlist',
                 '--no-warnings',
@@ -251,9 +251,35 @@ class AudioProcessor extends EventEmitter {
                     console.log('✅ Audio downloaded successfully');
                     resolve();
                 } else {
-                    // Check if it's a format availability issue
+                    // Check if it's a format availability issue and try without format specification
                     if (errorBuffer.includes('Requested format is not available')) {
-                        console.log('⚠️ Format not available, video may be unavailable or restricted');
+                        console.log('⚠️ Format not available, trying without format specification...');
+                        
+                        // Try again without format specification as absolute fallback
+                        const fallbackArgs = args.filter(arg => !['--format', 'bestaudio/best/worst[ext=mp4]/worst[ext=webm]/worst'].includes(arg));
+                        
+                        const fallbackYtdlp = spawn(this.ytDlpPath, fallbackArgs);
+                        let fallbackError = '';
+                        
+                        fallbackYtdlp.stderr.on('data', (data) => {
+                            fallbackError += data.toString();
+                        });
+                        
+                        fallbackYtdlp.on('close', (fallbackCode) => {
+                            if (fallbackCode === 0 && fs.existsSync(outputPath)) {
+                                console.log('✅ Audio downloaded successfully (fallback)');
+                                resolve();
+                            } else {
+                                console.log('⚠️ Fallback also failed, video may be unavailable or restricted');
+                                reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
+                            }
+                        });
+                        
+                        fallbackYtdlp.on('error', () => {
+                            reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
+                        });
+                        
+                        return;
                     }
                     reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
                 }
