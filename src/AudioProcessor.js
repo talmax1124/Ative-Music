@@ -98,18 +98,18 @@ class AudioProcessor extends EventEmitter {
             console.log(`⬇️ Downloading audio for: ${title}`);
             this.emit('progress', { cacheKey, title, progress: 10, status: 'Downloading audio...', url, ...meta });
             
-            // Download audio-only format
-            await this.downloadAudio(url, tempFile, cacheKey, title, meta);
+            // Download audio-only format and capture actual downloaded path
+            const downloadedPath = await this.downloadAudio(url, tempFile, cacheKey, title, meta);
             
             console.log(`🔄 Converting to MP3: ${title}`);
             this.emit('progress', { cacheKey, title, progress: 70, status: 'Converting to MP3...', url, ...meta });
             
             // Convert to MP3
-            await this.convertToMp3(tempFile, mp3Path, cacheKey, title, url, meta);
+            await this.convertToMp3(downloadedPath, mp3Path, cacheKey, title, url, meta);
             
             // Clean up temp file
-            if (fs.existsSync(tempFile)) {
-                fs.unlinkSync(tempFile);
+            if (fs.existsSync(downloadedPath)) {
+                fs.unlinkSync(downloadedPath);
             }
             
             console.log(`✅ Audio ready: ${cacheKey}.mp3`);
@@ -138,8 +138,10 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
-                // No format specification - let yt-dlp choose automatically
-                '--output', outputPath,
+                // Prefer robust audio format selection with safe fallbacks
+                '--format', String(process.env.YTDLP_FORMAT || 'bestaudio/best'),
+                // Include extension placeholder so we can locate the real file
+                '--output', `${outputPath}.%(ext)s`,
                 '--no-playlist',
                 '--no-warnings',
                 '--prefer-insecure',
@@ -243,12 +245,41 @@ class AudioProcessor extends EventEmitter {
             });
 
             ytdlp.on('close', (code) => {
-                if (code === 0 && fs.existsSync(outputPath)) {
-                    console.log('✅ Audio downloaded successfully');
-                    resolve();
-                } else {
-                    reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
+                if (code === 0) {
+                    // Determine actual downloaded file path (with extension)
+                    try {
+                        let finalPath = null;
+                        // Direct match (in case yt-dlp saved without extension)
+                        if (fs.existsSync(outputPath)) {
+                            finalPath = outputPath;
+                        } else {
+                            const dir = path.dirname(outputPath);
+                            const base = path.basename(outputPath) + '.';
+                            const candidates = (fs.readdirSync(dir) || [])
+                                .filter(f => f.startsWith(base) && !f.endsWith('.part'))
+                                .map(f => path.join(dir, f));
+                            if (candidates.length > 0) {
+                                // Pick the newest candidate
+                                candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+                                finalPath = candidates[0];
+                            }
+                        }
+
+                        if (finalPath && fs.existsSync(finalPath)) {
+                            console.log('✅ Audio downloaded successfully');
+                            // Update active process tempFile reference to real path
+                            try {
+                                const ap = this.activeProcesses.get(cacheKey) || {};
+                                ap.tempFile = finalPath;
+                                this.activeProcesses.set(cacheKey, ap);
+                            } catch {}
+                            return resolve(finalPath);
+                        }
+                    } catch (e) {
+                        // Fall through to error below
+                    }
                 }
+                reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
             });
 
             ytdlp.on('error', (error) => {
