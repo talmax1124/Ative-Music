@@ -1268,8 +1268,17 @@ class SourceHandlers {
         }
         
         // THIRD: Download & convert as final fallback (only if play-dl fails)
-        try {
-            console.log(`📥 Downloading & converting: ${track.title}`);
+        // Skip primary download on VPS with cookies (it always fails with 403)
+        const fs = require('fs');
+        const cookiesPath = process.env.COOKIES_PATH || path.join(__dirname, '..', 'cookies.txt');
+        const hasCookies = fs.existsSync(cookiesPath);
+        const isVPS = process.env.NODE_ENV === 'production' || process.env.VPS === 'true';
+        
+        if (hasCookies && isVPS) {
+            console.log('🚀 VPS with cookies detected - skipping primary download, going straight to robust processor');
+        } else {
+            try {
+                console.log(`📥 Downloading & converting: ${track.title}`);
             
             // Emit initial progress for frontend
             if (this.audioProcessor) {
@@ -1289,39 +1298,40 @@ class SourceHandlers {
             console.log(`✅ Downloaded and converted to MP3: ${track.title}`);
             return fs.createReadStream(result.path);
             
-        } catch (error) {
-            console.error(`❌ Primary download failed: ${error.message}`);
-            
-            // FOURTH: Try robust processor as final fallback
-            try {
-                console.log(`🔄 Trying robust processor as fallback for: ${track.title}`);
-                
-                // Ensure we have a valid URL for the robust processor
-                let urlToUse = track.url;
-                if (!urlToUse || urlToUse === 'false' || typeof urlToUse !== 'string') {
-                    // If no valid URL, try to construct one from video ID
-                    const videoId = this.extractYouTubeVideoId(track.title) || track.id || track.videoId;
-                    if (videoId) {
-                        urlToUse = `https://www.youtube.com/watch?v=${videoId}`;
-                    } else {
-                        throw new Error('No valid URL available for robust processor');
-                    }
-                }
-                
-                const meta = (options && options.meta) ? options.meta : {};
-                const result = await this.robustProcessor.downloadAndConvert(urlToUse, track.title, meta);
-                
-                if (result && result.path && fs.existsSync(result.path)) {
-                    console.log(`✅ Robust processor succeeded: ${track.title}`);
-                    return fs.createReadStream(result.path);
-                }
-                
-                throw new Error('Robust processor failed to create valid file');
-                
-            } catch (robustError) {
-                console.error(`❌ All methods failed including robust processor: ${robustError.message}`);
-                throw new Error(`All streaming methods failed. Primary: ${error.message}, Robust: ${robustError.message}`);
+            } catch (error) {
+                console.error(`❌ Primary download failed: ${error.message}`);
             }
+        }
+        
+        // FOURTH: Try robust processor as final fallback (or primary for VPS)
+        try {
+            console.log(`🔄 Trying robust processor for: ${track.title}`);
+            
+            // Ensure we have a valid URL for the robust processor
+            let urlToUse = track.url;
+            if (!urlToUse || urlToUse === 'false' || typeof urlToUse !== 'string') {
+                // If no valid URL, try to construct one from video ID
+                const videoId = this.extractYouTubeVideoId(track.title) || track.id || track.videoId;
+                if (videoId) {
+                    urlToUse = `https://www.youtube.com/watch?v=${videoId}`;
+                } else {
+                    throw new Error('No valid URL available for robust processor');
+                }
+            }
+            
+            const meta = (options && options.meta) ? options.meta : {};
+            const result = await this.robustProcessor.downloadAndConvert(urlToUse, track.title, meta);
+            
+            if (result && result.path && fs.existsSync(result.path)) {
+                console.log(`✅ Robust processor succeeded: ${track.title}`);
+                return fs.createReadStream(result.path);
+            }
+            
+            throw new Error('Robust processor failed to create valid file');
+            
+        } catch (robustError) {
+            console.error(`❌ All methods failed: ${robustError.message}`);
+            throw new Error(`All streaming methods failed: ${robustError.message}`);
         }
     }
 
