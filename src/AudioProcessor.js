@@ -99,7 +99,19 @@ class AudioProcessor extends EventEmitter {
             this.emit('progress', { cacheKey, title, progress: 10, status: 'Downloading audio...', url, ...meta });
             
             // Download audio-only format and capture actual downloaded path
-            const downloadedPath = await this.downloadAudio(url, tempFile, cacheKey, title, meta);
+            let downloadedPath;
+            try {
+                downloadedPath = await this.downloadAudio(url, tempFile, cacheKey, title, meta);
+            } catch (error) {
+                // If primary download fails, try with more basic settings
+                if (error.message.includes('Format unavailable') || error.message.includes('Requested format is not available')) {
+                    console.log('🔄 Primary download failed, trying fallback method...');
+                    this.emit('progress', { cacheKey, title, progress: 15, status: 'Retrying with fallback method...', url, ...meta });
+                    downloadedPath = await this.downloadAudioFallback(url, tempFile, cacheKey, title, meta);
+                } else {
+                    throw error;
+                }
+            }
             
             console.log(`🔄 Converting to MP3: ${title}`);
             this.emit('progress', { cacheKey, title, progress: 70, status: 'Converting to MP3...', url, ...meta });
@@ -139,8 +151,8 @@ class AudioProcessor extends EventEmitter {
         return new Promise((resolve, reject) => {
             const args = [
                 '--no-config',
-                // Prefer robust audio format selection with safe fallbacks
-                '--format', String(process.env.YTDLP_FORMAT || 'bestaudio/best'),
+                // More robust format selection with multiple fallbacks
+                '--format', String(process.env.YTDLP_FORMAT || 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=720]/best[height<=480]/worst'),
                 // Include extension placeholder so we can locate the real file
                 '--output', `${outputPath}.%(ext)s`,
                 '--no-playlist',
@@ -178,8 +190,11 @@ class AudioProcessor extends EventEmitter {
             }
 
             // Add extractor args for better compatibility
-            // Prefer android client which is more tolerant without sign-in
-            args.push('--extractor-args', 'youtube:player_client=android');
+            // Use multiple client fallbacks: android is reliable, ios as backup, web as last resort
+            args.push('--extractor-args', 'youtube:player_client=android,ios,web');
+            // Add additional YouTube-specific options for better compatibility
+            args.push('--no-check-certificate');
+            args.push('--ignore-errors');  // Continue on errors when possible
             // Randomize UA slightly
             args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
             
@@ -280,7 +295,92 @@ class AudioProcessor extends EventEmitter {
                         // Fall through to error below
                     }
                 }
-                reject(new Error(`Download failed (code ${code}): ${errorBuffer}`));
+                
+                // Enhanced error messages for common format issues
+                let errorMsg = errorBuffer;
+                if (errorBuffer.includes('Requested format is not available')) {
+                    errorMsg = `Format unavailable - trying fallback extraction methods. Original error: ${errorBuffer}`;
+                    console.log('⚠️ Primary format failed, this is normal - will retry with alternative methods');
+                } else if (errorBuffer.includes('Sign in to confirm')) {
+                    errorMsg = `YouTube sign-in required - using fallback extraction. Original error: ${errorBuffer}`;
+                } else if (errorBuffer.includes('Video unavailable')) {
+                    errorMsg = `Video unavailable or region restricted: ${errorBuffer}`;
+                }
+                
+                reject(new Error(`Download failed (code ${code}): ${errorMsg}`));
+            });
+
+            ytdlp.on('error', (error) => {
+                reject(error);
+            });
+        });
+    }
+
+    async downloadAudioFallback(url, outputPath, cacheKey, title, meta = {}) {
+        return new Promise((resolve, reject) => {
+            // Use very basic settings that should work with almost any video
+            const args = [
+                '--no-config',
+                '--format', 'worst',  // Most basic format that should always be available
+                '--output', `${outputPath}_fallback.%(ext)s`,
+                '--no-playlist',
+                '--no-warnings',
+                '--ignore-errors',
+                '--no-check-certificates',
+                '--socket-timeout', '30',
+                '--retries', '5',
+                '--no-part'  // Prevent .part file issues
+            ];
+
+            // Don't use cookies for fallback to avoid auth issues
+            console.log('🔄 Using basic fallback method without advanced options');
+            
+            args.push(url);
+
+            const ytdlp = spawn(this.ytDlpPath, args);
+            // track process for potential cancellation
+            try {
+                const ap = this.activeProcesses.get(cacheKey) || {};
+                ap.ytdlp = ytdlp;
+                this.activeProcesses.set(cacheKey, ap);
+            } catch {}
+            let errorBuffer = '';
+
+            ytdlp.stderr.on('data', (data) => {
+                errorBuffer += data.toString();
+                const message = data.toString().trim();
+                if (message && !message.includes('Downloading') && !message.includes('%')) {
+                    console.log(`yt-dlp fallback: ${message}`);
+                }
+            });
+
+            ytdlp.on('close', (code) => {
+                if (code === 0) {
+                    // Find the downloaded file
+                    try {
+                        const dir = path.dirname(outputPath);
+                        const base = path.basename(outputPath) + '_fallback.';
+                        const candidates = (fs.readdirSync(dir) || [])
+                            .filter(f => f.startsWith(base) && !f.endsWith('.part'))
+                            .map(f => path.join(dir, f));
+                        
+                        if (candidates.length > 0) {
+                            candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+                            const finalPath = candidates[0];
+                            console.log('✅ Fallback download successful');
+                            // Update active process tempFile reference
+                            try {
+                                const ap = this.activeProcesses.get(cacheKey) || {};
+                                ap.tempFile = finalPath;
+                                this.activeProcesses.set(cacheKey, ap);
+                            } catch {}
+                            return resolve(finalPath);
+                        }
+                    } catch (e) {
+                        // Fall through to error
+                    }
+                }
+                reject(new Error(`Fallback download failed (code ${code}): ${errorBuffer}`));
             });
 
             ytdlp.on('error', (error) => {
