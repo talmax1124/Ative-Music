@@ -11,6 +11,8 @@ class RobustAudioProcessor extends EventEmitter {
         super();
         this.cacheDir = path.join(__dirname, '..', 'cache', 'audio');
         this.tempDir = path.join(__dirname, '..', 'cache', 'temp');
+        this.cookiesPath = process.env.COOKIES_PATH || path.join(__dirname, '..', 'cookies.txt');
+        this.proxyUrl = process.env.PROXY_URL || null;
         
         // Multiple extraction methods in order of preference
         this.extractors = [
@@ -236,9 +238,32 @@ class RobustAudioProcessor extends EventEmitter {
                 '--add-header', 'Accept-Language:en-US,en;q=0.9',
                 '--extractor-args', 'youtube:player_client=android,ios,web',
                 '--geo-bypass',
-                '--no-check-certificates',
-                url
+                '--no-check-certificates'
             ];
+
+            // Add cookies if available
+            if (fs.existsSync(this.cookiesPath)) {
+                try {
+                    const cookiesContent = fs.readFileSync(this.cookiesPath, 'utf8');
+                    if (cookiesContent.trim() && 
+                        (cookiesContent.includes('Netscape HTTP Cookie File') || 
+                         cookiesContent.includes('.youtube.com') ||
+                         /^\.youtube\.com\t/m.test(cookiesContent))) {
+                        args.push('--cookies', this.cookiesPath);
+                        console.log('🍪 Using cookies for yt-dlp-premium');
+                    }
+                } catch (e) {
+                    console.log('⚠️ Could not read cookies file');
+                }
+            }
+
+            // Add proxy if configured
+            if (this.proxyUrl) {
+                args.push('--proxy', this.proxyUrl);
+                console.log('🌐 Using proxy for yt-dlp-premium');
+            }
+
+            args.push(url);
 
             const proc = spawn('yt-dlp', args);
             let errorBuffer = '';
@@ -277,9 +302,32 @@ class RobustAudioProcessor extends EventEmitter {
                 '--socket-timeout', '30',
                 '--retries', '3',
                 '--user-agent', this.getRandomUserAgent(),
-                '--ignore-errors',
-                url
+                '--ignore-errors'
             ];
+
+            // Add cookies if available
+            if (fs.existsSync(this.cookiesPath)) {
+                try {
+                    const cookiesContent = fs.readFileSync(this.cookiesPath, 'utf8');
+                    if (cookiesContent.trim() && 
+                        (cookiesContent.includes('Netscape HTTP Cookie File') || 
+                         cookiesContent.includes('.youtube.com') ||
+                         /^\.youtube\.com\t/m.test(cookiesContent))) {
+                        args.push('--cookies', this.cookiesPath);
+                        console.log('🍪 Using cookies for yt-dlp-basic');
+                    }
+                } catch (e) {
+                    console.log('⚠️ Could not read cookies file');
+                }
+            }
+
+            // Add proxy if configured
+            if (this.proxyUrl) {
+                args.push('--proxy', this.proxyUrl);
+                console.log('🌐 Using proxy for yt-dlp-basic');
+            }
+
+            args.push(url);
 
             const proc = spawn('yt-dlp', args);
             let errorBuffer = '';
