@@ -117,6 +117,7 @@ class SourceHandlers {
         return new Promise((resolve, reject) => {
             const { spawn } = require('child_process');
             const args = [
+                '--no-config',
                 '--print', '%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s\n%(thumbnail)s\n%(view_count)s',
                 '--no-warnings',
                 '--concurrent-fragments', '8',
@@ -213,6 +214,7 @@ class SourceHandlers {
         return new Promise((resolve, reject) => {
             const { spawn } = require('child_process');
             const ytdlp = spawn('yt-dlp', [
+                '--no-config',
                 '--flat-playlist',
                 '--print', '%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s\n%(thumbnail)s',
                 '--no-warnings',
@@ -1419,6 +1421,7 @@ class SourceHandlers {
             }
 
             const ytdlpArgs = [
+                '--no-config',
                 '--format', fmt,
                 '--output', '-',
                 '--no-warnings',

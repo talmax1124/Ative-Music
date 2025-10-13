@@ -138,6 +138,7 @@ class AudioProcessor extends EventEmitter {
     async downloadAudio(url, outputPath, cacheKey, title, meta = {}) {
         return new Promise((resolve, reject) => {
             const args = [
+                '--no-config',
                 // Prefer robust audio format selection with safe fallbacks
                 '--format', String(process.env.YTDLP_FORMAT || 'bestaudio/best'),
                 // Include extension placeholder so we can locate the real file

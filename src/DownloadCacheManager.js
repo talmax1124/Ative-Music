@@ -57,6 +57,7 @@ class DownloadCacheManager {
         
         const downloadPromise = new Promise((resolve, reject) => {
             const ytdlpArgs = [
+                '--no-config',
                 '--format', 'bestaudio[ext=m4a]/bestaudio/best',
                 '--output', filepath,
                 '--no-warnings',
