@@ -133,7 +133,6 @@ class SourceHandlers {
             // Try to use cookies if available
             try {
                 const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
-                const fs = require('fs');
                 if (fs.existsSync(cookiesPath)) {
                     const txt = fs.readFileSync(cookiesPath, 'utf8');
                     if (txt && (txt.includes('Netscape HTTP Cookie File') || txt.includes('.youtube.com') || /^\.youtube\.com\t/m.test(txt))) {
@@ -1269,7 +1268,6 @@ class SourceHandlers {
         
         // THIRD: Download & convert as final fallback (only if play-dl fails)
         // Skip primary download on VPS with cookies (it always fails with 403)
-        const fs = require('fs');
         const cookiesPath = process.env.COOKIES_PATH || path.join(__dirname, '..', 'cookies.txt');
         const hasCookies = fs.existsSync(cookiesPath);
         const isVPS = process.env.NODE_ENV === 'production' || process.env.VPS === 'true';
@@ -1589,7 +1587,6 @@ class SourceHandlers {
             }
 
             const cookiesPath = process.env.COOKIES_PATH || './cookies.txt';
-            const fs = require('fs');
 
             let hasCookies = false;
             if (fs.existsSync(cookiesPath)) {
