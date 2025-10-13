@@ -4,12 +4,28 @@ const config = require('../config.js');
 const SmartAutoPlay = require('./SmartAutoPlay.js');
 const UserPreferences = require('./UserPreferences.js');
 const firebaseService = require('./FirebaseService.js');
+const EngineManager = require('./EngineManager.js');
+const HealthMonitor = require('./HealthMonitor.js');
+const VPSOptimizer = require('./VPSOptimizer.js');
 
 class MusicManager {
     constructor(guildId, channelId, sourceHandlers) {
         this.guildId = guildId;
         this.channelId = channelId;
         this.sourceHandlers = sourceHandlers;
+        
+        // Initialize modern engine system
+        this.engineManager = new EngineManager();
+        this.healthMonitor = new HealthMonitor(this.engineManager);
+        this.vpsOptimizer = new VPSOptimizer();
+        
+        // Apply VPS optimizations
+        this.vpsOptimizer.optimizeForStreaming(this.engineManager);
+        
+        // Start health monitoring in production
+        if (process.env.NODE_ENV === 'production' || process.env.VPS === 'true') {
+            this.healthMonitor.startMonitoring();
+        }
         this.queue = [];
         this.currentTrack = null;
         this.currentTrackIndex = -1;
@@ -45,6 +61,9 @@ class MusicManager {
         this.setupPlayerEvents();
         // Disabled auto-loading queue on startup for fresh sessions
         // this.loadQueue();
+        
+        // Setup health monitoring event handlers
+        this.setupHealthMonitoring();
     }
 
     setupPlayerEvents() {
@@ -332,7 +351,31 @@ class MusicManager {
                 return false;
             }
             
-            const stream = await this.sourceHandlers.getStream(this.currentTrack, { meta: { guildId: this.guildId, channelId: this.channelId, current: true } });
+            // Try modern engine manager first, fallback to old system
+            let stream = null;
+            const startTime = Date.now();
+            
+            try {
+                console.log(`🚀 Using MODERN ENGINES (no downloads, instant streaming)`);
+                stream = await this.engineManager.getStream(this.currentTrack);
+                const responseTime = Date.now() - startTime;
+                this.vpsOptimizer.recordRequest(responseTime);
+                console.log(`⚡ INSTANT STREAM in ${responseTime}ms via modern engines (NO DOWNLOADS)`);
+            } catch (engineError) {
+                console.warn(`⚠️ Modern engines failed: ${engineError.message}`);
+                console.log(`🔄 Falling back to old SourceHandlers system (with downloads)...`);
+                
+                try {
+                    stream = await this.sourceHandlers.getStream(this.currentTrack, { 
+                        meta: { guildId: this.guildId, channelId: this.channelId, current: true } 
+                    });
+                    const fallbackTime = Date.now() - startTime;
+                    console.log(`✅ Fallback stream obtained in ${fallbackTime}ms via SourceHandlers`);
+                } catch (fallbackError) {
+                    console.error(`❌ Both engine systems failed: ${fallbackError.message}`);
+                    throw fallbackError;
+                }
+            }
             
             if (!stream) {
                 console.error('❌ Failed to get stream for track - no stream returned');
@@ -1547,6 +1590,193 @@ class MusicManager {
             console.error('❌ Error in handleStreamError:', error);
             this.isTransitioning = false;
             clearTimeout(errorTimeout);
+        }
+    }
+
+    // Modern engine system integration methods
+    setupHealthMonitoring() {
+        if (!this.healthMonitor) return;
+
+        this.healthMonitor.on('healthAlert', (alert) => {
+            console.warn(`🚨 Music Manager Health Alert [${alert.severity}]: ${alert.issues.length} issues`);
+            alert.issues.forEach(issue => console.warn(`   ${issue}`));
+        });
+
+        this.healthMonitor.on('healthCheckError', (error) => {
+            console.error('❌ Health check error:', error.message);
+        });
+    }
+
+    async searchTracks(query, limit = 10) {
+        try {
+            console.log(`🔍 Modern search: ${query}`);
+            const startTime = Date.now();
+            
+            const results = await this.engineManager.search(query, limit);
+            const responseTime = Date.now() - startTime;
+            this.vpsOptimizer.recordRequest(responseTime);
+            
+            console.log(`✅ Found ${results.length} tracks in ${responseTime}ms`);
+            return results;
+        } catch (error) {
+            console.error(`❌ Modern search failed: ${error.message}`);
+            return [];
+        }
+    }
+
+    async handleURL(url) {
+        try {
+            console.log(`🔗 Modern URL handling: ${url}`);
+            const startTime = Date.now();
+            
+            const trackInfo = await this.engineManager.handleURL(url);
+            const responseTime = Date.now() - startTime;
+            this.vpsOptimizer.recordRequest(responseTime);
+            
+            if (trackInfo) {
+                console.log(`✅ URL resolved in ${responseTime}ms: ${trackInfo.title}`);
+                return trackInfo;
+            } else {
+                console.warn(`⚠️ Could not resolve URL: ${url}`);
+                return null;
+            }
+        } catch (error) {
+            console.error(`❌ Modern URL handling failed: ${error.message}`);
+            return null;
+        }
+    }
+
+    // Enhanced add track method using modern engines
+    async addTrack(input, position = null) {
+        try {
+            let track = null;
+            
+            // Check if input is already a track object
+            if (typeof input === 'object' && input.title && input.url) {
+                track = input;
+            } else if (typeof input === 'string') {
+                // Determine if it's a URL or search query
+                if (input.includes('http')) {
+                    track = await this.handleURL(input);
+                } else {
+                    // It's a search query
+                    const results = await this.searchTracks(input, 1);
+                    track = results.length > 0 ? results[0] : null;
+                }
+            }
+
+            if (!track) {
+                console.error('❌ Could not resolve track from input:', input);
+                return false;
+            }
+
+            // Add to queue
+            if (position === null || position >= this.queue.length) {
+                this.queue.push(track);
+                console.log(`➕ Added to queue: ${track.title} (position ${this.queue.length})`);
+            } else {
+                this.queue.splice(position, 0, track);
+                console.log(`➕ Inserted in queue: ${track.title} (position ${position + 1})`);
+                
+                // Adjust current track index if needed
+                if (this.currentTrackIndex >= position) {
+                    this.currentTrackIndex++;
+                }
+            }
+
+            // Trigger queue update callback
+            if (this.onQueueUpdate) {
+                this.onQueueUpdate(this.queue);
+            }
+
+            return track;
+        } catch (error) {
+            console.error('❌ Error adding track:', error);
+            return false;
+        }
+    }
+
+    // System status and diagnostics
+    getSystemStatus() {
+        const engineStatus = this.engineManager.getSystemStatus();
+        const vpsReport = this.vpsOptimizer.getPerformanceReport();
+        const healthSummary = this.healthMonitor.getHealthSummary();
+
+        return {
+            musicManager: {
+                guildId: this.guildId,
+                isPlaying: this.isPlaying,
+                queueLength: this.queue.length,
+                currentTrack: this.currentTrack ? {
+                    title: this.currentTrack.title,
+                    author: this.currentTrack.author,
+                    source: this.currentTrack.source
+                } : null
+            },
+            engines: engineStatus,
+            performance: vpsReport,
+            health: healthSummary
+        };
+    }
+
+    async runDiagnostics() {
+        console.log('🩺 Running Music Manager diagnostics...');
+        
+        try {
+            // Test engine manager
+            console.log('   Testing engine manager...');
+            await this.engineManager.testAllEngines();
+            
+            // Test search functionality
+            console.log('   Testing search functionality...');
+            const searchResults = await this.searchTracks('test', 1);
+            console.log(`   Search test: ${searchResults.length > 0 ? '✅' : '❌'}`);
+            
+            // Get system status
+            const status = this.getSystemStatus();
+            console.log('   System status:', JSON.stringify(status, null, 2));
+            
+            // Force health check
+            if (this.healthMonitor) {
+                await this.healthMonitor.runHealthCheck();
+            }
+            
+            console.log('✅ Diagnostics completed');
+            return status;
+        } catch (error) {
+            console.error('❌ Diagnostics failed:', error);
+            throw error;
+        }
+    }
+
+    // Cleanup method for graceful shutdown
+    async cleanup() {
+        console.log('🛑 Cleaning up Music Manager...');
+        
+        try {
+            // Stop health monitoring
+            if (this.healthMonitor) {
+                this.healthMonitor.stopMonitoring();
+            }
+            
+            // Shutdown engine manager
+            if (this.engineManager) {
+                await this.engineManager.shutdown();
+            }
+            
+            // Run VPS cleanup
+            if (this.vpsOptimizer) {
+                await this.vpsOptimizer.cleanup();
+            }
+            
+            // Stop audio player
+            if (this.player) {
+                this.player.stop(true);
+            }
+            
+            console.log('✅ Music Manager cleanup completed');
+        } catch (error) {
+            console.error('❌ Error during cleanup:', error);
         }
     }
 }

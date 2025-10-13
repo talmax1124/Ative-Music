@@ -79,11 +79,11 @@ class PlaylistDetailView extends BaseComponent {
             <!-- Action buttons -->
             ${trackCount > 0 ? `
               <div class="flex items-center gap-3 mt-6">
-                <button class="play-all-btn btn-primary btn-lg bg-green-600 hover:bg-green-700 focus:ring-green-500">
+                <button class="play-all-btn btn-primary px-5 py-3 rounded-md btn-lg bg-green-600 hover:bg-green-600/50 focus:ring-green-500">
                   <i class="fas fa-play mr-2"></i>
                   Play all
                 </button>
-                <button class="shuffle-all-btn btn-secondary btn-lg">
+                <button class="shuffle-all-btn btn-secondary btn-lg px-5 py-3 rounded-md">
                   <i class="fas fa-random mr-2"></i>
                   Shuffle
                 </button>
