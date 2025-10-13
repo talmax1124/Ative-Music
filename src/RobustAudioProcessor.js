@@ -136,6 +136,18 @@ class RobustAudioProcessor extends EventEmitter {
     }
 
     async downloadAndConvert(url, title = 'Unknown', meta = {}) {
+        // Validate and fix URL
+        if (!url || url === 'false' || typeof url !== 'string') {
+            // Try to construct URL from title if it's a video ID
+            const videoIdMatch = title.match(/^[a-zA-Z0-9_-]{11}$/);
+            if (videoIdMatch) {
+                url = `https://www.youtube.com/watch?v=${title}`;
+                console.log(`🔧 Constructed URL from video ID: ${url}`);
+            } else {
+                throw new Error(`Invalid URL provided: ${url}`);
+            }
+        }
+        
         const cachedFile = this.getCachedFile(url);
         if (cachedFile) {
             return { path: cachedFile, cached: true };
@@ -304,14 +316,16 @@ class RobustAudioProcessor extends EventEmitter {
         return new Promise((resolve, reject) => {
             const args = [
                 '--no-config',
-                '--format', 'worst/best',
+                '--format', 'worstaudio/bestaudio[ext=m4a]/bestaudio',
                 '--output', `${outputPath}.%(ext)s`,
                 '--no-playlist',
                 '--no-warnings',
-                '--socket-timeout', '30',
-                '--retries', '3',
+                '--socket-timeout', '15',
+                '--retries', '2',
                 '--user-agent', this.getRandomUserAgent(),
-                '--ignore-errors'
+                '--ignore-errors',
+                '--no-check-certificates',
+                '--geo-bypass'
             ];
 
             // Add cookies if available

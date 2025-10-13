@@ -122,15 +122,12 @@ class SourceHandlers {
             const { spawn } = require('child_process');
             const args = [
                 '--no-config',
-                '--print', '%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s\n%(thumbnail)s\n%(view_count)s',
+                '--dump-json',
                 '--no-warnings',
-                '--concurrent-fragments', '8',
-                '--socket-timeout', '15',
-                '--fragment-retries', '2',
-                '--retries', '2',
-                '--http-chunk-size', '5M',
-                '--buffer-size', '32K',
-                '--prefer-free-formats'
+                '--no-download',
+                '--skip-download',
+                '--socket-timeout', '10',
+                '--retries', '2'
             ];
 
             // Try to use cookies if available
@@ -174,35 +171,24 @@ class SourceHandlers {
                 }
 
                 try {
-                    const lines = output.trim().split('\n');
-                    if (lines.length >= 4) {
-                        const title = lines[0] || 'Unknown Title';
-                        const uploader = lines[1] || 'Unknown';
-                        const duration = lines[2] || '0:00';
-                        const webpage_url = lines[3] || url;
-                        const thumbnail = lines[4] || null;
-                        const viewCount = parseInt(lines[5]) || 0;
-                        
-                        const durationSeconds = parseFloat(duration) || 0;
-                        const durationMS = durationSeconds * 1000;
-                        
-                        const data = {
-                            title,
-                            author: uploader,
-                            duration: this.formatDuration(durationMS),
-                            durationMS: durationMS,
-                            url: webpage_url,
-                            thumbnail,
-                            source: 'youtube',
-                            type: 'track',
-                            viewCount,
-                            id: this.extractYouTubeVideoId(url) || ''
-                        };
-                        try { this.metaCache.set(url, { data, ts: Date.now() }); } catch (_) {}
-                        resolve(data);
-                    } else {
-                        reject(new Error('Insufficient metadata from yt-dlp'));
-                    }
+                    const jsonData = JSON.parse(output);
+                    const durationSeconds = jsonData.duration || 0;
+                    const durationMS = durationSeconds * 1000;
+                    
+                    const data = {
+                        title: jsonData.title || jsonData.fulltitle || 'Unknown Title',
+                        author: jsonData.uploader || jsonData.channel || 'Unknown Artist',
+                        duration: this.formatDuration(durationMS),
+                        durationMS: durationMS,
+                        url: jsonData.webpage_url || url,
+                        thumbnail: jsonData.thumbnail || jsonData.thumbnails?.[0]?.url || null,
+                        source: 'youtube',
+                        type: 'track',
+                        viewCount: jsonData.view_count || 0,
+                        id: jsonData.id || this.extractYouTubeVideoId(url) || ''
+                    };
+                    try { this.metaCache.set(url, { data, ts: Date.now() }); } catch (_) {}
+                    resolve(data);
                 } catch (parseError) {
                     reject(new Error(`Failed to parse yt-dlp output: ${parseError.message}`));
                 }

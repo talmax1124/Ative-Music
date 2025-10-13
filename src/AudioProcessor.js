@@ -151,8 +151,8 @@ class AudioProcessor extends EventEmitter {
         return new Promise((resolve, reject) => {
             const args = [
                 '--no-config',
-                // More robust format selection with multiple fallbacks
-                '--format', String(process.env.YTDLP_FORMAT || 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best[height<=720]/best[height<=480]/worst'),
+                // Optimize for VPS: prefer lower quality for faster download
+                '--format', 'worstaudio/bestaudio[ext=m4a]/bestaudio',
                 // Include extension placeholder so we can locate the real file
                 '--output', `${outputPath}.%(ext)s`,
                 '--no-playlist',
@@ -164,12 +164,12 @@ class AudioProcessor extends EventEmitter {
                 '--no-part',  // Prevent .part file issues
                 '--no-continue',
                 '--force-overwrites',
-                '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 10),
-                '--retries', String(process.env.YTDLP_RETRIES || 3),
-                '--fragment-retries', String(process.env.YTDLP_FRAGMENT_RETRIES || 3),
-                '--concurrent-fragments', String(process.env.YTDLP_CONCURRENT_FRAGMENTS || 4),
-                '--buffer-size', '64K',
-                '--http-chunk-size', '1M'
+                '--socket-timeout', '8',
+                '--retries', '2',
+                '--fragment-retries', '2',
+                '--concurrent-fragments', '8',
+                '--buffer-size', '16K',
+                '--http-chunk-size', '10M'
             ];
 
             // Add cookies if available and valid
