@@ -44,8 +44,12 @@ class SourceHandlers {
         // Initialize download cache manager
         this.downloadCache = new DownloadCacheManager();
         
-        // Initialize audio processor for MP3 conversion
+        // Initialize robust audio processor for MP3 conversion
         this.audioProcessor = new AudioProcessor();
+        
+        // Initialize fallback robust system
+        const RobustAudioProcessor = require('./RobustAudioProcessor');
+        this.robustProcessor = new RobustAudioProcessor();
         
         // Stream cache for failed tracks
         this.streamCache = new Map();
@@ -1125,8 +1129,26 @@ class SourceHandlers {
             return fs.createReadStream(result.path);
             
         } catch (error) {
-            console.error(`❌ All methods failed: ${error.message}`);
-            throw error;
+            console.error(`❌ Primary download failed: ${error.message}`);
+            
+            // FOURTH: Try robust processor as final fallback
+            try {
+                console.log(`🔄 Trying robust processor as fallback for: ${track.title}`);
+                
+                const meta = (options && options.meta) ? options.meta : {};
+                const result = await this.robustProcessor.downloadAndConvert(track.url, track.title, meta);
+                
+                if (result && result.path && fs.existsSync(result.path)) {
+                    console.log(`✅ Robust processor succeeded: ${track.title}`);
+                    return fs.createReadStream(result.path);
+                }
+                
+                throw new Error('Robust processor failed to create valid file');
+                
+            } catch (robustError) {
+                console.error(`❌ All methods failed including robust processor: ${robustError.message}`);
+                throw new Error(`All streaming methods failed. Primary: ${error.message}, Robust: ${robustError.message}`);
+            }
         }
     }
 
