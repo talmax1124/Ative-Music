@@ -14,8 +14,17 @@ class RobustAudioProcessor extends EventEmitter {
         this.cookiesPath = process.env.COOKIES_PATH || path.join(__dirname, '..', 'cookies.txt');
         this.proxyUrl = process.env.PROXY_URL || null;
         
+        // Check if cookies are available
+        const hasCookies = fs.existsSync(this.cookiesPath);
+        
         // Multiple extraction methods in order of preference
-        this.extractors = [
+        // On VPS with cookies, yt-dlp-basic tends to work better
+        this.extractors = hasCookies ? [
+            { name: 'yt-dlp-basic', command: 'yt-dlp', priority: 1 },
+            { name: 'yt-dlp-premium', command: 'yt-dlp', priority: 2 },
+            { name: 'ytdl-core', command: null, priority: 3 },
+            { name: 'direct-stream', command: null, priority: 4 }
+        ] : [
             { name: 'yt-dlp-premium', command: 'yt-dlp', priority: 1 },
             { name: 'yt-dlp-basic', command: 'yt-dlp', priority: 2 },
             { name: 'ytdl-core', command: null, priority: 3 },

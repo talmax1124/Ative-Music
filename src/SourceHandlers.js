@@ -1310,8 +1310,20 @@ class SourceHandlers {
             try {
                 console.log(`🔄 Trying robust processor as fallback for: ${track.title}`);
                 
+                // Ensure we have a valid URL for the robust processor
+                let urlToUse = track.url;
+                if (!urlToUse || urlToUse === 'false' || typeof urlToUse !== 'string') {
+                    // If no valid URL, try to construct one from video ID
+                    const videoId = this.extractYouTubeVideoId(track.title) || track.id || track.videoId;
+                    if (videoId) {
+                        urlToUse = `https://www.youtube.com/watch?v=${videoId}`;
+                    } else {
+                        throw new Error('No valid URL available for robust processor');
+                    }
+                }
+                
                 const meta = (options && options.meta) ? options.meta : {};
-                const result = await this.robustProcessor.downloadAndConvert(track.url, track.title, meta);
+                const result = await this.robustProcessor.downloadAndConvert(urlToUse, track.title, meta);
                 
                 if (result && result.path && fs.existsSync(result.path)) {
                     console.log(`✅ Robust processor succeeded: ${track.title}`);
