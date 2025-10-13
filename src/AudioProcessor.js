@@ -162,6 +162,8 @@ class AudioProcessor extends EventEmitter {
                 '--geo-bypass',
                 '--no-update',
                 '--no-part',  // Prevent .part file issues
+                '--no-continue',
+                '--force-overwrites',
                 '--socket-timeout', String(process.env.YTDLP_SOCKET_TIMEOUT || 10),
                 '--retries', String(process.env.YTDLP_RETRIES || 3),
                 '--fragment-retries', String(process.env.YTDLP_FRAGMENT_RETRIES || 3),

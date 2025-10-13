@@ -55,6 +55,15 @@ class WebPortalServer {
   setupRoutes() {
     this.app.use(express.json());
     
+    // Serve static files for components
+    this.app.use('/src/components', express.static(__dirname + '/components', {
+      setHeaders: (res, path) => {
+        if (path.endsWith('.js')) {
+          res.setHeader('Content-Type', 'application/javascript');
+        }
+      }
+    }));
+    
     // Add CORS headers
     this.app.use((req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
@@ -891,16 +900,43 @@ class WebPortalServer {
       height: 50px;
       background: var(--surface);
       border-radius: 8px;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+    }
+    
+    .player-thumbnail-media {
+      flex: 1;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
     }
     
-    .player-thumbnail img {
+    .player-thumbnail-media img {
       width: 100%;
       height: 100%;
       object-fit: cover;
+    }
+    
+    .player-download-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(4px);
+      color: #bfdbfe;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.7rem;
+      text-align: center;
+      padding: 0.5rem;
+    }
+    
+    .player-download-overlay .overlay-percent {
+      font-weight: 600;
+      font-size: 0.8rem;
     }
     
     .player-text {
@@ -1982,6 +2018,131 @@ class WebPortalServer {
       position: relative;
       z-index: 2;
     }
+
+    /* Enhanced playlist button styling */
+    .playlist-btn {
+      background: linear-gradient(135deg, #e91e63, #f06292);
+      color: white;
+      border: none;
+      padding: 0.75rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      height: 44px;
+      box-shadow: 0 2px 8px rgba(233, 30, 99, 0.3);
+    }
+
+    .playlist-btn:hover {
+      background: linear-gradient(135deg, #d81b60, #e91e63);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(233, 30, 99, 0.4);
+    }
+
+    .playlist-btn:active {
+      transform: translateY(0);
+      box-shadow: 0 2px 8px rgba(233, 30, 99, 0.3);
+    }
+
+    .playlist-btn i {
+      font-size: 16px;
+      color: white;
+    }
+
+    /* Autocomplete dropdown styles */
+    #search-autocomplete {
+      backdrop-filter: blur(10px);
+      background: rgba(30, 41, 59, 0.95);
+    }
+
+    .autocomplete-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .autocomplete-item:last-child {
+      border-bottom: none;
+    }
+
+    .autocomplete-item:hover,
+    .autocomplete-item.selected {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .autocomplete-item-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      background: var(--accent-light);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .autocomplete-item-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: inherit;
+    }
+
+    .autocomplete-item-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .autocomplete-item-title {
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 0.25rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .autocomplete-item-subtitle {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .autocomplete-item-meta {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-left: 0.5rem;
+      white-space: nowrap;
+    }
+
+    .autocomplete-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      color: var(--text-muted);
+    }
+
+    .autocomplete-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
   </style>
   
   <!-- Component System -->
@@ -2177,10 +2338,15 @@ class WebPortalServer {
               <div class="absolute left-4 z-10">
                 <i class="fas fa-search text-slate-400"></i>
               </div>
-              <input type="text" class="flex-1 pl-12 pr-32 py-4 bg-surface-700 border border-surface-600 rounded-xl text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200" id="search" placeholder="Search for songs, artists, or playlists..." />
+              <input type="text" class="flex-1 pl-12 pr-32 py-4 bg-surface-700 border border-surface-600 rounded-xl text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200" id="search" placeholder="Search for songs, artists, or playlists..." autocomplete="off" />
               <button class="absolute right-2 top-1/2 -translate-y-1/2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg font-medium transition-all duration-200 hover:scale-105" id="search-btn">
                 Search
               </button>
+              
+              <!-- Autocomplete dropdown -->
+              <div id="search-autocomplete" class="absolute top-full left-0 right-0 mt-1 bg-surface-800 border border-surface-600 rounded-lg shadow-xl z-50 max-h-80 overflow-y-auto hidden">
+                <!-- Autocomplete suggestions will be populated here -->
+              </div>
             </div>
             
             <div id="results" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
@@ -2306,7 +2472,13 @@ class WebPortalServer {
   <div class="bottom-player" id="bottom-player" style="display: none;">
     <div class="player-track-info">
       <div class="player-thumbnail" id="player-thumbnail">
-        <i class="fas fa-music"></i>
+        <div class="player-thumbnail-media" id="player-thumbnail-media">
+          <i class="fas fa-music"></i>
+        </div>
+        <div class="player-download-overlay" id="player-download-overlay" title="">
+          <i class="fas fa-circle-notch fa-spin"></i>
+          <span class="overlay-percent" id="player-download-overlay-percent">0%</span>
+        </div>
       </div>
       <div class="player-text">
         <div class="player-title" id="player-title">No track playing</div>
@@ -2564,6 +2736,9 @@ class WebPortalServer {
           userAvatar.src = \`https://cdn.discordapp.com/avatars/\${currentUser.id}/\${currentUser.avatar}.png?size=64\`;
           userAvatar.style.display = 'block';
         }
+        
+        // Load user playlists after successful login
+        loadUserPlaylists();
       }
     }
 
@@ -2607,6 +2782,9 @@ class WebPortalServer {
       playerTitle: document.getElementById('player-title'),
       playerArtist: document.getElementById('player-artist'),
       playerThumbnail: document.getElementById('player-thumbnail'),
+      playerThumbnailMedia: document.getElementById('player-thumbnail-media'),
+      playerDownloadOverlay: document.getElementById('player-download-overlay'),
+      playerDownloadOverlayPercent: document.getElementById('player-download-overlay-percent'),
       btnPlay: document.getElementById('btn-play'),
       btnPrev: document.getElementById('btn-prev'),
       btnNext: document.getElementById('btn-next'),
@@ -2618,7 +2796,13 @@ class WebPortalServer {
       progressFill: document.getElementById('progress-fill'),
       currentTime: document.getElementById('current-time'),
       totalTime: document.getElementById('total-time'),
-      notification: document.getElementById('notification')
+      notification: document.getElementById('notification'),
+      downloadContainer: document.getElementById('download-progress'),
+      downloadTitle: document.getElementById('download-title'),
+      downloadStatus: document.getElementById('download-status'),
+      downloadFill: document.getElementById('download-fill'),
+      downloadPercentText: document.getElementById('download-percent'),
+      searchAutocomplete: document.getElementById('search-autocomplete')
     };
 
     // URL Routing
@@ -2750,6 +2934,16 @@ class WebPortalServer {
       const mins = Math.floor(seconds / 60);
       const secs = Math.floor(seconds % 60);
       return \`\${mins}:\${secs.toString().padStart(2, '0')}\`;
+    }
+
+    function escapeHtml(input) {
+      if (input === undefined || input === null) return '';
+      return String(input)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     // Server Selection Functions
@@ -3014,7 +3208,7 @@ class WebPortalServer {
             <button class="queue-btn" onclick="queueTrack('\${track.url}')">
               <i class="fas fa-plus"></i>
             </button>
-            <button class="playlist-btn" onclick="showAddToPlaylistModal({title: '\${track.title.replace(/'/g, '\\\\\\'')}', author: '\${track.author.replace(/'/g, '\\\\\\'')}', url: '\${track.url}', thumbnail: '\${track.thumbnail || ''}', duration: '\${track.duration || ''}'})">
+            <button class="playlist-btn" onclick="showAddToPlaylistModal({title: '\${(track.title || '').replace(/'/g, '&apos;')}', author: '\${(track.author || '').replace(/'/g, '&apos;')}', url: '\${track.url}', thumbnail: '\${track.thumbnail || ''}', duration: '\${track.duration || ''}'})">
               <i class="fas fa-heart"></i>
             </button>
           </div>
@@ -3113,9 +3307,17 @@ class WebPortalServer {
       els.playerArtist.textContent = track.author || 'Select a song to play';
       
       if (track.thumbnail) {
-        els.playerThumbnail.innerHTML = \`<img src="\${track.thumbnail}" alt="\${track.title}" />\`;
+        els.playerThumbnailMedia.innerHTML = \`<img src="\${track.thumbnail}" alt="\${track.title}" />\`;
       } else {
-        els.playerThumbnail.innerHTML = '<i class="fas fa-music"></i>';
+        els.playerThumbnailMedia.innerHTML = '<i class="fas fa-music"></i>';
+      }
+
+      if (els.playerDownloadOverlay) {
+        els.playerDownloadOverlay.style.display = 'none';
+        if (els.playerDownloadOverlayPercent) {
+          els.playerDownloadOverlayPercent.textContent = '0%';
+        }
+        els.playerDownloadOverlay.removeAttribute('title');
       }
 
       // Update play button
@@ -3169,10 +3371,13 @@ class WebPortalServer {
             <div style="font-size: 0.875rem; color: var(--text-secondary);">\${track.author}</div>
           </div>
           <div style="display: flex; gap: 0.5rem;">
-            <button class="btn btn-small" onclick="control('jump', null, {index: \${index}})">
+            <button class="btn btn-small" onclick="window.control && window.control('jump', null, {index: \${index}})">
               <i class="fas fa-play"></i>
             </button>
-            <button class="btn btn-secondary btn-small" onclick="control('remove', null, {index: \${index}})">
+            <button class="btn btn-small playlist-btn" onclick="showAddToPlaylistModal({title: '\${(track.title || '').replace(/'/g, '&apos;')}', author: '\${(track.author || '').replace(/'/g, '&apos;')}', url: '\${track.url}', thumbnail: '\${track.thumbnail || ''}', duration: '\${track.duration || ''}'})">
+              <i class="fas fa-heart"></i>
+            </button>
+            <button class="btn btn-secondary btn-small" onclick="window.control && window.control('remove', null, {index: \${index}})">
               <i class="fas fa-times"></i>
             </button>
           </div>
@@ -3615,51 +3820,86 @@ class WebPortalServer {
     }
 
     // Suggestions functionality
-    function loadSuggestions() {
-      // Mock suggestions for now - in real app, this would come from API
-      const mockSuggestions = [
-        {
-          title: "Blinding Lights",
-          artist: "The Weeknd",
-          duration: "3:20",
-          thumbnail: null,
-          url: "https://example.com/song1"
-        },
-        {
-          title: "Watermelon Sugar",
-          artist: "Harry Styles", 
-          duration: "2:54",
-          thumbnail: null,
-          url: "https://example.com/song2"
-        },
-        {
-          title: "Levitating",
-          artist: "Dua Lipa",
-          duration: "3:23",
-          thumbnail: null,
-          url: "https://example.com/song3"
-        },
-        {
-          title: "Good 4 U",
-          artist: "Olivia Rodrigo",
-          duration: "2:58",
-          thumbnail: null,
-          url: "https://example.com/song4"
-        },
-        {
-          title: "Stay",
-          artist: "The Kid LAROI, Justin Bieber",
-          duration: "2:21",
-          thumbnail: null,
-          url: "https://example.com/song5"
-        }
-      ];
-
+    async function loadSuggestions() {
       const suggestionsContainer = document.getElementById('suggestions-container') || createSuggestionsContainer();
       
       if (suggestionsInstance) {
         suggestionsInstance.instance.setLoading(true);
       }
+
+      try {
+        const hasContext = Boolean(currentGuild && currentChannel);
+        let suggestions = [];
+
+        if (hasContext) {
+          const response = await fetch(BASE + '/api/recommendations', {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify({
+              currentTrack: currentTrack || { title: "Popular", artist: "Music" },
+              guildId: currentGuild,
+              channelId: currentChannel,
+              count: 5
+            })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            suggestions = data.recommendations || [];
+          }
+        }
+
+        // Fallback to diverse mock suggestions if API fails or no context
+        if (!hasContext || !suggestions || suggestions.length === 0) {
+          const mockSuggestionSets = [
+            [
+              { title: "Blinding Lights", artist: "The Weeknd", duration: "3:20", thumbnail: null, url: "https://example.com/song1" },
+              { title: "Watermelon Sugar", artist: "Harry Styles", duration: "2:54", thumbnail: null, url: "https://example.com/song2" },
+              { title: "Levitating", artist: "Dua Lipa", duration: "3:23", thumbnail: null, url: "https://example.com/song3" },
+              { title: "Good 4 U", artist: "Olivia Rodrigo", duration: "2:58", thumbnail: null, url: "https://example.com/song4" },
+              { title: "Stay", artist: "The Kid LAROI, Justin Bieber", duration: "2:21", thumbnail: null, url: "https://example.com/song5" }
+            ],
+            [
+              { title: "Heat Waves", artist: "Glass Animals", duration: "3:58", thumbnail: null, url: "https://example.com/song6" },
+              { title: "As It Was", artist: "Harry Styles", duration: "2:47", thumbnail: null, url: "https://example.com/song7" },
+              { title: "Bad Habit", artist: "Steve Lacy", duration: "3:51", thumbnail: null, url: "https://example.com/song8" },
+              { title: "About Damn Time", artist: "Lizzo", duration: "3:12", thumbnail: null, url: "https://example.com/song9" },
+              { title: "Running Up That Hill", artist: "Kate Bush", duration: "4:58", thumbnail: null, url: "https://example.com/song10" }
+            ],
+            [
+              { title: "Anti-Hero", artist: "Taylor Swift", duration: "3:20", thumbnail: null, url: "https://example.com/song11" },
+              { title: "Unholy", artist: "Sam Smith ft. Kim Petras", duration: "2:36", thumbnail: null, url: "https://example.com/song12" },
+              { title: "Flowers", artist: "Miley Cyrus", duration: "3:20", thumbnail: null, url: "https://example.com/song13" },
+              { title: "Calm Down", artist: "Rema & Selena Gomez", duration: "3:59", thumbnail: null, url: "https://example.com/song14" },
+              { title: "Kill Bill", artist: "SZA", duration: "2:33", thumbnail: null, url: "https://example.com/song15" }
+            ]
+          ];
+          
+          // Randomly select one of the sets
+          const randomSet = Math.floor(Math.random() * mockSuggestionSets.length);
+          suggestions = mockSuggestionSets[randomSet];
+        }
+
+        // Render suggestions
+        renderSuggestions(suggestions);
+        
+      } catch (error) {
+        console.error('Error loading suggestions:', error);
+        // Fallback to first mock set
+        const fallbackSuggestions = [
+          { title: "Blinding Lights", artist: "The Weeknd", duration: "3:20", thumbnail: null, url: "https://example.com/song1" },
+          { title: "Watermelon Sugar", artist: "Harry Styles", duration: "2:54", thumbnail: null, url: "https://example.com/song2" },
+          { title: "Levitating", artist: "Dua Lipa", duration: "3:23", thumbnail: null, url: "https://example.com/song3" },
+          { title: "Good 4 U", artist: "Olivia Rodrigo", duration: "2:58", thumbnail: null, url: "https://example.com/song4" },
+          { title: "Stay", artist: "The Kid LAROI, Justin Bieber", duration: "2:21", thumbnail: null, url: "https://example.com/song5" }
+        ];
+        renderSuggestions(fallbackSuggestions);
+      }
+    }
+
+    function renderSuggestions(suggestions) {
+      const suggestionsContainer = document.getElementById('suggestions-container') || createSuggestionsContainer();
+      const normalizedSuggestions = (suggestions || []).map(normalizeSuggestionTrack).filter(Boolean);
       
       // Simulate loading delay
       setTimeout(() => {
@@ -3668,17 +3908,44 @@ class WebPortalServer {
         }
         
         const { instance, instanceId } = componentManager.render('SuggestionsSection', suggestionsContainer, {
-          suggestions: mockSuggestions,
+          suggestions: normalizedSuggestions,
           loading: false,
-          onPlaySong: (song) => {
-            console.log('Playing suggested song:', song.title);
-            showNotification(\`Playing: \${song.title}\`, 'info');
-            // TODO: Implement actual play functionality
+          onPlaySong: async (song) => {
+            try {
+              console.log('Playing suggested song:', song.title);
+              showNotification(\`Playing: \${song.title}\`, 'info');
+              
+              // Use the existing playTrack function with proper URL
+              const target = resolveSuggestionTarget(song);
+              await playTrack(target, null);
+            } catch (error) {
+              console.error('Error playing suggested song:', error);
+              showNotification('Error playing song', 'error');
+            }
           },
-          onQueueSong: (song) => {
-            console.log('Queuing suggested song:', song.title);
-            showNotification(\`Added to queue: \${song.title}\`, 'success');
-            // TODO: Implement actual queue functionality
+          onQueueSong: async (song) => {
+            try {
+              console.log('Queuing suggested song:', song.title);
+              
+              const response = await fetch(BASE + '/api/queue', {
+                method: 'POST',
+                headers: headers(),
+                body: JSON.stringify({
+                  url: resolveSuggestionTarget(song),
+                  guildId: currentGuild,
+                  channelId: currentChannel
+                })
+              });
+
+              if (response.ok) {
+                showNotification(\`Added to queue: \${song.title}\`, 'success');
+              } else {
+                throw new Error('Failed to add to queue');
+              }
+            } catch (error) {
+              console.error('Error queuing suggested song:', error);
+              showNotification('Error adding to queue', 'error');
+            }
           },
           onAddToPlaylist: (song) => {
             // Show playlist selection modal
@@ -3691,6 +3958,32 @@ class WebPortalServer {
         
         suggestionsInstance = { instance, instanceId };
       }, 1000);
+    }
+
+
+    function isSupportedSuggestionUrl(url) {
+      if (typeof url !== 'string') return false;
+      const trimmed = url.trim();
+      if (!/^https?:\\/\\//i.test(trimmed)) return false;
+      return /(youtube\\.com|youtu\\.be|music\\.youtube\\.com|open\\.spotify\\.com|soundcloud\\.com)/i.test(trimmed);
+    }
+
+    function normalizeSuggestionTrack(song) {
+      if (!song) return null;
+      const normalized = { ...song };
+      normalized.url = isSupportedSuggestionUrl(normalized.url) ? normalized.url.trim() : null;
+      const fallbackQuery = [normalized.title || '', normalized.artist || ''].join(' ').trim();
+      normalized.searchQuery = (normalized.searchQuery || fallbackQuery).trim();
+      return normalized;
+    }
+
+    function resolveSuggestionTarget(song) {
+      if (!song) return '';
+      if (song.url && isSupportedSuggestionUrl(song.url)) {
+        return song.url;
+      }
+      const query = (song.searchQuery || [song.title || '', song.artist || ''].join(' ')).trim();
+      return query.length > 0 ? query : (song.title || song.artist || 'music');
     }
 
     function createSuggestionsContainer() {
@@ -4127,6 +4420,13 @@ class WebPortalServer {
     };
 
     // Event Listeners
+    let autocompleteTimeout;
+    let autocompleteSelectedIndex = -1;
+    let autocompleteController = null;
+    let autocompleteRequestId = 0;
+    let currentAutocompleteSuggestions = [];
+    let lastAutocompleteQuery = '';
+
     els.channel.addEventListener('change', () => {
       currentChannel = els.channel.value;
       localStorage.setItem('musicBot_channelId', currentChannel); // Save to localStorage
@@ -4134,11 +4434,281 @@ class WebPortalServer {
 
     els.search.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        searchMusic();
+        if (autocompleteSelectedIndex >= 0 && currentAutocompleteSuggestions[autocompleteSelectedIndex]) {
+          e.preventDefault();
+          handleAutocompleteSelection(autocompleteSelectedIndex);
+        } else {
+          hideAutocomplete();
+          searchMusic();
+        }
+      } else if (e.key === 'Escape') {
+        hideAutocomplete();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        navigateAutocomplete('down');
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        navigateAutocomplete('up');
       }
     });
 
-    document.getElementById('search-btn').addEventListener('click', searchMusic);
+    // Autocomplete functionality
+    els.search.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      
+      clearTimeout(autocompleteTimeout);
+      
+      if (query.length < 2) {
+        hideAutocomplete();
+        return;
+      }
+      
+      autocompleteTimeout = setTimeout(() => {
+        showAutocomplete(query);
+      }, 250);
+    });
+
+    els.search.addEventListener('focus', (e) => {
+      const query = e.target.value.trim();
+      if (query.length >= 2) {
+        showAutocomplete(query);
+      }
+    });
+
+    els.search.addEventListener('blur', () => {
+      // Delay hiding to allow clicking on autocomplete items
+      setTimeout(() => {
+        hideAutocomplete();
+      }, 150);
+    });
+
+    function showAutocomplete(query) {
+      const autocompleteDiv = els.searchAutocomplete;
+      if (!autocompleteDiv) return;
+
+      lastAutocompleteQuery = query;
+      autocompleteSelectedIndex = -1;
+      currentAutocompleteSuggestions = [];
+
+      // Cancel any in-flight request
+      if (autocompleteController) {
+        autocompleteController.abort();
+      }
+      autocompleteController = new AbortController();
+      const requestId = ++autocompleteRequestId;
+
+      // Show loading state
+      autocompleteDiv.innerHTML = \`
+        <div class="autocomplete-loading">
+          <i class="fas fa-spinner fa-spin mr-2"></i>
+          Searching...
+        </div>
+      \`;
+      autocompleteDiv.classList.remove('hidden');
+
+      fetch(\`\${BASE}/api/search/suggestions?q=\${encodeURIComponent(query)}\`, {
+        method: 'GET',
+        headers: headers(),
+        signal: autocompleteController.signal
+      })
+        .then(async (response) => {
+          if (requestId !== autocompleteRequestId) return null;
+          if (!response.ok) {
+            let message = response.statusText || 'Failed to fetch suggestions';
+            try {
+              const payload = await response.json();
+              if (payload?.error) message = payload.error;
+            } catch (_) {}
+            displayAutocomplete([], query, message);
+            return null;
+          }
+          return response.json();
+        })
+        .then((data) => {
+          if (data === null) return;
+          if (requestId !== autocompleteRequestId) return;
+          if (els.search.value.trim() !== query) return; // Ignore stale responses
+
+          let suggestions = [];
+          if (Array.isArray(data)) {
+            suggestions = data;
+          } else if (Array.isArray(data?.suggestions)) {
+            suggestions = data.suggestions;
+          }
+
+          displayAutocomplete(suggestions, query);
+        })
+        .catch((error) => {
+          if (error.name === 'AbortError') return;
+          displayAutocomplete([], query, error.message || 'Unable to load suggestions');
+        });
+    }
+
+    function displayAutocomplete(suggestions, originalQuery, errorMessage = null) {
+      const autocompleteDiv = els.searchAutocomplete;
+      if (!autocompleteDiv) return;
+
+      autocompleteSelectedIndex = -1;
+      currentAutocompleteSuggestions = [];
+
+      if (errorMessage) {
+        autocompleteDiv.innerHTML = \`
+          <div class="autocomplete-empty">
+            <i class="fas fa-exclamation-triangle text-red-400 mb-2"></i>
+            <p>\${escapeHtml(errorMessage)}</p>
+          </div>
+        \`;
+        autocompleteDiv.classList.remove('hidden');
+        return;
+      }
+
+      const list = Array.isArray(suggestions) ? suggestions.filter(Boolean) : [];
+
+      if (originalQuery && originalQuery.length > 0 && !list.some(s => s?.action === 'search')) {
+        list.unshift({
+          type: 'search',
+          action: 'search',
+          title: \`Search "\${originalQuery}"\`,
+          subtitle: 'Press enter to view full results',
+          icon: 'fas fa-search',
+          query: originalQuery
+        });
+      }
+
+      if (list.length === 0) {
+        autocompleteDiv.innerHTML = \`
+          <div class="autocomplete-empty">
+            <i class="fas fa-search text-slate-500 mb-2"></i>
+            <p>No suggestions found</p>
+          </div>
+        \`;
+        autocompleteDiv.classList.remove('hidden');
+        return;
+      }
+
+      currentAutocompleteSuggestions = list;
+
+      autocompleteDiv.innerHTML = list.map((suggestion, index) => {
+        const iconClass = suggestion.icon 
+          ? suggestion.icon 
+          : (suggestion.source === 'spotify' ? 'fab fa-spotify' : suggestion.source === 'youtube' ? 'fab fa-youtube' : 'fas fa-music');
+        const iconMarkup = suggestion.thumbnail
+          ? \`<img src="\${suggestion.thumbnail}" alt="" onerror="this.style.display='none'" />\`
+          : \`<i class="\${iconClass} text-blue-400"></i>\`;
+        const subtitle = escapeHtml(suggestion.subtitle || '');
+        const metaParts = [];
+        if (suggestion.duration) metaParts.push(escapeHtml(suggestion.duration));
+        if (suggestion.source) metaParts.push(escapeHtml(String(suggestion.source).toUpperCase()));
+        const metaMarkup = metaParts.length ? \`<div class="autocomplete-item-meta">\${metaParts.join(' • ')}</div>\` : '';
+
+        return \`
+          <div class="autocomplete-item" data-index="\${index}">
+            <div class="autocomplete-item-icon">
+              \${iconMarkup}
+            </div>
+            <div class="autocomplete-item-content">
+              <div class="autocomplete-item-title">\${escapeHtml(suggestion.title || '')}</div>
+              <div class="autocomplete-item-subtitle">\${subtitle}</div>
+            </div>
+            \${metaMarkup}
+          </div>
+        \`;
+      }).join('');
+
+      autocompleteDiv.classList.remove('hidden');
+
+      autocompleteDiv.querySelectorAll('.autocomplete-item').forEach(item => {
+        item.addEventListener('mouseenter', () => {
+          const idx = Number(item.dataset.index);
+          highlightAutocompleteIndex(idx);
+        });
+        item.addEventListener('click', () => {
+          const idx = Number(item.dataset.index);
+          handleAutocompleteSelection(idx);
+        });
+      });
+    }
+
+    function highlightAutocompleteIndex(index) {
+      const items = els.searchAutocomplete?.querySelectorAll('.autocomplete-item') || [];
+      items.forEach(item => item.classList.remove('selected'));
+      if (index >= 0 && items[index]) {
+        items[index].classList.add('selected');
+        items[index].scrollIntoView({ block: 'nearest' });
+        autocompleteSelectedIndex = index;
+        const suggestion = currentAutocompleteSuggestions[index];
+        if (suggestion) {
+          const textValue = suggestion.query || suggestion.title || '';
+          if (textValue) {
+            els.search.value = textValue;
+          }
+        }
+      }
+    }
+
+    function navigateAutocomplete(direction) {
+      const items = els.searchAutocomplete?.querySelectorAll('.autocomplete-item');
+      if (!items || items.length === 0) return;
+
+      if (direction === 'down') {
+        autocompleteSelectedIndex = Math.min(autocompleteSelectedIndex + 1, items.length - 1);
+      } else if (direction === 'up') {
+        autocompleteSelectedIndex = Math.max(autocompleteSelectedIndex - 1, -1);
+      }
+
+      if (autocompleteSelectedIndex === -1) {
+        items.forEach(item => item.classList.remove('selected'));
+        if (lastAutocompleteQuery) {
+          els.search.value = lastAutocompleteQuery;
+        }
+        return;
+      }
+
+      highlightAutocompleteIndex(autocompleteSelectedIndex);
+    }
+
+    function handleAutocompleteSelection(index) {
+      const suggestion = typeof index === 'number' ? currentAutocompleteSuggestions[index] : index;
+      if (!suggestion) {
+        hideAutocomplete();
+        searchMusic();
+        return;
+      }
+
+      const textValue = suggestion.query || suggestion.title || '';
+      if (textValue) {
+        els.search.value = textValue;
+      }
+
+      hideAutocomplete();
+
+      if (suggestion.action === 'play' && suggestion.url) {
+        playTrack(suggestion.url, null);
+      } else if (suggestion.action === 'queue' && suggestion.url) {
+        queueTrack(suggestion.url);
+      } else {
+        searchMusic();
+      }
+    }
+
+    function hideAutocomplete() {
+      const autocompleteDiv = els.searchAutocomplete;
+      if (!autocompleteDiv) return;
+      autocompleteDiv.classList.add('hidden');
+      autocompleteDiv.innerHTML = '';
+      autocompleteSelectedIndex = -1;
+      currentAutocompleteSuggestions = [];
+      lastAutocompleteQuery = '';
+      if (autocompleteController) {
+        autocompleteController.abort();
+        autocompleteController = null;
+      }
+    }
+
+    document.getElementById('search-btn').addEventListener('click', () => {
+      hideAutocomplete();
+      searchMusic();
+    });
     document.getElementById('connect').addEventListener('click', () => control('connect'));
     document.getElementById('disconnect').addEventListener('click', () => control('disconnect'));
     document.getElementById('change-server').addEventListener('click', showServerSelection);
@@ -4323,11 +4893,11 @@ class WebPortalServer {
 
     // Update download progress UI
     function updateDownloadProgress(data) {
-      const progressSection = document.getElementById('download-progress');
-      const titleEl = document.getElementById('download-title');
-      const statusEl = document.getElementById('download-status');
-      const fillEl = document.getElementById('download-fill');
-      const percentEl = document.getElementById('download-percent');
+      const progressSection = els.downloadContainer;
+      const titleEl = els.downloadTitle;
+      const statusEl = els.downloadStatus;
+      const fillEl = els.downloadFill;
+      const percentEl = els.downloadPercentText;
       
       // Ignore progress for other servers/channels if context is provided
       if (data.guildId && currentGuild && data.guildId !== currentGuild) return;
@@ -4336,18 +4906,40 @@ class WebPortalServer {
       const isCurrentTrack = (data.current === true) || (currentTrack && data.title && (currentTrack.title === data.title));
       const isPrefetch = Boolean(data.prefetch) || !isCurrentTrack;
 
-      if (!isProcessingTrack && data.progress < 100) {
+      if (progressSection && !isProcessingTrack && data.progress < 100) {
         // Show progress bar when processing starts
         isProcessingTrack = true;
         progressSection.style.display = 'block';
       }
       
       // Visual hint when prefetching vs preparing the current track
-      titleEl.textContent = (isPrefetch ? 'Warming next track: ' : '') + (data.title || 'Processing track...');
+      if (titleEl) {
+        titleEl.textContent = (isPrefetch ? 'Warming next track: ' : '') + (data.title || 'Processing track...');
+      }
       const etaText = (typeof data.etaSeconds === 'number' && data.etaSeconds >= 1) ? \` • \${formatEta(data.etaSeconds)} left\` : '';
-      statusEl.textContent = (isPrefetch ? 'Prefetching • ' : '') + (data.status || 'Processing...') + etaText;
-      fillEl.style.width = data.progress + '%';
-      percentEl.textContent = \`\${data.progress}%\`;
+      if (statusEl) {
+        statusEl.textContent = (isPrefetch ? 'Prefetching • ' : '') + (data.status || 'Processing...') + etaText;
+      }
+      if (fillEl) {
+        fillEl.style.width = data.progress + '%';
+      }
+      if (percentEl) {
+        percentEl.textContent = \`\${data.progress}%\`;
+      }
+
+      // Update now-playing overlay when current track is preparing
+      if (els.playerDownloadOverlay) {
+        if (isCurrentTrack && data.progress < 100) {
+          els.playerDownloadOverlay.style.display = 'flex';
+          if (els.playerDownloadOverlayPercent) {
+            els.playerDownloadOverlayPercent.textContent = \`\${Math.max(0, Math.min(100, Math.floor(data.progress)))}%\`;
+          }
+          els.playerDownloadOverlay.title = data.status || 'Preparing...';
+        } else if (isCurrentTrack && data.progress >= 100) {
+          els.playerDownloadOverlay.style.display = 'none';
+          els.playerDownloadOverlay.removeAttribute('title');
+        }
+      }
       
       // Manage queue-item inline indicators for prefetch tasks
       if (data.url && isPrefetch) {
@@ -4382,7 +4974,7 @@ class WebPortalServer {
           const pctEl = ind.querySelector('.player-dl-pct');
           if (pctEl) pctEl.textContent = \`\${Math.max(0, Math.min(100, Math.floor(data.progress)))}%\`;
           ind.title = String(data.status || 'Preparing...');
-        } else if (data.progress >= 100) {
+        } else if (isCurrentTrack && data.progress >= 100) {
           ind.style.display = 'none';
           ind.removeAttribute('title');
         }
@@ -4391,7 +4983,9 @@ class WebPortalServer {
       if (data.progress >= 100) {
         // Hide progress bar after a short delay
         setTimeout(() => {
-          progressSection.style.display = 'none';
+          if (progressSection) {
+            progressSection.style.display = 'none';
+          }
           isProcessingTrack = false;
         }, 1500);
       }
@@ -4565,6 +5159,76 @@ class WebPortalServer {
           }],
           connectedChannel: null
         });
+      }
+    });
+
+    this.app.get('/api/search/suggestions', this.auth, async (req, res) => {
+      try {
+        if (!this.bot?.sourceHandlers?.search) {
+          return res.status(503).json({ error: 'Search service unavailable' });
+        }
+
+        const rawQuery = (req.query.q ?? '').toString();
+        const query = rawQuery.trim();
+        if (!query) {
+          return res.json([]);
+        }
+
+        const limitParam = parseInt(req.query.limit, 10);
+        const limit = Number.isNaN(limitParam) ? 6 : Math.max(1, Math.min(limitParam, 12));
+
+        console.log(`🔎 Web portal autocomplete: ${query}`);
+        let results = [];
+        try {
+          results = await this.bot.sourceHandlers.search(query, limit);
+        } catch (searchError) {
+          console.error('Autocomplete search error:', searchError);
+          return res.status(502).json({ error: 'Suggestion service unavailable' });
+        }
+
+        const suggestions = [];
+        const seenUrls = new Set();
+
+        suggestions.push({
+          type: 'search',
+          action: 'search',
+          title: `Search "${query}"`,
+          subtitle: 'Press enter to view full results',
+          icon: 'fas fa-search',
+          query
+        });
+
+        if (Array.isArray(results)) {
+          results.forEach((track) => {
+            if (!track) return;
+            const url = track.url || track.id || null;
+            if (url && seenUrls.has(url)) return;
+            if (url) seenUrls.add(url);
+
+            const subtitleParts = [];
+            if (track.author) subtitleParts.push(track.author);
+            if (track.source) subtitleParts.push(track.source.charAt(0).toUpperCase() + track.source.slice(1));
+
+            suggestions.push({
+              type: 'track',
+              action: 'play',
+              title: track.title || 'Unknown track',
+              subtitle: subtitleParts.join(' • ') || 'Track suggestion',
+              icon: track.source === 'spotify' ? 'fab fa-spotify' : track.source === 'youtube' ? 'fab fa-youtube' : 'fas fa-music',
+              query: track.title || query,
+              url: track.url || null,
+              source: track.source || '',
+              duration: track.duration || '',
+              thumbnail: track.thumbnail || '',
+              author: track.author || ''
+            });
+          });
+        }
+
+        res.json(suggestions.slice(0, limit + 1));
+      } catch (error) {
+        console.error('Autocomplete error:', error);
+        res.status(500).json({ error: 'Failed to fetch suggestions' });
       }
     });
 
@@ -4814,6 +5478,138 @@ class WebPortalServer {
         res.json(result);
       } catch (error) {
         console.error('Control error:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Enhanced Recommendations API
+    this.app.post('/api/recommendations', this.auth, async (req, res) => {
+      try {
+        const { currentTrack, userPreferences, count = 10 } = req.body;
+        const { guildId, channelId } = req.body;
+
+        if (!guildId || !channelId) {
+          return res.status(400).json({ success: false, error: 'guildId and channelId are required' });
+        }
+
+        // Get connection to access music manager
+        const connection = this.bot.stayConnectedManager.connections.get(guildId);
+        if (!connection || !connection.musicManager) {
+          return res.status(400).json({ success: false, error: 'No active music session found' });
+        }
+
+        const musicManager = connection.musicManager;
+        const smartAutoPlay = musicManager.smartAutoPlay;
+
+        if (!smartAutoPlay) {
+          return res.status(500).json({ success: false, error: 'Smart auto-play not available' });
+        }
+
+        // Get recommendations using the enhanced system
+        const recommendations = [];
+        const playHistory = musicManager.playHistory || [];
+        
+        for (let i = 0; i < count; i++) {
+          try {
+            const recommendation = await smartAutoPlay.getNextRecommendation(
+              currentTrack, 
+              [...playHistory, ...recommendations], 
+              { userId: req.session?.discordUser?.id, guildId }
+            );
+            
+            if (recommendation && !recommendations.some(r => 
+              r.title === recommendation.title && r.author === recommendation.author
+            )) {
+              recommendations.push(recommendation);
+            }
+            
+            // Add small delay to avoid rate limiting
+            if (i % 3 === 2) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          } catch (error) {
+            console.log(`Failed to get recommendation ${i + 1}:`, error.message);
+            continue;
+          }
+        }
+
+        res.json({ 
+          success: true, 
+          recommendations,
+          count: recommendations.length,
+          enhancedMode: true
+        });
+
+      } catch (error) {
+        console.error('Recommendations API error:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // Smart Queue Fill API  
+    this.app.post('/api/smartqueue', this.auth, async (req, res) => {
+      try {
+        const { track, guildId, channelId } = req.body;
+
+        if (!guildId || !channelId) {
+          return res.status(400).json({ success: false, error: 'guildId and channelId are required' });
+        }
+
+        if (!track || !track.title || !track.artist) {
+          return res.status(400).json({ success: false, error: 'Valid track information required' });
+        }
+
+        // Get connection
+        const connection = this.bot.stayConnectedManager.connections.get(guildId);
+        if (!connection || !connection.musicManager) {
+          return res.status(400).json({ success: false, error: 'No active music session found' });
+        }
+
+        const musicManager = connection.musicManager;
+        const smartAutoPlay = musicManager.smartAutoPlay;
+
+        if (!smartAutoPlay) {
+          return res.status(500).json({ success: false, error: 'Smart auto-play not available' });
+        }
+
+        // Generate a smart queue based on the track
+        console.log(`🧠 Generating smart queue for: ${track.artist} - ${track.title}`);
+        
+        const seedTrack = {
+          title: track.title,
+          author: track.artist,
+          url: track.url || '',
+          thumbnail: track.thumbnail || '',
+          duration: track.duration || ''
+        };
+
+        const playlist = await smartAutoPlay.generateContinuousPlaylist(
+          seedTrack, 
+          10, 
+          { userId: req.session?.discordUser?.id, guildId }
+        );
+
+        // Add tracks to the music manager queue
+        let addedCount = 0;
+        for (const playlistTrack of playlist) {
+          try {
+            await musicManager.addToQueue(playlistTrack);
+            addedCount++;
+          } catch (error) {
+            console.log(`Failed to add track to queue: ${error.message}`);
+            continue;
+          }
+        }
+
+        res.json({ 
+          success: true, 
+          message: `Smart queue created with ${addedCount} tracks`,
+          addedTracks: addedCount,
+          totalGenerated: playlist.length
+        });
+
+      } catch (error) {
+        console.error('Smart queue API error:', error);
         res.status(500).json({ success: false, error: error.message });
       }
     });

@@ -798,9 +798,13 @@ class SourceHandlers {
         } else {
             // Search YouTube and Spotify in parallel for speed
             console.log(`🔍 Starting parallel search for: ${query}`);
+            const safeLimit = Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 1);
+            const spotifyLimit = Math.max(1, Math.floor(safeLimit / 2));
+            const youtubeLimit = Math.max(1, Math.ceil(safeLimit / 2));
+
             const searches = await Promise.allSettled([
-                this.searchSpotify(query, Math.floor(limit / 2)),
-                this.searchYouTube(query, Math.ceil(limit / 2))
+                this.searchSpotify(query, spotifyLimit),
+                this.searchYouTube(query, youtubeLimit)
             ]);
 
             for (const search of searches) {
@@ -1028,13 +1032,184 @@ class SourceHandlers {
     async getStream(track, options = {}) {
         console.log(`🎵 Getting stream for: ${track.title} from ${track.source}`);
         
-        if (track.source === 'spotify') {
-            // For Spotify, we need to find a YouTube equivalent
-            return await this.getSpotifyStream(track, options);
-        } else if (track.source === 'youtube') {
-            return await this.getYouTubeStream(track, options);
-        } else {
-            throw new Error(`Unsupported source: ${track.source}`);
+        await this.prepareTrackForPlayback(track);
+        
+        // Enhanced multi-source acquisition with intelligent fallbacks
+        const maxAttempts = 3;
+        const sources = this.determineBestSources(track);
+        
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            for (const source of sources) {
+                try {
+                    console.log(`🔄 Attempt ${attempt}/${maxAttempts} - Trying ${source} for: ${track.title}`);
+                    
+                    let stream;
+                    if (source === 'spotify') {
+                        stream = await this.getSpotifyStream(track, options);
+                    } else if (source === 'youtube') {
+                        stream = await this.getYouTubeStream(track, options);
+                    } else if (source === 'youtube-alternate') {
+                        stream = await this.getYouTubeAlternateSearch(track, options);
+                    } else if (source === 'soundcloud') {
+                        stream = await this.getSoundCloudStream(track, options);
+                    } else if (source === 'generic') {
+                        stream = await this.getGenericAudioStream(track, options);
+                    }
+                    
+                    if (stream && stream.readable) {
+                        console.log(`✅ Successfully got stream from ${source} for: ${track.title}`);
+                        track._lastSuccessfulSource = source;
+                        return stream;
+                    }
+                } catch (error) {
+                    console.log(`❌ ${source} failed (attempt ${attempt}): ${error.message}`);
+                    // Continue to next source/attempt
+                }
+            }
+        }
+        
+        throw new Error(`All streaming methods failed for ${track.title} after ${maxAttempts} attempts across multiple sources`);
+    }
+
+    determineBestSources(track) {
+        const sources = [];
+        
+        // Primary source first
+        if (track.source === 'youtube') {
+            sources.push('youtube');
+        } else if (track.source === 'spotify') {
+            sources.push('spotify');
+        }
+        
+        // Add fallback sources based on track metadata
+        if (track.source !== 'youtube') {
+            sources.push('youtube', 'youtube-alternate');
+        }
+        
+        // Additional fallback sources
+        sources.push('soundcloud', 'generic');
+        
+        // Remove duplicates while preserving order
+        return [...new Set(sources)];
+    }
+
+    isLikelyPlayableUrl(url) {
+        if (typeof url !== 'string') return false;
+        const trimmed = url.trim();
+        if (!/^https?:\/\//i.test(trimmed)) return false;
+        return /(youtube\.com|youtu\.be|music\.youtube\.com|open\.spotify\.com|soundcloud\.com)/i.test(trimmed);
+    }
+
+    buildSearchQueryForTrack(track) {
+        if (!track) return '';
+        const pieces = [];
+        if (track.title) pieces.push(track.title);
+        if (track.author) pieces.push(track.author);
+        if (track.album) pieces.push(track.album);
+        const base = pieces.join(' ').trim();
+        const url = typeof track.url === 'string' ? track.url.trim() : '';
+        if (url && !this.isLikelyPlayableUrl(url)) {
+            if (!base) return url;
+            const lowerBase = base.toLowerCase();
+            const lowerUrl = url.toLowerCase();
+            if (lowerUrl.includes(lowerBase)) {
+                return url;
+            }
+            return `${base} ${url}`.trim();
+        }
+        return base;
+    }
+
+    computeTokenOverlap(a, b) {
+        if (!a || !b) return 0;
+        const tokensA = new Set(a.split(/\s+/).filter(Boolean));
+        const tokensB = new Set(b.split(/\s+/).filter(Boolean));
+        if (tokensA.size === 0 || tokensB.size === 0) return 0;
+        let matches = 0;
+        for (const token of tokensA) {
+            if (tokensB.has(token)) matches++;
+        }
+        return matches / Math.max(tokensA.size, tokensB.size);
+    }
+
+    selectBestSearchMatch(results, target) {
+        if (!Array.isArray(results) || results.length === 0) return null;
+        const title = (target?.title || '').toLowerCase();
+        const artist = (target?.author || '').toLowerCase();
+        const durationMS = Number(target?.durationMS || 0);
+        
+        let best = null;
+        let bestScore = -Infinity;
+        
+        for (const candidate of results) {
+            let score = 0;
+            const candTitle = (candidate.title || '').toLowerCase();
+            const candAuthor = (candidate.author || '').toLowerCase();
+            
+            if (title) {
+                if (candTitle === title) score += 2.0;
+                else if (candTitle.includes(title)) score += 1.2;
+                else score += this.computeTokenOverlap(candTitle, title) * 1.0;
+            }
+            
+            if (artist) {
+                if (candAuthor === artist) score += 1.0;
+                else if (candAuthor.includes(artist)) score += 0.7;
+                else score += this.computeTokenOverlap(candAuthor, artist) * 0.5;
+            }
+            
+            if (durationMS > 0 && candidate.durationMS) {
+                const delta = Math.abs(durationMS - candidate.durationMS);
+                const tolerance = Math.max(6000, durationMS * 0.08);
+                if (delta <= tolerance) score += 0.5;
+            }
+            
+            if ((candidate.viewCount || 0) > 1000000) score += 0.2;
+            if (/official|lyrics|audio/i.test(candidate.title || '')) score += 0.1;
+            if (/live|cover|remix|tiktok|challenge/i.test(candidate.title || '')) score -= 0.3;
+            
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        
+        return best || results[0];
+    }
+
+    async prepareTrackForPlayback(track) {
+        try {
+            if (!track || this.isLikelyPlayableUrl(track.url) || track._searchResolved) {
+                return track;
+            }
+            
+            const query = this.buildSearchQueryForTrack(track);
+            if (!query) return track;
+            
+            const results = await this.searchYouTube(query, 6);
+            if (!results || results.length === 0) {
+                return track;
+            }
+            
+            const bestMatch = this.selectBestSearchMatch(results, track);
+            if (bestMatch) {
+                if (track.url && !track._originalUrl) {
+                    track._originalUrl = track.url;
+                }
+                track.url = bestMatch.url;
+                track.source = bestMatch.source || 'youtube';
+                track.thumbnail = track.thumbnail || bestMatch.thumbnail;
+                track.duration = track.duration || bestMatch.duration;
+                track.durationMS = track.durationMS || bestMatch.durationMS;
+                track.author = track.author || bestMatch.author;
+                track.title = track.title || bestMatch.title;
+                track._searchResolved = true;
+            }
+            
+            return track;
+        } catch (error) {
+            console.log(`⚠️ prepareTrackForPlayback failed: ${error?.message || error}`);
+            return track;
         }
     }
 
@@ -1779,6 +1954,238 @@ class SourceHandlers {
                         reject(new Error('FFmpeg seek closed without providing data'));
                     }
                 }
+            });
+        });
+    }
+
+    // Enhanced fallback methods for multi-source audio acquisition
+
+    async getYouTubeAlternateSearch(track, options = {}) {
+        console.log(`🔍 Trying YouTube alternate search for: ${track.title}`);
+        
+        try {
+            // Generate alternative search queries
+            const alternateQueries = this.generateAlternateQueries(track);
+            
+            for (const query of alternateQueries) {
+                console.log(`🔄 Trying alternate query: ${query}`);
+                const results = await this.searchYouTube(query, 3);
+                
+                if (results && results.length > 0) {
+                    const altTrack = results[0];
+                    console.log(`✅ Found alternate: ${altTrack.title}`);
+                    return await this.getYouTubeStream(altTrack, options);
+                }
+            }
+            
+            throw new Error('No alternate YouTube results found');
+        } catch (error) {
+            console.log(`❌ YouTube alternate search failed: ${error.message}`);
+            throw error;
+        }
+    }
+
+    generateAlternateQueries(track) {
+        const queries = [];
+        const title = track.title || '';
+        const author = track.author || '';
+        
+        // Remove common problematic terms
+        const cleanTitle = title
+            .replace(/\(.*?official.*?\)/gi, '')
+            .replace(/\[.*?official.*?\]/gi, '')
+            .replace(/\(.*?video.*?\)/gi, '')
+            .replace(/\[.*?video.*?\]/gi, '')
+            .replace(/\(.*?audio.*?\)/gi, '')
+            .replace(/\[.*?audio.*?\]/gi, '')
+            .trim();
+
+        const cleanAuthor = author
+            .replace(/official/gi, '')
+            .replace(/music/gi, '')
+            .trim();
+
+        // Generate search variations
+        queries.push(`${cleanTitle} ${cleanAuthor}`);
+        queries.push(`${cleanTitle} ${cleanAuthor} audio`);
+        queries.push(`${cleanTitle} ${cleanAuthor} official`);
+        queries.push(`${cleanTitle} ${cleanAuthor} music`);
+        queries.push(`${cleanTitle} ${cleanAuthor} lyrics`);
+        queries.push(`${cleanTitle} ${cleanAuthor} cover`);
+        queries.push(`${cleanTitle} karaoke`);
+        queries.push(`${cleanTitle} instrumental`);
+        
+        // Try without author if needed
+        if (cleanAuthor) {
+            queries.push(cleanTitle);
+            queries.push(`${cleanTitle} audio`);
+        }
+
+        return queries.filter(q => q.trim().length > 0);
+    }
+
+    async getSoundCloudStream(track, options = {}) {
+        console.log(`🔍 Trying SoundCloud for: ${track.title}`);
+        
+        try {
+            // Use yt-dlp to search and download from SoundCloud
+            const query = `${track.title} ${track.author}`.trim();
+            const searchUrl = `ytsearch5:${query} site:soundcloud.com`;
+            
+            console.log(`🔄 Searching SoundCloud with: ${query}`);
+            
+            return new Promise((resolve, reject) => {
+                const ytdlp = spawn('yt-dlp', [
+                    '--no-config',
+                    '--extract-flat',
+                    '--get-url',
+                    '--get-title',
+                    '--format', 'bestaudio',
+                    searchUrl
+                ], {
+                    stdio: ['ignore', 'pipe', 'pipe']
+                });
+
+                let output = '';
+                let hasData = false;
+
+                ytdlp.stdout.on('data', (data) => {
+                    output += data.toString();
+                    hasData = true;
+                });
+
+                ytdlp.on('close', async (code) => {
+                    if (code === 0 && hasData) {
+                        const lines = output.trim().split('\n');
+                        if (lines.length >= 2) {
+                            const audioUrl = lines[lines.length - 1]; // Last line is usually the URL
+                            console.log(`✅ Found SoundCloud audio URL`);
+                            
+                            // Download and convert the audio
+                            try {
+                                const result = await this.audioProcessor.downloadAndConvert(audioUrl, track.title, {
+                                    source: 'soundcloud'
+                                });
+                                
+                                if (result && result.mp3Path && fs.existsSync(result.mp3Path)) {
+                                    resolve(fs.createReadStream(result.mp3Path));
+                                } else {
+                                    reject(new Error('SoundCloud conversion failed'));
+                                }
+                            } catch (convError) {
+                                reject(new Error(`SoundCloud conversion error: ${convError.message}`));
+                            }
+                        } else {
+                            reject(new Error('No SoundCloud results found'));
+                        }
+                    } else {
+                        reject(new Error('SoundCloud search failed'));
+                    }
+                });
+
+                ytdlp.on('error', (err) => {
+                    reject(new Error(`SoundCloud search spawn error: ${err.message}`));
+                });
+            });
+            
+        } catch (error) {
+            console.log(`❌ SoundCloud stream failed: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async getGenericAudioStream(track, options = {}) {
+        console.log(`🔍 Trying generic audio sources for: ${track.title}`);
+        
+        try {
+            // Use yt-dlp to search across multiple platforms
+            const query = `${track.title} ${track.author}`.trim();
+            
+            // Try various search patterns across multiple platforms
+            const searchPatterns = [
+                `ytsearch3:${query}`,
+                `ytsearch3:${query} audio`,
+                `ytsearch3:${query} music`,
+                `scsearch3:${query}`, // SoundCloud
+                `bcsearch3:${query}`, // Bandcamp
+            ];
+
+            for (const pattern of searchPatterns) {
+                try {
+                    console.log(`🔄 Trying generic search: ${pattern}`);
+                    
+                    const result = await this.downloadFromGenericSource(pattern, track);
+                    if (result) {
+                        console.log(`✅ Successfully found audio from generic source`);
+                        return result;
+                    }
+                } catch (error) {
+                    console.log(`❌ Generic source ${pattern} failed: ${error.message}`);
+                    // Continue to next pattern
+                }
+            }
+            
+            throw new Error('All generic audio sources failed');
+            
+        } catch (error) {
+            console.log(`❌ Generic audio stream failed: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async downloadFromGenericSource(searchPattern, track) {
+        return new Promise((resolve, reject) => {
+            const ytdlp = spawn('yt-dlp', [
+                '--no-config',
+                '--extract-flat',
+                '--get-url',
+                '--format', 'bestaudio/best',
+                '--audio-format', 'mp3',
+                '--audio-quality', '0',
+                searchPattern
+            ], {
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            let output = '';
+            let hasData = false;
+
+            ytdlp.stdout.on('data', (data) => {
+                output += data.toString();
+                hasData = true;
+            });
+
+            ytdlp.on('close', async (code) => {
+                if (code === 0 && hasData) {
+                    const lines = output.trim().split('\n');
+                    if (lines.length > 0) {
+                        const audioUrl = lines[0]; // First valid URL
+                        console.log(`✅ Found generic audio URL`);
+                        
+                        try {
+                            // Download and convert
+                            const result = await this.audioProcessor.downloadAndConvert(audioUrl, track.title, {
+                                source: 'generic'
+                            });
+                            
+                            if (result && result.mp3Path && fs.existsSync(result.mp3Path)) {
+                                resolve(fs.createReadStream(result.mp3Path));
+                            } else {
+                                reject(new Error('Generic source conversion failed'));
+                            }
+                        } catch (convError) {
+                            reject(new Error(`Generic source conversion error: ${convError.message}`));
+                        }
+                    } else {
+                        reject(new Error('No generic source results found'));
+                    }
+                } else {
+                    reject(new Error('Generic source search failed'));
+                }
+            });
+
+            ytdlp.on('error', (err) => {
+                reject(new Error(`Generic source spawn error: ${err.message}`));
             });
         });
     }

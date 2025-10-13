@@ -1,8 +1,12 @@
 const UserPreferences = require('./UserPreferences');
+const MusicRecommendationService = require('./MusicRecommendationService');
+const AIRecommendationService = require('./AIRecommendationService');
 
 class SmartAutoPlay {
     constructor(sourceHandlers) {
         this.sourceHandlers = sourceHandlers;
+        this.aiRecommendationService = new AIRecommendationService();
+        this.recommendationService = new MusicRecommendationService(this.aiRecommendationService);
         this.playHistory = [];
         this.currentTheme = null; // Track the current musical theme
         this.userPreferences = new UserPreferences();
@@ -10,6 +14,7 @@ class SmartAutoPlay {
         this.genres = {
             'reggaeton': ['reggaeton', 'perreo', 'dembow', 'urbano', 'latino', 'bad bunny', 'daddy yankee', 'j balvin', 'maluma', 'karol g', 'ozuna', 'anuel', 'farruko', 'nicky jam', 'wisin', 'yandel', 'plan b', 'arcangel', 'de la ghetto', 'zion', 'lennox', 'tito el bambino', 'hector el father', 'tempo', 'voltio', 'baby rasta', 'gringo', 'feid', 'rauw alejandro', 'sech', 'myke towers', 'jhay cortez', 'bryant myers', 'lenny tavarez', 'lunay', 'casper magico', 'nio garcia', 'darell', 'justin quiles', 'manuel turizo', 'rafa pabon', 'mau y ricky', 'reik', 'cnco', 'sebastian yatra', 'camilo', 'piso 21'],
             'pop': ['catchy', 'mainstream', 'radio', 'top 40', 'chart', 'hit', 'taylor swift', 'ariana grande', 'dua lipa', 'olivia rodrigo', 'billie eilish'],
+            'latin pop': ['latin pop', 'latino pop', 'musica latina', 'musica pop latina', 'musica en espanol', 'shakira', 'enrique iglesias', 'luis fonsi', 'carlos vives', 'reik', 'camila', 'manuel turizo', 'morat', 'sebastian yatra', 'joan sebastian', 'ricardo arjona', 'ricardo montaner'],
             'rock': ['guitar', 'band', 'loud', 'electric', 'metal', 'alternative', 'foo fighters', 'imagine dragons', 'linkin park'],
             'hip hop': ['rap', 'beats', 'flow', 'trap', 'drill', 'freestyle', 'drake', 'kendrick lamar', 'j cole', 'travis scott', 'future', 'lil wayne', 'eminem', 'kanye west'],
             'electronic': ['edm', 'techno', 'house', 'dubstep', 'synth', 'dance', 'calvin harris', 'david guetta', 'skrillex', 'deadmau5'],
@@ -19,7 +24,9 @@ class SmartAutoPlay {
             'r&b': ['soul', 'vocals', 'rhythm', 'smooth', 'contemporary', 'weeknd', 'frank ocean', 'sza', 'daniel caesar'],
             'country': ['acoustic', 'guitar', 'storytelling', 'rural', 'folk', 'luke bryan', 'carrie underwood', 'keith urban'],
             'reggae': ['bob marley', 'jamaican', 'island', 'rastafari', 'ska', 'damian marley', 'ziggy marley'],
-            'salsa': ['salsa', 'merengue', 'bachata', 'marc anthony', 'victor manuelle', 'gilberto santa rosa'],
+            'salsa': ['salsa', 'merengue', 'bachata', 'marc anthony', 'victor manuelle', 'gilberto santa rosa', 'juan luis guerra', 'willie colon', 'ruben blades', 'hector lavoe', 'la india'],
+            'bachata': ['bachata', 'juan luis guerra', 'romeo santos', 'aventura', 'prince royce', 'bachata 2024', 'bachatera', 'zacarias ferreira', 'monchy y alexandra'],
+            'merengue': ['merengue', 'merengue tipico', 'merenguero', 'juan luis guerra', 'los hermanos rosario', 'tono rosario', 'eddy herrera', 'milly quezada'],
             'cumbia': ['cumbia', 'vallenato', 'champeta', 'carlos vives', 'grupo niche'],
             'banda': ['banda', 'mariachi', 'ranchera', 'vicente fernandez', 'alejandro fernandez'],
             'trap latino': ['trap', 'anuel aa', 'bad bunny trap', 'bryant myers', 'noriel', 'lary over']
@@ -425,7 +432,13 @@ class SmartAutoPlay {
     }
 
     detectGenre(track) {
-        const text = `${track.title} ${track.author}`.toLowerCase();
+        if (!track) {
+            return 'pop';
+        }
+
+        const title = (track.title || '').toLowerCase();
+        const author = (track.author || '').toLowerCase();
+        const text = `${title} ${author}`;
         const genreScores = {};
         
         // Score each genre based on keyword matches
@@ -434,15 +447,15 @@ class SmartAutoPlay {
             
             for (const keyword of keywords) {
                 // Exact artist name match gets highest score
-                if (track.author.toLowerCase() === keyword.toLowerCase()) {
+                if (author === keyword.toLowerCase()) {
                     score += 100;
                 } 
                 // Artist name contains keyword
-                else if (track.author.toLowerCase().includes(keyword.toLowerCase())) {
+                else if (author.includes(keyword.toLowerCase())) {
                     score += 50;
                 }
                 // Title contains keyword
-                else if (track.title.toLowerCase().includes(keyword.toLowerCase())) {
+                else if (title.includes(keyword.toLowerCase())) {
                     score += 25;
                 }
                 // General text match
@@ -461,12 +474,12 @@ class SmartAutoPlay {
             const topGenre = Object.entries(genreScores)
                 .sort(([,a], [,b]) => b - a)[0][0];
             
-            console.log(`🎵 Genre detected: ${topGenre} (score: ${genreScores[topGenre]}) for "${track.author} - ${track.title}"`);
+            console.log(`🎵 Genre detected: ${topGenre} (score: ${genreScores[topGenre]}) for "${track.author || 'Unknown Artist'} - ${track.title || 'Unknown Title'}"`);
             return topGenre;
         }
         
         // Enhanced fallback logic
-        if (track.author.toLowerCase().includes('lil') || text.includes('rap') || text.includes('hip hop')) {
+        if (author.includes('lil') || text.includes('rap') || text.includes('hip hop')) {
             return 'hip hop';
         }
         if (text.includes('electronic') || text.includes('house') || text.includes('techno')) {
@@ -475,13 +488,26 @@ class SmartAutoPlay {
         if (text.includes('reggaeton') || text.includes('urbano') || text.includes('perreo')) {
             return 'reggaeton';
         }
+        if (text.includes('bachata') || text.includes('juan luis guerra') || text.includes('romeo santos')) {
+            return 'bachata';
+        }
+        if (text.includes('merengue') || text.includes('los hermanos rosario') || text.includes('eddy herrera')) {
+            return 'merengue';
+        }
+        if (text.includes('musica latina') || text.includes('latin pop') || text.includes('musica en espanol') || text.includes('spanish')) {
+            return 'latin pop';
+        }
         
-        console.log(`🎵 Genre fallback: pop for "${track.author} - ${track.title}"`);
+        console.log(`🎵 Genre fallback: pop for "${track.author || 'Unknown Artist'} - ${track.title || 'Unknown Title'}"`);
         return 'pop'; // Default fallback
     }
 
     detectMood(track) {
-        const text = `${track.title} ${track.author}`.toLowerCase();
+        if (!track) {
+            return 'relaxed';
+        }
+
+        const text = `${track.title || ''} ${track.author || ''}`.toLowerCase();
         
         for (const [mood, keywords] of Object.entries(this.moods)) {
             const matches = keywords.filter(keyword => text.includes(keyword)).length;
@@ -571,7 +597,7 @@ class SmartAutoPlay {
 
     // New personalized recommendation methods
 
-    getPersonalizedStrategies(currentTrack, personalWeights) {
+    getPersonalizedStrategies(currentTrack, personalWeights, recentArtists = []) {
         const { preferredGenres, preferredArtists, patterns, similarUsers } = personalWeights;
         
         // Use current track's genre as fallback if no user preferences
@@ -579,40 +605,49 @@ class SmartAutoPlay {
         const genresToUse = (preferredGenres && preferredGenres.length > 0) ? preferredGenres : (currentGenre ? [currentGenre] : ['reggaeton']);
         
         return [
+            { name: 'ai-smart', fn: () => this.getAISmartRecommendation(currentTrack, recentArtists), weight: 50 },
             { 
-                name: 'user-preferred-genre', 
-                fn: () => this.getUserPreferredGenreTrack(genresToUse), 
-                weight: 30 
+                name: 'api-similar-tracks', 
+                fn: () => this.getApiSimilarTracks(currentTrack, recentArtists), 
+                weight: 35 
+            },
+            { 
+                name: 'api-genre-recommendations', 
+                fn: () => this.getApiGenreRecommendations(genresToUse, recentArtists), 
+                weight: 25 
             },
             { 
                 name: 'user-preferred-artist', 
                 fn: () => this.getUserPreferredArtistTrack(preferredArtists), 
-                weight: 25 
+                weight: 20 
             },
             { 
                 name: 'collaborative-filtering', 
                 fn: () => this.getCollaborativeRecommendation(similarUsers), 
-                weight: 20 
+                weight: 15 
             },
             { 
                 name: 'theme-based', 
                 fn: () => this.getThemeBasedRecommendation(currentTrack), 
-                weight: 15 
+                weight: 10 
             },
             { 
                 name: 'pattern-matching', 
                 fn: () => this.getPatternBasedRecommendation(patterns), 
-                weight: 10 
+                weight: 8 
             }
         ];
     }
 
     getDefaultStrategies(currentTrack, recentArtists = []) {
         return [
-            { name: 'theme-based', fn: () => this.getThemeBasedRecommendation(currentTrack, recentArtists), weight: 40 },
-            { name: 'related-artist', fn: () => this.getRelatedArtistTrack(currentTrack, recentArtists), weight: 25 },
-            { name: 'similar-genre', fn: () => this.getSimilarGenreTrack(currentTrack, recentArtists), weight: 15 },
-            { name: 'mood-matching', fn: () => this.getMoodMatchingTrack(currentTrack, recentArtists), weight: 10 },
+            { name: 'ai-smart', fn: () => this.getAISmartRecommendation(currentTrack, recentArtists), weight: 60 },
+            { name: 'api-similar-tracks', fn: () => this.getApiSimilarTracks(currentTrack), weight: 25 },
+            { name: 'api-genre-recommendations', fn: () => this.getApiGenreRecommendations(currentTrack, recentArtists), weight: 20 },
+            { name: 'theme-based', fn: () => this.getThemeBasedRecommendation(currentTrack, recentArtists), weight: 15 },
+            { name: 'related-artist', fn: () => this.getRelatedArtistTrack(currentTrack, recentArtists), weight: 10 },
+            { name: 'similar-genre', fn: () => this.getSimilarGenreTrack(currentTrack, recentArtists), weight: 8 },
+            { name: 'mood-matching', fn: () => this.getMoodMatchingTrack(currentTrack, recentArtists), weight: 5 },
             { name: 'trending', fn: () => this.getTrendingTrack(), weight: 5 },
             { name: 'random-popular', fn: () => this.getRandomPopularTrack(recentArtists), weight: 5 }
         ];
@@ -746,11 +781,207 @@ class SmartAutoPlay {
         return null;
     }
 
+    // API-powered recommendation methods
+    async getApiSimilarTracks(currentTrack, recentArtists = []) {
+        if (!currentTrack || !currentTrack.title || !currentTrack.author) return null;
+
+        try {
+            console.log(`🔍 Getting API similar tracks for: ${currentTrack.author} - ${currentTrack.title}`);
+            
+            const similarTracks = await this.recommendationService.getSimilarTracks(
+                currentTrack.title, 
+                currentTrack.author, 
+                15
+            );
+
+            if (!similarTracks || similarTracks.length === 0) {
+                console.log('⚠️ No similar tracks found from APIs');
+                return null;
+            }
+
+            // Filter out recent artists and convert to search queries
+            const filtered = similarTracks.filter(track => 
+                !recentArtists.includes(track.artist?.toLowerCase()) && this.isMusicContent(track)
+            );
+
+            if (filtered.length === 0) {
+                console.log('⚠️ All similar tracks filtered out due to recent artists');
+                return null;
+            }
+
+            // Try to find each similar track in our search system
+            for (const track of filtered.slice(0, 5)) {
+                try {
+                    const searchQuery = `${track.artist} ${track.title}`;
+                    const searchResults = await this.sourceHandlers.search(searchQuery, 3);
+                    
+                    if (searchResults && searchResults.length > 0) {
+                        const bestMatch = this.findBestMatch(searchResults, track.title, track.artist);
+                        if (bestMatch && this.isMusicContent(bestMatch)) {
+                            console.log(`✅ Found API similar track: ${bestMatch.title} by ${bestMatch.author}`);
+                            return bestMatch;
+                        }
+                    }
+                } catch (error) {
+                    console.log(`⚠️ Failed to search for: ${track.artist} - ${track.title}`);
+                    continue;
+                }
+            }
+
+            console.log('⚠️ No API similar tracks could be found in search results');
+            return null;
+
+        } catch (error) {
+            console.error('❌ API similar tracks error:', error);
+            return null;
+        }
+    }
+
+    async getApiGenreRecommendations(preferredGenres, recentArtists = []) {
+        let genres = [];
+
+        if (Array.isArray(preferredGenres)) {
+            genres = preferredGenres.filter(Boolean);
+        } else if (typeof preferredGenres === 'string') {
+            genres = [preferredGenres];
+        } else if (preferredGenres && typeof preferredGenres === 'object') {
+            const detected = this.detectGenre(preferredGenres);
+            if (detected) {
+                genres = [detected];
+            }
+        }
+
+        if (genres.length === 0) {
+            console.log('⚠️ No valid genres available for API genre recommendations');
+            return null;
+        }
+
+        try {
+            const genre = genres[Math.floor(Math.random() * Math.min(3, genres.length))];
+            console.log(`🎭 Getting API genre recommendations for: ${genre}`);
+            
+            const genreRecommendations = await this.recommendationService.getGenreBasedRecommendations(genre, 10);
+
+            if (!genreRecommendations || genreRecommendations.length === 0) {
+                console.log(`⚠️ No genre recommendations found for: ${genre}`);
+                return null;
+            }
+
+            // Filter out recent artists
+            const filtered = genreRecommendations.filter(track => 
+                !recentArtists.includes(track.artist?.toLowerCase())
+            );
+
+            if (filtered.length === 0) {
+                console.log('⚠️ All genre recommendations filtered out due to recent artists');
+                return null;
+            }
+
+            // Try to find each recommended track in our search system
+            for (const track of filtered.slice(0, 5)) {
+                try {
+                    const searchQuery = `${track.artist} ${track.title}`;
+                    const searchResults = await this.sourceHandlers.search(searchQuery, 3);
+                    
+                    if (searchResults && searchResults.length > 0) {
+                        const bestMatch = this.findBestMatch(searchResults, track.title, track.artist);
+                        if (bestMatch && this.isMusicContent(bestMatch)) {
+                            console.log(`✅ Found API genre track: ${bestMatch.title} by ${bestMatch.author} (${genre})`);
+                            return bestMatch;
+                        }
+                    }
+                } catch (error) {
+                    console.log(`⚠️ Failed to search for genre track: ${track.artist} - ${track.title}`);
+                    continue;
+                }
+            }
+
+            console.log(`⚠️ No API genre recommendations could be found in search results for: ${genre}`);
+            return null;
+
+        } catch (error) {
+            console.error('❌ API genre recommendations error:', error);
+            return null;
+        }
+    }
+
+    findBestMatch(searchResults, targetTitle, targetArtist) {
+        if (!searchResults || searchResults.length === 0) return null;
+
+        // Calculate similarity scores for each result
+        const scoredResults = searchResults.map(result => {
+            let score = 0;
+
+            // Title similarity (most important)
+            if (result.title && targetTitle) {
+                const titleSimilarity = this.calculateStringSimilarity(
+                    result.title.toLowerCase(), 
+                    targetTitle.toLowerCase()
+                );
+                score += titleSimilarity * 0.7;
+            }
+
+            // Artist similarity
+            if (result.author && targetArtist) {
+                const artistSimilarity = this.calculateStringSimilarity(
+                    result.author.toLowerCase(), 
+                    targetArtist.toLowerCase()
+                );
+                score += artistSimilarity * 0.3;
+            }
+
+            return { ...result, matchScore: score };
+        });
+
+        // Sort by match score and return the best match if it's good enough
+        scoredResults.sort((a, b) => b.matchScore - a.matchScore);
+        const bestMatch = scoredResults[0];
+
+        // Only return if similarity is above threshold
+        if (bestMatch && bestMatch.matchScore > 0.6) {
+            return bestMatch;
+        }
+
+        // If no good match, return the first result (might still be related)
+        return searchResults[0];
+    }
+
+    calculateStringSimilarity(str1, str2) {
+        if (!str1 || !str2) return 0;
+        
+        // Simple similarity calculation using common words and character overlap
+        const words1 = str1.split(/\s+/).filter(w => w.length > 2);
+        const words2 = str2.split(/\s+/).filter(w => w.length > 2);
+        
+        let commonWords = 0;
+        words1.forEach(word => {
+            if (words2.some(w => w.includes(word) || word.includes(w))) {
+                commonWords++;
+            }
+        });
+
+        const wordSimilarity = commonWords / Math.max(words1.length, words2.length, 1);
+        
+        // Also check for character overlap
+        const longer = str1.length > str2.length ? str1 : str2;
+        const shorter = str1.length > str2.length ? str2 : str1;
+        const charOverlap = shorter.split('').filter(char => longer.includes(char)).length / longer.length;
+        
+        return (wordSimilarity * 0.7 + charOverlap * 0.3);
+    }
+
     async getPersonalizedFallback(userId, guildId) {
         if (userId && guildId) {
             const topGenres = this.userPreferences.getUserTopGenres(userId, guildId, 3);
             if (topGenres.length > 0) {
                 return await this.getUserPreferredGenreTrack(topGenres);
+            }
+        }
+
+        if (this.currentTheme?.genre) {
+            const themeTrack = await this.getGenreBasedRecommendation(null, this.currentTheme.genre);
+            if (themeTrack) {
+                return themeTrack;
             }
         }
         
@@ -764,6 +995,20 @@ class SmartAutoPlay {
             return false;
         }
 
+        const lastTrack = playHistory?.length ? playHistory[playHistory.length - 1] : null;
+
+        if (lastTrack && lastTrack.title && lastTrack.author && track.title && track.author) {
+            const lastTitle = String(lastTrack.title).trim().toLowerCase();
+            const lastAuthor = String(lastTrack.author).trim().toLowerCase();
+            const nextTitle = String(track.title).trim().toLowerCase();
+            const nextAuthor = String(track.author).trim().toLowerCase();
+
+            if (lastTitle === nextTitle && lastAuthor === nextAuthor) {
+                console.log(`🚫 Avoiding immediate repeat: ${track.author} - ${track.title}`);
+                return false;
+            }
+        }
+
         // Check if recently played
         if (this.isRecentlyPlayed(track, playHistory)) {
             console.log(`🚫 Avoiding recently played: ${track.title}`);
@@ -772,8 +1017,22 @@ class SmartAutoPlay {
 
         // Check if artist was played recently (promote diversity)
         if (recentArtists.includes(track.author?.toLowerCase())) {
-            console.log(`🚫 Avoiding recent artist for diversity: ${track.author}`);
-            return false;
+            const candidateArtist = track.author?.toLowerCase();
+            const lastArtist = lastTrack?.author?.toLowerCase() || null;
+            if (!candidateArtist) {
+                console.log(`🚫 Avoiding recent artist for diversity: ${track.author}`);
+                return false;
+            }
+            if (lastArtist === candidateArtist) {
+                const recentSameArtistCount = playHistory.slice(-4).filter(t => t?.author?.toLowerCase() === candidateArtist).length;
+                if (recentSameArtistCount >= 3) {
+                    console.log(`🚫 Avoiding recent artist for diversity: ${track.author}`);
+                    return false;
+                }
+            } else if (playHistory.length > 0) {
+                console.log(`🚫 Avoiding recent artist for diversity: ${track.author}`);
+                return false;
+            }
         }
 
         // Check against user's anti-recommendations
@@ -814,6 +1073,17 @@ class SmartAutoPlay {
             'trend', 'tiktok songs with lyrics',
             'playlist hits',
             'reaction', 'reacts to',
+            'vs original song',
+            'duet',
+            'challenge',
+            'dance if you know',
+            'guess the song',
+            'sped up',
+            'slowed',
+            'mashup',
+            'lyrics video',
+            'shorts',
+
             'interview', 'talking about',
             'behind the scenes', 'making of',
             'tutorial', 'how to',
@@ -900,6 +1170,63 @@ class SmartAutoPlay {
         } catch (error) {
             return null;
         }
+    }
+
+    async getAISmartRecommendation(currentTrack, playHistory = []) {
+        try {
+            console.log('🤖 Getting AI-powered recommendation...');
+            
+            if (!this.aiRecommendationService.enabled) {
+                console.log('⚠️ AI recommendations not available (no API key)');
+                return null;
+            }
+
+            // Get AI recommendations from the service
+            const recommendations = await this.aiRecommendationService.getSmartRecommendations(
+                currentTrack,
+                playHistory,
+                {
+                    timeOfDay: this.getTimeContext(),
+                    mood: this.detectMood(currentTrack)
+                }
+            );
+
+            if (!recommendations || recommendations.length === 0) {
+                console.log('🤖 No AI recommendations returned');
+                return null;
+            }
+
+            // Pick the best recommendation from the AI results
+            const bestRecommendation = recommendations[0];
+            
+            // Convert AI recommendation format to our track format
+            const track = {
+                title: bestRecommendation.title,
+                author: bestRecommendation.artist,
+                url: `${bestRecommendation.title} ${bestRecommendation.artist}`, // Search query for SourceHandlers
+                duration: null, // Will be filled when the track is found
+                source: 'ai-recommendation',
+                reason: bestRecommendation.reason || 'AI recommendation',
+                similarity: bestRecommendation.similarity || 0.8,
+                energy: bestRecommendation.energy || 'medium'
+            };
+
+            console.log(`🤖 AI recommended: "${track.title}" by ${track.author} (${track.reason})`);
+            return track;
+
+        } catch (error) {
+            console.error('❌ Error getting AI recommendation:', error.message);
+            return null;
+        }
+    }
+
+    getTimeContext() {
+        const hour = new Date().getHours();
+        
+        if (hour >= 5 && hour < 12) return 'Morning';
+        if (hour >= 12 && hour < 17) return 'Afternoon';
+        if (hour >= 17 && hour < 22) return 'Evening';
+        return 'Night';
     }
 }
 

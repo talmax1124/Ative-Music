@@ -418,9 +418,9 @@ class MusicManager {
             // Reset consecutive errors on successful play
             this.consecutiveErrors = 0;
 
-            return true;
+        return true;
 
-        } catch (error) {
+    } catch (error) {
             console.error('❌ Error playing track:', error.message);
             console.error('❌ Full error details:', error);
             
@@ -447,6 +447,28 @@ class MusicManager {
             this.handleStreamError();
             return false;
         }
+    }
+
+    async playCurrentTrack() {
+        if (this.currentTrackIndex < 0 && this.queue.length > 0) {
+            this.currentTrackIndex = 0;
+        }
+
+        if (!this.currentTrack) {
+            this.currentTrack = this.queue[this.currentTrackIndex] || null;
+        }
+
+        if (!this.currentTrack) {
+            console.log('⚠️ No current track available to replay');
+            return false;
+        }
+
+        try {
+            this.player.stop(true);
+        } catch (_) {}
+
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return this.play();
     }
 
     schedulePrefetchNext() {
@@ -719,10 +741,23 @@ class MusicManager {
         // Cancel any active audio downloads/conversions for this context
         try { this.sourceHandlers?.audioProcessor?.cancelByContext(this.guildId, this.channelId); } catch {}
 
-        // Disable auto-play if user manually cleared (already handled by stop(true), but keep explicit state)
+        // Reset state flags for fresh start
+        this.isTransitioning = false;
+        this.consecutiveErrors = 0;
+        this.currentTrack = null;
+        
+        // Clear any track-specific error tracking
+        if (this.trackErrors) {
+            this.trackErrors.clear();
+        }
+        
+        // Reset connection health status
+        this.connectionHealthy = Boolean(this.connection);
+        
+        // Disable auto-play if user manually cleared, but allow new songs to be added
         if (userInitiated) {
             this.autoPlayEnabled = false;
-            console.log('🗑️ Queue cleared by user - auto-play disabled');
+            console.log('🗑️ Queue cleared by user - ready for new songs');
         } else {
             console.log('🗑️ Queue cleared');
         }
@@ -1341,6 +1376,33 @@ class MusicManager {
             this.trackErrors = this.trackErrors || new Map();
             const trackErrorCount = (this.trackErrors.get(trackId) || 0) + 1;
             this.trackErrors.set(trackId, trackErrorCount);
+            
+            // Try to find alternative source for current track before giving up
+            if (this.currentTrack && !this.currentTrack._alternativeAttempted && trackErrorCount <= 2) {
+                console.log('🔄 Attempting to find alternative source for current track');
+                try {
+                    this.currentTrack._alternativeAttempted = true;
+                    
+                    // Force retry with different source priority
+                    const originalSource = this.currentTrack.source;
+                    console.log(`🔄 Original source was ${originalSource}, trying alternatives...`);
+                    
+                    // Clear fallback index to start fresh with enhanced multi-source system
+                    delete this.currentTrack._fallbackIndex;
+                    
+                    // Try to play the same track again with enhanced fallback
+                    const success = await this.playCurrentTrack();
+                    if (success) {
+                        console.log('✅ Successfully recovered with alternative source');
+                        this.isTransitioning = false;
+                        clearTimeout(errorTimeout);
+                        return;
+                    }
+                } catch (error) {
+                    console.log(`❌ Alternative source attempt failed: ${error.message}`);
+                }
+            }
+            
             // Advance extractor fallback; let SourceHandlers manage yt-dlp format cycling
             if (this.currentTrack) {
                 this.currentTrack._fallbackIndex = Number(this.currentTrack._fallbackIndex || 0) + 1;
