@@ -187,13 +187,18 @@ class MusicRecommendationService {
     }
 
     async getSpotifyToken() {
-        if (!this.spotifyClientId || !this.spotifyClientSecret) return null;
+        if (!this.spotifyClientId || !this.spotifyClientSecret) {
+            console.log('⚠️ Spotify credentials not configured');
+            return null;
+        }
         
-        if (this.spotifyToken && this.spotifyTokenExpiry > Date.now()) {
+        // Check if token is still valid (with 5 minute buffer)
+        if (this.spotifyToken && this.spotifyTokenExpiry > Date.now() + 300000) {
             return this.spotifyToken;
         }
 
         try {
+            console.log('🔄 Refreshing Spotify access token...');
             const response = await axios.post('https://accounts.spotify.com/api/token', 
                 'grant_type=client_credentials',
                 {
@@ -201,16 +206,19 @@ class MusicRecommendationService {
                         'Content-Type': 'application/x-www-form-urlencoded',
                         'Authorization': 'Basic ' + Buffer.from(this.spotifyClientId + ':' + this.spotifyClientSecret).toString('base64')
                     },
-                    timeout: 5000
+                    timeout: 10000
                 }
             );
 
             this.spotifyToken = response.data.access_token;
             this.spotifyTokenExpiry = Date.now() + (response.data.expires_in * 1000) - 60000; // 1 min buffer
+            console.log('✅ Spotify token refreshed successfully');
             return this.spotifyToken;
 
         } catch (error) {
-            console.error('❌ Spotify token error:', error.message);
+            console.error('❌ Spotify token error:', error.response?.status, error.response?.data || error.message);
+            this.spotifyToken = null;
+            this.spotifyTokenExpiry = 0;
             return null;
         }
     }
@@ -286,7 +294,56 @@ class MusicRecommendationService {
             return recommendations;
 
         } catch (error) {
-            console.error('❌ Spotify API error:', error.message);
+            if (error.response?.status === 401 || error.response?.status === 403) {
+                // Token expired, try refreshing
+                console.log('🔄 Spotify token expired, refreshing...');
+                this.spotifyToken = null;
+                this.spotifyTokenExpiry = 0;
+                const newToken = await this.getSpotifyToken();
+                
+                if (newToken) {
+                    // Retry once with new token
+                    try {
+                        const searchResponse = await axios.get('https://api.spotify.com/v1/search', {
+                            headers: { 'Authorization': `Bearer ${newToken}` },
+                            params: {
+                                q: `track:${trackName} artist:${artistName}`,
+                                type: 'track',
+                                limit: 1
+                            },
+                            timeout: 5000
+                        });
+
+                        if (searchResponse.data.tracks?.items?.length > 0) {
+                            const seedTrack = searchResponse.data.tracks.items[0];
+                            const response = await axios.get('https://api.spotify.com/v1/recommendations', {
+                                headers: { 'Authorization': `Bearer ${newToken}` },
+                                params: {
+                                    seed_tracks: seedTrack.id,
+                                    limit: limit,
+                                    market: 'US'
+                                },
+                                timeout: 5000
+                            });
+
+                            return response.data.tracks.map(track => ({
+                                title: track.name,
+                                author: track.artists[0]?.name || 'Unknown',
+                                duration: Math.floor(track.duration_ms / 1000),
+                                thumbnail: track.album?.images?.[0]?.url,
+                                source: 'spotify',
+                                url: track.external_urls.spotify,
+                                popularity: track.popularity
+                            }));
+                        }
+                    } catch (retryError) {
+                        console.error('❌ Spotify API error after retry:', retryError.response?.status, retryError.message);
+                        return [];
+                    }
+                }
+            }
+            
+            console.error('❌ Spotify API error:', error.response?.status, error.response?.data?.error || error.message);
             return [];
         }
     }
@@ -483,7 +540,46 @@ class MusicRecommendationService {
             }));
 
         } catch (error) {
-            console.error('❌ Spotify genre error:', error.message);
+            if (error.response?.status === 401 || error.response?.status === 403) {
+                // Token expired or invalid, try refreshing
+                console.log('🔄 Spotify token expired, refreshing...');
+                this.spotifyToken = null;
+                this.spotifyTokenExpiry = 0;
+                const newToken = await this.getSpotifyToken();
+                
+                if (newToken) {
+                    // Retry the request once with new token
+                    try {
+                        const spotifyGenre = this.mapToSpotifyGenre(genre);
+                        if (!spotifyGenre) return [];
+                        
+                        const response = await axios.get('https://api.spotify.com/v1/recommendations', {
+                            headers: { 'Authorization': `Bearer ${newToken}` },
+                            params: {
+                                seed_genres: spotifyGenre,
+                                limit: limit,
+                                market: 'US'
+                            },
+                            timeout: 5000
+                        });
+                        
+                        return response.data.tracks.map(track => ({
+                            title: track.name,
+                            author: track.artists[0]?.name || 'Unknown',
+                            duration: Math.floor(track.duration_ms / 1000),
+                            thumbnail: track.album?.images?.[0]?.url,
+                            source: 'spotify_genre',
+                            url: track.external_urls.spotify,
+                            popularity: track.popularity
+                        }));
+                    } catch (retryError) {
+                        console.error('❌ Spotify genre error after retry:', retryError.response?.status, retryError.message);
+                        return [];
+                    }
+                }
+            }
+            
+            console.error('❌ Spotify genre error:', error.response?.status, error.response?.data?.error || error.message);
             return [];
         }
     }
