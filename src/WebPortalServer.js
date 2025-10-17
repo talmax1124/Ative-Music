@@ -94,7 +94,7 @@ class WebPortalServer {
 <head>
   <meta charset="utf-8" />
   <title>Ative Music</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
   <!-- Tailwind CSS -->
@@ -154,6 +154,14 @@ class WebPortalServer {
       padding: 0;
     }
     
+    html {
+      /* Prevent iOS bounce scroll and improve mobile performance */
+      height: 100%;
+      width: 100%;
+      -webkit-text-size-adjust: 100%;
+      -ms-text-size-adjust: 100%;
+    }
+    
     body {
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--primary-bg);
@@ -162,6 +170,11 @@ class WebPortalServer {
       overflow-x: hidden;
       min-height: 100vh;
       padding-bottom: 100px;
+      /* Mobile optimizations */
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
     
     /* Header */
@@ -1000,14 +1013,71 @@ class WebPortalServer {
       cursor: pointer;
       position: relative;
       margin: 0.5rem 0;
+      /* Mobile-friendly touch target */
+      padding: 8px 0;
+      touch-action: none;
+    }
+    
+    .progress-bar::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: var(--surface);
+      border-radius: 2px;
+      transform: translateY(-50%);
     }
     
     .progress-fill {
-      height: 100%;
+      position: absolute;
+      top: 50%;
+      left: 0;
+      height: 4px;
       background: var(--gradient-primary);
       border-radius: 2px;
       width: 0%;
       transition: width 0.1s ease;
+      transform: translateY(-50%);
+      z-index: 2;
+    }
+    
+    /* Mobile progress bar enhancements */
+    @media (max-width: 768px) {
+      .progress-bar {
+        height: 6px;
+        padding: 12px 0;
+      }
+      
+      .progress-bar::before {
+        height: 6px;
+      }
+      
+      .progress-fill {
+        height: 6px;
+      }
+      
+      .progress-times {
+        font-size: 0.8rem;
+        margin: 0.25rem 0;
+      }
+    }
+    
+    @media (max-width: 480px) {
+      .progress-bar {
+        height: 8px;
+        padding: 16px 0;
+        margin: 0.75rem 0;
+      }
+      
+      .progress-bar::before {
+        height: 8px;
+      }
+      
+      .progress-fill {
+        height: 8px;
+      }
     }
     
     .progress-times {
@@ -1116,14 +1186,25 @@ class WebPortalServer {
       .main-container {
         grid-template-columns: 1fr;
         gap: 1rem;
+        padding: 1rem;
       }
       
       .sidebar {
         position: static;
+        order: 2;
+        padding: 1.5rem;
+      }
+      
+      .content {
+        order: 1;
       }
       
       .track-grid {
         grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      }
+      
+      .section {
+        padding: 1.5rem;
       }
     }
     
@@ -1151,72 +1232,171 @@ class WebPortalServer {
     @media (max-width: 768px) {
       .main-container {
         grid-template-columns: 1fr;
-        padding: 1rem;
+        padding: 0.5rem;
+        gap: 0.75rem;
       }
       
       .sidebar {
         position: static;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
+        padding: 1rem;
+        border-radius: 16px;
+        order: 2;
+      }
+      
+      .content {
+        order: 1;
       }
       
       .server-selection {
         padding: 1rem;
-        min-height: calc(100vh - 120px);
+        min-height: calc(100vh - 80px);
       }
       
       .server-selection-header h1 {
-        font-size: 2rem;
+        font-size: 1.75rem;
+        line-height: 1.2;
       }
       
       .server-selection-header p {
-        font-size: 1rem;
+        font-size: 0.95rem;
+        line-height: 1.4;
       }
       
       .server-selection-header {
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
+        text-align: center;
       }
       
       .server-grid {
         grid-template-columns: 1fr;
-        gap: 1.5rem;
+        gap: 1rem;
       }
       
       .server-card {
-        padding: 2rem 1.5rem;
-        min-height: 200px;
+        padding: 1.5rem;
+        min-height: 160px;
+        border-radius: 16px;
+        text-align: center;
       }
       
       .server-icon {
-        width: 80px;
-        height: 80px;
-        font-size: 2rem;
-        margin-bottom: 1.5rem;
+        width: 70px;
+        height: 70px;
+        font-size: 1.75rem;
+        margin: 0 auto 1rem;
       }
       
       .server-name {
-        font-size: 1.25rem;
+        font-size: 1.1rem;
+        line-height: 1.3;
+        margin-bottom: 0.5rem;
       }
       
-      .main-container {
-        padding: 1rem;
+      .server-members {
+        font-size: 0.85rem;
+        opacity: 0.8;
       }
       
       .section {
-        padding: 1.5rem;
+        padding: 1rem;
+        border-radius: 16px;
+      }
+      
+      .section-title {
+        font-size: 1.1rem;
       }
       
       .track-grid {
         grid-template-columns: 1fr;
+        gap: 0.75rem;
+      }
+      
+      .track-card {
+        padding: 1rem;
+        border-radius: 12px;
+      }
+      
+      .track-info h4 {
+        font-size: 1rem;
+        line-height: 1.3;
+      }
+      
+      .track-info p {
+        font-size: 0.85rem;
+      }
+      
+      .track-actions {
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+        flex-wrap: wrap;
+      }
+      
+      .play-btn, .queue-btn, .playlist-btn {
+        min-height: 44px;
+        touch-action: manipulation;
       }
       
       .bottom-player {
         flex-direction: column;
-        gap: 1rem;
-        padding: 1rem;
+        gap: 0.75rem;
+        padding: 0.75rem;
+        border-radius: 16px 16px 0 0;
+      }
+      
+      .player-info {
+        order: 1;
+        text-align: center;
       }
       
       .player-controls {
-        order: -1;
+        order: 2;
+        justify-content: center;
+        gap: 1rem;
+      }
+      
+      .player-controls button {
+        min-height: 48px;
+        min-width: 48px;
+        touch-action: manipulation;
+      }
+      
+      .progress-section {
+        order: 3;
+        margin-top: 0.5rem;
+      }
+      
+      .search-tabs {
+        justify-content: center;
+        gap: 0.25rem;
+        margin-bottom: 1.5rem;
+      }
+      
+      .tab-btn {
+        padding: 0.75rem 1rem;
+        font-size: 0.85rem;
+        border-radius: 12px;
+        min-width: 44px;
+        touch-action: manipulation;
+      }
+      
+      .search-input {
+        padding: 1rem;
+        font-size: 16px; /* Prevent zoom on iOS */
+        border-radius: 16px;
+      }
+      
+      .btn {
+        min-height: 44px;
+        padding: 0.75rem 1.25rem;
+        touch-action: manipulation;
+        border-radius: 12px;
+      }
+      
+      .form-control {
+        padding: 1rem;
+        font-size: 16px; /* Prevent zoom on iOS */
+        border-radius: 12px;
       }
     }
 
@@ -1239,36 +1419,113 @@ class WebPortalServer {
 
     /* Small Mobile */
     @media (max-width: 480px) {
+      .main-container {
+        padding: 0.25rem;
+        gap: 0.5rem;
+      }
+      
       .server-selection {
         padding: 0.5rem;
       }
       
       .server-selection-header h1 {
-        font-size: 1.75rem;
+        font-size: 1.5rem;
+        line-height: 1.2;
       }
       
       .server-selection-header p {
-        font-size: 0.9rem;
+        font-size: 0.85rem;
+        line-height: 1.4;
       }
       
       .server-card {
-        padding: 1.5rem 1rem;
-        min-height: 180px;
+        padding: 1.25rem 0.75rem;
+        min-height: 140px;
       }
       
       .server-icon {
-        width: 70px;
-        height: 70px;
-        font-size: 1.75rem;
-        margin-bottom: 1rem;
+        width: 60px;
+        height: 60px;
+        font-size: 1.5rem;
+        margin-bottom: 0.75rem;
       }
       
       .server-name {
-        font-size: 1.1rem;
+        font-size: 1rem;
+        line-height: 1.2;
       }
       
       .server-members {
-        font-size: 0.9rem;
+        font-size: 0.8rem;
+      }
+      
+      .section {
+        padding: 0.75rem;
+      }
+      
+      .section-title {
+        font-size: 1rem;
+      }
+      
+      .track-card {
+        padding: 0.75rem;
+      }
+      
+      .track-info h4 {
+        font-size: 0.95rem;
+      }
+      
+      .track-info p {
+        font-size: 0.8rem;
+      }
+      
+      .track-actions {
+        gap: 0.375rem;
+      }
+      
+      .play-btn, .queue-btn, .playlist-btn {
+        padding: 0.5rem;
+        min-height: 40px;
+        min-width: 40px;
+      }
+      
+      .bottom-player {
+        padding: 0.5rem;
+        gap: 0.5rem;
+      }
+      
+      .player-controls button {
+        min-height: 44px;
+        min-width: 44px;
+      }
+      
+      .search-tabs {
+        gap: 0.125rem;
+        flex-wrap: wrap;
+      }
+      
+      .tab-btn {
+        padding: 0.625rem 0.75rem;
+        font-size: 0.8rem;
+        min-width: 40px;
+      }
+      
+      .search-input {
+        padding: 0.875rem;
+        font-size: 16px;
+      }
+      
+      .btn {
+        padding: 0.625rem 1rem;
+        min-height: 40px;
+      }
+      
+      .form-control {
+        padding: 0.875rem;
+      }
+      
+      .sidebar {
+        padding: 0.75rem;
       }
     }
     
@@ -1967,13 +2224,129 @@ class WebPortalServer {
     /* Ensure track cards never cause horizontal overflow */
     .track-card { max-width: 100%; }
 
-    /* Responsive tweaks to avoid overflow on very narrow screens */
+    /* Ultra-small screens */
     @media (max-width: 420px) {
-      .track-grid { grid-template-columns: 1fr; }
-      .track-actions { width: 100%; }
-      .play-btn { flex: 1 1 100%; }
-      .search-tabs { gap: 0.25rem; }
-      .tab-btn { padding: 0.75rem 1rem; }
+      .track-grid { 
+        grid-template-columns: 1fr; 
+        gap: 0.5rem;
+      }
+      
+      .track-actions { 
+        width: 100%; 
+        justify-content: space-between;
+        gap: 0.25rem;
+      }
+      
+      .play-btn { 
+        flex: 1 1 auto; 
+        min-width: 0;
+      }
+      
+      .queue-btn, .playlist-btn {
+        flex: 0 0 36px;
+        min-width: 36px;
+        max-width: 36px;
+        padding: 0.375rem;
+      }
+      
+      .search-tabs { 
+        gap: 0.125rem; 
+        justify-content: center;
+      }
+      
+      .tab-btn { 
+        padding: 0.5rem 0.75rem; 
+        font-size: 0.75rem;
+        min-width: 36px;
+      }
+      
+      .section-title {
+        font-size: 0.95rem;
+      }
+      
+      .bottom-player {
+        padding: 0.375rem;
+      }
+      
+      .player-controls button {
+        min-height: 40px;
+        min-width: 40px;
+      }
+    }
+    
+    /* Touch-friendly enhancements */
+    @media (hover: none) and (pointer: coarse) {
+      .btn, .track-card, .server-card, .tab-btn {
+        transition: transform 0.1s ease, background-color 0.2s ease;
+      }
+      
+      .btn:active, .track-card:active, .server-card:active, .tab-btn:active {
+        transform: scale(0.98);
+      }
+      
+      .play-btn:active, .queue-btn:active, .playlist-btn:active {
+        transform: scale(0.95);
+      }
+      
+      /* Increase touch targets */
+      .player-controls button {
+        min-height: 48px;
+        min-width: 48px;
+      }
+      
+      /* Better scrolling on mobile */
+      .main-container, .content, .sidebar {
+        -webkit-overflow-scrolling: touch;
+      }
+      
+      /* Prevent text selection on touch */
+      .btn, .track-actions button, .player-controls button, .tab-btn {
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+    }
+    
+    /* Landscape orientation fixes */
+    @media (max-width: 896px) and (orientation: landscape) {
+      .main-container {
+        padding: 0.5rem;
+        gap: 0.5rem;
+      }
+      
+      .server-selection {
+        padding: 0.5rem;
+        min-height: calc(100vh - 40px);
+      }
+      
+      .server-selection-header {
+        margin-bottom: 1rem;
+      }
+      
+      .server-selection-header h1 {
+        font-size: 1.5rem;
+      }
+      
+      .server-grid {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 0.75rem;
+      }
+      
+      .server-card {
+        padding: 1rem;
+        min-height: 120px;
+      }
+      
+      .server-icon {
+        width: 50px;
+        height: 50px;
+        font-size: 1.25rem;
+        margin-bottom: 0.5rem;
+      }
+      
+      .bottom-player {
+        padding: 0.5rem;
+      }
     }
 
     .no-playlists {
