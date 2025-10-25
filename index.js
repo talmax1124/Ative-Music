@@ -79,17 +79,12 @@ if (typeof globalThis.File === 'undefined') {
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, REST, Routes, StringSelectMenuBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState, demuxProbe, getVoiceConnection } = require('@discordjs/voice');
 const config = require('./config.js');
-const firebaseService = require('./src/FirebaseService.js');
+const neonService = require('./src/NeonService.js');
 const MusicManager = require('./src/MusicManager.js');
 const SourceHandlers = require('./src/SourceHandlers.js');
-const StayConnectedManager = require('./src/StayConnectedManager.js');
-const VideoHandler = require('./src/VideoHandler.js');
-const LocalVideoServer = require('./src/LocalVideoServer.js');
 const WebPortalServer = require('./src/WebPortalServer.js');
-const ErrorHandler = require('./src/ErrorHandler.js');
 const PlaylistManager = require('./src/PlaylistManager.js');
-const LyricsHandler = require('./src/LyricsHandler.js');
-const DiscordPlayerManager = require('./src/DiscordPlayerManager.js');
+// Other managers removed during cleanup
 
 class AtiveMusicBot {
     constructor() {
@@ -101,17 +96,12 @@ class AtiveMusicBot {
         });
 
         this.musicManagers = new Map(); // Now maps channelId -> MusicManager
-        this.sourceHandlers = new SourceHandlers();
-        this.stayConnectedManager = new StayConnectedManager(this.client, this);
-        this.videoHandler = new VideoHandler();
-        this.localVideoServer = new LocalVideoServer(3000);
-        this.errorHandler = new ErrorHandler();
+        this.sourceHandlers = new SourceHandlers(this.client);
         this.playlistManager = new PlaylistManager();
         // Provide bot context to playlist manager for queue/play operations
         this.playlistManager.bot = this;
-        this.lyricsHandler = new LyricsHandler();
-        this.discordPlayer = new DiscordPlayerManager(this.client);
         this.webPortal = new WebPortalServer(this);
+        // Other managers removed during cleanup
         this.client.bot = this; // Make bot instance available to Discord Player
         global.ativeBot = this; // Global reference for fallback
         this.searchCache = new Map();
@@ -156,7 +146,7 @@ class AtiveMusicBot {
             // Clear any saved queues for fresh startup
             try {
                 for (const [guildId] of this.client.guilds.cache) {
-                    await firebaseService.clearQueue(guildId);
+                    await neonService.clearQueue(guildId);
                 }
                 console.log('🗑️ Cleared all saved queues for fresh startup');
             } catch (error) {
@@ -513,8 +503,8 @@ class AtiveMusicBot {
                 }
                 try {
                     // Persist mapping
-                    if (!firebaseService.initialized) firebaseService.initialize();
-                    await firebaseService.savePanelMapping(interaction.guildId, voiceChannel.id, textChannel.id);
+                    if (!neonService.initialized) neonService.initialize();
+                    await neonService.savePanelMapping(interaction.guildId, voiceChannel.id, textChannel.id);
                     // Update memory maps
                     this.musicTextChannels.set(voiceChannel.id, textChannel.id);
                     const panelInfo = this.musicPanels.get(voiceChannel.id) || {};
@@ -708,8 +698,8 @@ class AtiveMusicBot {
 
             // Persist panel mapping (voice channel -> this text channel) for future panels
             try {
-                if (!firebaseService.initialized) firebaseService.initialize();
-                await firebaseService.savePanelMapping(interaction.guildId, voiceChannel.id, interaction.channelId);
+                if (!neonService.initialized) neonService.initialize();
+                await neonService.savePanelMapping(interaction.guildId, voiceChannel.id, interaction.channelId);
             } catch (e) {
                 console.log('⚠️ Failed to persist panel mapping:', e?.message || e);
             }
@@ -3533,7 +3523,8 @@ class AtiveMusicBot {
 
     async start() {
         try {
-            firebaseService.initialize();
+            neonService.initialize();
+            await neonService.createTables();
             
             // Always start the web portal, even if Discord fails
             await this.startWebPortal();
@@ -3551,12 +3542,7 @@ class AtiveMusicBot {
         try {
             console.log('🚀 Starting web portal...');
             
-            // Start local video server
-            try {
-                await this.localVideoServer.start();
-            } catch (error) {
-                console.error('❌ Failed to start video server:', error);
-            }
+            // Local video server removed during cleanup
 
             // Start web portal (search + play via browser)
             try {

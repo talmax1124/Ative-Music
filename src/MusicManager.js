@@ -3,10 +3,9 @@ const { createReadStream } = require('fs');
 const config = require('../config.js');
 const SmartAutoPlay = require('./SmartAutoPlay.js');
 const UserPreferences = require('./UserPreferences.js');
-const firebaseService = require('./FirebaseService.js');
-const EngineManager = require('./EngineManager.js');
-const HealthMonitor = require('./HealthMonitor.js');
-const VPSOptimizer = require('./VPSOptimizer.js');
+const neonService = require('./NeonService.js');
+const StreamOnlyEngineManager = require('./StreamOnlyEngineManager.js');
+// Health monitoring and VPS optimization removed during cleanup
 
 class MusicManager {
     constructor(guildId, channelId, sourceHandlers) {
@@ -15,17 +14,7 @@ class MusicManager {
         this.sourceHandlers = sourceHandlers;
         
         // Initialize modern engine system
-        this.engineManager = new EngineManager();
-        this.healthMonitor = new HealthMonitor(this.engineManager);
-        this.vpsOptimizer = new VPSOptimizer();
-        
-        // Apply VPS optimizations
-        this.vpsOptimizer.optimizeForStreaming(this.engineManager);
-        
-        // Start health monitoring in production
-        if (process.env.NODE_ENV === 'production' || process.env.VPS === 'true') {
-            this.healthMonitor.startMonitoring();
-        }
+        this.engineManager = new StreamOnlyEngineManager();
         this.queue = [];
         this.currentTrack = null;
         this.currentTrackIndex = -1;
@@ -48,7 +37,7 @@ class MusicManager {
         this.onTrackStart = null;
         this.onQueueUpdate = null;
         this.autoPlayTimeout = null;
-        this.firebaseService = firebaseService;
+        this.neonService = neonService;
         this.isSeeking = false;
         this.shuffleEnabled = false;
         this._stopReason = null; // Reason for forced stop (e.g., 'skip')
@@ -63,7 +52,7 @@ class MusicManager {
         // this.loadQueue();
         
         // Setup health monitoring event handlers
-        this.setupHealthMonitoring();
+        // Health monitoring setup removed
     }
 
     setupPlayerEvents() {
@@ -351,28 +340,61 @@ class MusicManager {
                 return false;
             }
             
-            // Try modern engine manager first, fallback to old system
+            // Use Discord Player for reliable streaming (replaces engine manager)
             let stream = null;
             const startTime = Date.now();
             
             try {
-                console.log(`🚀 Using MODERN ENGINES (no downloads, instant streaming)`);
-                stream = await this.engineManager.getStream(this.currentTrack);
-                const responseTime = Date.now() - startTime;
-                this.vpsOptimizer.recordRequest(responseTime);
-                console.log(`⚡ INSTANT STREAM in ${responseTime}ms via modern engines (NO DOWNLOADS)`);
-            } catch (engineError) {
-                console.warn(`⚠️ Modern engines failed: ${engineError.message}`);
-                console.log(`🔄 Falling back to old SourceHandlers system (with downloads)...`);
+                console.log(`🚀 Using DISCORD PLAYER (multi-source, no downloads)`);
                 
-                try {
+                // Use discord-player through sourceHandlers for compatibility
+                let voiceChannel = null;
+                if (this.connection?.joinConfig?.channelId && this.sourceHandlers.client) {
+                    const guild = this.sourceHandlers.client.guilds.cache.get(this.guildId);
+                    if (guild) {
+                        voiceChannel = guild.channels.cache.get(this.connection.joinConfig.channelId);
+                    }
+                }
+                
+                if (voiceChannel && this.sourceHandlers.playTrack) {
+                    // Use discord-player's native playback method
+                    const result = await this.sourceHandlers.playTrack(voiceChannel, this.currentTrack, {
+                        textChannel: this.lastChannel,
+                        volume: this.volume * 100 // Convert to 0-100 scale
+                    });
+                    
+                    if (result.success) {
+                        const responseTime = Date.now() - startTime;
+                        console.log(`⚡ DISCORD PLAYER STREAM in ${responseTime}ms (MULTI-SOURCE SUPPORT)`);
+                        
+                        // For compatibility, return a stream-like object
+                        stream = {
+                            discordPlayerQueue: result.queue,
+                            discordPlayerTrack: result.track,
+                            title: this.currentTrack.title,
+                            author: this.currentTrack.author
+                        };
+                    } else {
+                        throw new Error('Discord Player failed to start playback');
+                    }
+                } else {
+                    // Fallback to stream creation for compatibility
                     stream = await this.sourceHandlers.getStream(this.currentTrack, { 
                         meta: { guildId: this.guildId, channelId: this.channelId, current: true } 
                     });
+                    const responseTime = Date.now() - startTime;
+                    console.log(`✅ Stream obtained in ${responseTime}ms via Discord Player`);
+                }
+            } catch (discordPlayerError) {
+                console.warn(`⚠️ Discord Player failed: ${discordPlayerError.message}`);
+                console.log(`🔄 Falling back to engine manager...`);
+                
+                try {
+                    stream = await this.engineManager.getStream(this.currentTrack);
                     const fallbackTime = Date.now() - startTime;
-                    console.log(`✅ Fallback stream obtained in ${fallbackTime}ms via SourceHandlers`);
+                    console.log(`✅ Fallback stream obtained in ${fallbackTime}ms via engines`);
                 } catch (fallbackError) {
-                    console.error(`❌ Both engine systems failed: ${fallbackError.message}`);
+                    console.error(`❌ All streaming methods failed: ${fallbackError.message}`);
                     throw fallbackError;
                 }
             }
@@ -384,8 +406,21 @@ class MusicManager {
                 return false;
             }
 
-            // Validate stream before creating audio resource
-            if (!stream.readable || stream.destroyed) {
+            // Handle discord-player streams differently
+            if (stream.discordPlayerQueue) {
+                console.log('✅ Discord Player is handling playback natively');
+                this.isPlaying = true;
+                this.isPaused = false;
+                
+                // Discord Player handles events internally through DiscordPlayerManager
+                // Events are already set up in the DiscordPlayerManager setupEventHandlers()
+                console.log(`✅ Discord Player queue created and track added successfully`);
+                
+                return true; // Success - discord-player is handling everything
+            }
+            
+            // Validate traditional stream before creating audio resource
+            if (!stream || !stream.readable || stream.destroyed) {
                 console.error('❌ Stream is not readable or already destroyed');
                 this.handleStreamError();
                 return false;
@@ -1306,7 +1341,7 @@ class MusicManager {
                 autoPlayEnabled: this.autoPlayEnabled,
                 continuousPlayback: this.continuousPlayback
             };
-            await this.firebaseService.saveQueue(this.guildId, this.channelId, queueData);
+            await this.neonService.saveQueue(this.guildId, this.channelId, queueData);
             console.log(`💾 Queue saved for channel ${this.channelId} (guild ${this.guildId})`);
             this._lastSaveKey = signature;
             this._lastSaveAt = now;
@@ -1317,7 +1352,7 @@ class MusicManager {
 
     async loadQueue() {
         try {
-            const queueData = await this.firebaseService.loadQueue(this.guildId);
+            const queueData = await this.neonService.loadQueue(this.guildId);
             
             if (!queueData) {
                 console.log(`🆕 Starting fresh queue for guild ${this.guildId}`);
@@ -1353,7 +1388,7 @@ class MusicManager {
 
     async clearPersistedQueue() {
         try {
-            await this.firebaseService.clearQueue(this.guildId);
+            await this.neonService.clearQueue(this.guildId);
             console.log(`🗑️ Cleared persisted queue for guild ${this.guildId}`);
         } catch (error) {
             console.error('❌ Failed to clear persisted queue:', error);
@@ -1594,18 +1629,7 @@ class MusicManager {
     }
 
     // Modern engine system integration methods
-    setupHealthMonitoring() {
-        if (!this.healthMonitor) return;
-
-        this.healthMonitor.on('healthAlert', (alert) => {
-            console.warn(`🚨 Music Manager Health Alert [${alert.severity}]: ${alert.issues.length} issues`);
-            alert.issues.forEach(issue => console.warn(`   ${issue}`));
-        });
-
-        this.healthMonitor.on('healthCheckError', (error) => {
-            console.error('❌ Health check error:', error.message);
-        });
-    }
+    // Health monitoring setup removed during cleanup
 
     async searchTracks(query, limit = 10) {
         try {
@@ -1614,7 +1638,7 @@ class MusicManager {
             
             const results = await this.engineManager.search(query, limit);
             const responseTime = Date.now() - startTime;
-            this.vpsOptimizer.recordRequest(responseTime);
+            // VPS optimization recording removed
             
             console.log(`✅ Found ${results.length} tracks in ${responseTime}ms`);
             return results;
@@ -1631,7 +1655,7 @@ class MusicManager {
             
             const trackInfo = await this.engineManager.handleURL(url);
             const responseTime = Date.now() - startTime;
-            this.vpsOptimizer.recordRequest(responseTime);
+            // VPS optimization recording removed
             
             if (trackInfo) {
                 console.log(`✅ URL resolved in ${responseTime}ms: ${trackInfo.title}`);
@@ -1699,8 +1723,6 @@ class MusicManager {
     // System status and diagnostics
     getSystemStatus() {
         const engineStatus = this.engineManager.getSystemStatus();
-        const vpsReport = this.vpsOptimizer.getPerformanceReport();
-        const healthSummary = this.healthMonitor.getHealthSummary();
 
         return {
             musicManager: {
@@ -1713,9 +1735,7 @@ class MusicManager {
                     source: this.currentTrack.source
                 } : null
             },
-            engines: engineStatus,
-            performance: vpsReport,
-            health: healthSummary
+            engines: engineStatus
         };
     }
 
@@ -1736,10 +1756,7 @@ class MusicManager {
             const status = this.getSystemStatus();
             console.log('   System status:', JSON.stringify(status, null, 2));
             
-            // Force health check
-            if (this.healthMonitor) {
-                await this.healthMonitor.runHealthCheck();
-            }
+            // Health check removed during cleanup
             
             console.log('✅ Diagnostics completed');
             return status;
@@ -1754,19 +1771,9 @@ class MusicManager {
         console.log('🛑 Cleaning up Music Manager...');
         
         try {
-            // Stop health monitoring
-            if (this.healthMonitor) {
-                this.healthMonitor.stopMonitoring();
-            }
-            
             // Shutdown engine manager
             if (this.engineManager) {
                 await this.engineManager.shutdown();
-            }
-            
-            // Run VPS cleanup
-            if (this.vpsOptimizer) {
-                await this.vpsOptimizer.cleanup();
             }
             
             // Stop audio player

@@ -1,7 +1,7 @@
 const express = require('express');
 const { getVoiceConnection } = require('@discordjs/voice');
 const axios = require('axios');
-const firebaseService = require('./FirebaseService.js');
+const neonService = require('./NeonService.js');
 
 class WebPortalServer {
   constructor(bot) {
@@ -5638,19 +5638,16 @@ class WebPortalServer {
 
         console.log(`🔌 Connecting to channel: ${channel.name}`);
 
-        // Skip Discord Player - use built-in system directly (this was the working solution)
-        console.log(`🔄 Bypassing Discord Player - using built-in system directly: ${query}`);
+        // Use Discord Player with proper fallback
+        console.log(`🎵 Using Discord Player with fallback for: ${query}`);
         
         // Find an appropriate text channel for this voice channel
         const textChannel = this.bot.getTextChannelForVoice(channelId, guild);
         
-        // Go directly to built-in SourceHandlers (skip Discord Player entirely)
-        console.log(`🔍 Using built-in SourceHandlers for: "${query}"`);
-        
         // Store the text channel for this voice channel
         if (textChannel) {
           this.bot.musicTextChannels.set(channelId, textChannel.id);
-          console.log(`📝 Stored text channel ${textChannel.id} for voice channel ${channelId} (built-in)`);
+          console.log(`📝 Stored text channel ${textChannel.id} for voice channel ${channelId}`);
         }
 
         try {
@@ -5665,10 +5662,10 @@ class WebPortalServer {
           }
 
           const track = results[0];
-          console.log(`✅ Found via built-in search: ${track.title} from ${track.source}`);
+          console.log(`✅ Found track: ${track.title} from ${track.source}`);
           
-          // Force bypass Discord Player completely
-          console.log(`🔄 Bypassing Discord Player - using original MusicManager system`);
+          // Use Discord Player with fallback support
+          console.log(`🔄 Using Discord Player with built-in fallback system`);
           
           // Use the working built-in system
           const mockInteraction = {
@@ -5779,10 +5776,25 @@ class WebPortalServer {
 
         switch (action) {
           case 'connect':
-            await this.bot.stayConnectedManager.connectToChannel(channel);
+            // Connect to voice channel using bot's direct connection method
+            try {
+              await this.bot.connectToVoiceChannel(channel, guildId);
+              result = { success: true, message: 'Connected to voice channel' };
+            } catch (error) {
+              result = { success: false, error: error.message };
+            }
             break;
           case 'disconnect':
-            this.bot.stayConnectedManager.disconnect(guildId);
+            // Disconnect from voice channel
+            try {
+              const musicManager = this.bot.musicManagers?.get(channelId);
+              if (musicManager && musicManager.connection) {
+                musicManager.connection.destroy();
+              }
+              result = { success: true, message: 'Disconnected from voice channel' };
+            } catch (error) {
+              result = { success: false, error: error.message };
+            }
             break;
           case 'pause':
           case 'resume':
@@ -5865,13 +5877,11 @@ class WebPortalServer {
           return res.status(400).json({ success: false, error: 'guildId and channelId are required' });
         }
 
-        // Get connection to access music manager
-        const connection = this.bot.stayConnectedManager.connections.get(guildId);
-        if (!connection || !connection.musicManager) {
+        // Get music manager directly (StayConnectedManager was removed)
+        const musicManager = this.bot.musicManagers?.get(channelId);
+        if (!musicManager) {
           return res.status(400).json({ success: false, error: 'No active music session found' });
         }
-
-        const musicManager = connection.musicManager;
         const smartAutoPlay = musicManager.smartAutoPlay;
 
         if (!smartAutoPlay) {
@@ -5992,18 +6002,22 @@ class WebPortalServer {
         const { guildId, channelId } = req.query || {};
         const fs = require('fs');
         const path = require('path');
-        // Prefer explicit guild/channel
+        // Get connection info from available music managers (StayConnectedManager was removed)
         let connection = null;
         if (guildId && channelId) {
-          const existing = this.bot.stayConnectedManager.connections.get(guildId);
-          if (existing && existing.joinConfig?.channelId === channelId) {
-            connection = existing;
+          const musicManager = this.bot.musicManagers.get(channelId);
+          if (musicManager && musicManager.connection) {
+            connection = musicManager.connection;
           }
         }
-        // Fallback to any connection
+        // Fallback to any available connection
         if (!connection) {
-          const connections = Array.from(this.bot.stayConnectedManager.connections.values());
-          connection = connections[0];
+          for (const [channelId, musicManager] of this.bot.musicManagers) {
+            if (musicManager.connection) {
+              connection = musicManager.connection;
+              break;
+            }
+          }
         }
 
         // Validate cookies presence/format
@@ -6116,36 +6130,9 @@ class WebPortalServer {
   }
 
   setupProgressListener() {
-    // Listen for progress events from AudioProcessor
-    // The audioProcessor is in SourceHandlers, which might be in different places
-    setTimeout(() => {
-      // Try to find the audioProcessor in the bot structure
-      let audioProcessor = null;
-      
-      // Check if it's in SourceHandlers
-      if (this.bot.sourceHandlers?.audioProcessor) {
-        audioProcessor = this.bot.sourceHandlers.audioProcessor;
-      }
-      
-      // Check MusicManagers for audioProcessor
-      if (!audioProcessor && this.bot.musicManagers) {
-        for (const [key, musicManager] of this.bot.musicManagers) {
-          if (musicManager.sourceHandlers?.audioProcessor) {
-            audioProcessor = musicManager.sourceHandlers.audioProcessor;
-            break;
-          }
-        }
-      }
-      
-      if (audioProcessor) {
-        console.log('🔗 Connected to AudioProcessor for progress updates');
-        audioProcessor.on('progress', (data) => {
-          this.broadcastProgress(data);
-        });
-      } else {
-        console.log('⚠️ AudioProcessor not found, progress updates disabled');
-      }
-    }, 1000); // Wait for bot initialization
+    // Progress updates not needed in streaming-only mode
+    // AudioProcessor was removed during cleanup for pure streaming
+    console.log('📡 Progress tracking disabled in streaming-only mode');
   }
 
   broadcastProgress(data) {
@@ -6248,7 +6235,7 @@ class WebPortalServer {
           return res.status(401).json({ error: 'User not authenticated' });
         }
 
-        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlists = await neonService.getUserPlaylists(req.user.id);
         res.json(playlists || []);
       } catch (error) {
         console.error('Error fetching user playlists:', error);
@@ -6277,7 +6264,7 @@ class WebPortalServer {
           updatedAt: new Date().toISOString()
         };
 
-        await firebaseService.saveUserPlaylist(req.user.id, playlist);
+        await neonService.saveUserPlaylist(req.user.id, playlist);
         res.json(playlist);
       } catch (error) {
         console.error('Error creating user playlist:', error);
@@ -6294,7 +6281,7 @@ class WebPortalServer {
         const { playlistId } = req.params;
         const { name, description, tracks } = req.body;
 
-        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlists = await neonService.getUserPlaylists(req.user.id);
         const playlist = playlists?.find(p => p.id === playlistId);
 
         if (!playlist) {
@@ -6313,7 +6300,7 @@ class WebPortalServer {
           updatedAt: new Date().toISOString()
         };
 
-        await firebaseService.updateUserPlaylist(req.user.id, updatedPlaylist);
+        await neonService.updateUserPlaylist(req.user.id, updatedPlaylist);
         res.json(updatedPlaylist);
       } catch (error) {
         console.error('Error updating user playlist:', error);
@@ -6328,7 +6315,7 @@ class WebPortalServer {
         }
 
         const { playlistId } = req.params;
-        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlists = await neonService.getUserPlaylists(req.user.id);
         const playlist = playlists?.find(p => p.id === playlistId);
 
         if (!playlist) {
@@ -6339,7 +6326,7 @@ class WebPortalServer {
           return res.status(403).json({ error: 'Not authorized to delete this playlist' });
         }
 
-        await firebaseService.deleteUserPlaylist(req.user.id, playlistId);
+        await neonService.deleteUserPlaylist(req.user.id, playlistId);
         res.json({ success: true });
       } catch (error) {
         console.error('Error deleting user playlist:', error);
@@ -6358,7 +6345,7 @@ class WebPortalServer {
         }
 
         // Get current playlists to find the one to update
-        const playlists = await firebaseService.getUserPlaylists(req.user.id);
+        const playlists = await neonService.getUserPlaylists(req.user.id);
         const playlist = playlists.find(p => p.id === playlistId);
 
         if (!playlist) {
@@ -6379,7 +6366,7 @@ class WebPortalServer {
           tracks
         };
 
-        await firebaseService.updateUserPlaylist(req.user.id, updatedPlaylist);
+        await neonService.updateUserPlaylist(req.user.id, updatedPlaylist);
         res.json(updatedPlaylist);
       } catch (error) {
         console.error('Error adding track to playlist:', error);

@@ -1,9 +1,9 @@
 const axios = require('axios');
-const firebaseService = require('./FirebaseService.js');
+const neonService = require('./NeonService.js');
 
 class PlaylistManager {
     constructor() {
-        this.firebaseService = firebaseService;
+        this.neonService = neonService;
     }
 
     // === WEB PORTAL METHODS ===
@@ -573,7 +573,7 @@ class PlaylistManager {
             duration: 0
         };
 
-        await this.firebaseService.savePlaylist(userId, guildId, playlistId, playlist.tracks);
+        await this.neonService.savePlaylist(userId, guildId, playlistId, playlist.tracks);
         
         console.log(`📝 Created playlist: ${name} for user ${userId}`);
         return playlist;
@@ -585,7 +585,7 @@ class PlaylistManager {
 
   async getUserPlaylists(userId, guildId) {
     try {
-        return await this.firebaseService.getUserPlaylists(userId, guildId);
+        return await this.neonService.getUserPlaylists(userId, guildId);
     } catch (error) {
         console.error('Error getting user playlists:', error);
         return [];
@@ -594,7 +594,7 @@ class PlaylistManager {
 
   async getPlaylist(userId, guildId, playlistName) {
     try {
-        return await this.firebaseService.loadPlaylist(userId, guildId, playlistName);
+        return await this.neonService.loadPlaylist(userId, guildId, playlistName);
     } catch (error) {
         return null;
     }
@@ -629,7 +629,7 @@ class PlaylistManager {
         playlist.updatedAt = new Date().toISOString();
         playlist.duration = this.calculatePlaylistDuration(playlist.tracks);
 
-        await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+        await this.neonService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
         console.log(`➕ Added track to playlist: ${track.title} -> ${playlistName}`);
         return playlist;
     } catch (error) {
@@ -657,7 +657,7 @@ class PlaylistManager {
         playlist.updatedAt = new Date().toISOString();
         playlist.duration = this.calculatePlaylistDuration(playlist.tracks);
 
-        await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+        await this.neonService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
         console.log(`➖ Removed track from playlist: ${removedTrack.title} <- ${playlistName}`);
         return playlist;
     } catch (error) {
@@ -677,7 +677,7 @@ class PlaylistManager {
             throw new Error('Permission denied: Not playlist owner');
         }
 
-        await this.firebaseService.deletePlaylist(userId, guildId, playlistName);
+        await this.neonService.deletePlaylist(userId, guildId, playlistName);
         
         console.log(`🗑️ Deleted playlist: ${playlistName}`);
         return true;
@@ -704,7 +704,7 @@ class PlaylistManager {
         
         playlist.updatedAt = new Date().toISOString();
 
-        await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+        await this.neonService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
         console.log(`📝 Updated playlist: ${playlistName}`);
         return playlist;
     } catch (error) {
@@ -787,7 +787,7 @@ class PlaylistManager {
 
   async getPublicPlaylists(guildId, limit = 20) {
     try {
-        const allPlaylists = await this.firebaseService.getUserPlaylists('*', guildId);
+        const allPlaylists = await this.neonService.getUserPlaylists('*', guildId);
         const publicPlaylists = allPlaylists
             .filter(p => p.isPublic)
             .map(playlist => ({
@@ -811,7 +811,7 @@ class PlaylistManager {
         if (playlist) {
             playlist.playCount = (playlist.playCount || 0) + 1;
             playlist.lastPlayed = new Date().toISOString();
-            await this.firebaseService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
+            await this.neonService.savePlaylist(userId, guildId, playlistName, playlist.tracks);
         }
     } catch (error) {
         console.error('Error incrementing play count:', error);

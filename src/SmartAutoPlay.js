@@ -1,12 +1,8 @@
 const UserPreferences = require('./UserPreferences');
-const MusicRecommendationService = require('./MusicRecommendationService');
-const AIRecommendationService = require('./AIRecommendationService');
 
 class SmartAutoPlay {
     constructor(sourceHandlers) {
         this.sourceHandlers = sourceHandlers;
-        this.aiRecommendationService = new AIRecommendationService();
-        this.recommendationService = new MusicRecommendationService(this.aiRecommendationService);
         this.playHistory = [];
         this.currentTheme = null; // Track the current musical theme
         this.userPreferences = new UserPreferences();
@@ -241,7 +237,15 @@ class SmartAutoPlay {
     }
 
     async getBackupPlaylistTrack() {
-        const randomPlaylist = this.backupPlaylists[Math.floor(Math.random() * this.backupPlaylists.length)];
+        const backupPlaylists = [
+            'popular music 2024',
+            'trending songs',
+            'top hits',
+            'viral music',
+            'chart toppers'
+        ];
+        
+        const randomPlaylist = backupPlaylists[Math.floor(Math.random() * backupPlaylists.length)];
         
         try {
             const results = await this.sourceHandlers.search(randomPlaylist, 10);
@@ -786,53 +790,48 @@ class SmartAutoPlay {
         if (!currentTrack || !currentTrack.title || !currentTrack.author) return null;
 
         try {
-            console.log(`🔍 Getting API similar tracks for: ${currentTrack.author} - ${currentTrack.title}`);
+            console.log(`🔍 Getting similar tracks for: ${currentTrack.author} - ${currentTrack.title}`);
             
-            const similarTracks = await this.recommendationService.getSimilarTracks(
-                currentTrack.title, 
-                currentTrack.author, 
-                15
-            );
+            // Use genre-based similarity since recommendation service was removed
+            const genre = this.detectGenre(currentTrack);
+            const similarQueries = [
+                `similar to ${currentTrack.author}`,
+                `${genre} like ${currentTrack.author}`,
+                `artists similar to ${currentTrack.author}`,
+                `${genre} music ${currentTrack.author} style`
+            ];
 
-            if (!similarTracks || similarTracks.length === 0) {
-                console.log('⚠️ No similar tracks found from APIs');
-                return null;
-            }
-
-            // Filter out recent artists and convert to search queries
-            const filtered = similarTracks.filter(track => 
-                !recentArtists.includes(track.artist?.toLowerCase()) && this.isMusicContent(track)
-            );
-
-            if (filtered.length === 0) {
-                console.log('⚠️ All similar tracks filtered out due to recent artists');
-                return null;
-            }
-
-            // Try to find each similar track in our search system
-            for (const track of filtered.slice(0, 5)) {
+            for (const query of similarQueries) {
                 try {
-                    const searchQuery = `${track.artist} ${track.title}`;
-                    const searchResults = await this.sourceHandlers.search(searchQuery, 3);
+                    const searchResults = await this.sourceHandlers.search(query, 8);
                     
                     if (searchResults && searchResults.length > 0) {
-                        const bestMatch = this.findBestMatch(searchResults, track.title, track.artist);
-                        if (bestMatch && this.isMusicContent(bestMatch)) {
-                            console.log(`✅ Found API similar track: ${bestMatch.title} by ${bestMatch.author}`);
-                            return bestMatch;
+                        // Filter out recent artists and current track
+                        const filtered = searchResults.filter(track => 
+                            !recentArtists.includes(track.author?.toLowerCase()) && 
+                            track.author?.toLowerCase() !== currentTrack.author?.toLowerCase() &&
+                            this.isMusicContent(track)
+                        );
+                        
+                        if (filtered.length > 0) {
+                            const bestMatch = this.selectBestTrack(filtered);
+                            if (bestMatch) {
+                                console.log(`✅ Found similar track: ${bestMatch.title} by ${bestMatch.author}`);
+                                return bestMatch;
+                            }
                         }
                     }
                 } catch (error) {
-                    console.log(`⚠️ Failed to search for: ${track.artist} - ${track.title}`);
+                    console.log(`⚠️ Failed to search for: ${query}`);
                     continue;
                 }
             }
 
-            console.log('⚠️ No API similar tracks could be found in search results');
+            console.log('⚠️ No similar tracks could be found');
             return null;
 
         } catch (error) {
-            console.error('❌ API similar tracks error:', error);
+            console.error('❌ Similar tracks error:', error);
             return null;
         }
     }
@@ -852,55 +851,19 @@ class SmartAutoPlay {
         }
 
         if (genres.length === 0) {
-            console.log('⚠️ No valid genres available for API genre recommendations');
+            console.log('⚠️ No valid genres available for genre recommendations');
             return null;
         }
 
         try {
             const genre = genres[Math.floor(Math.random() * Math.min(3, genres.length))];
-            console.log(`🎭 Getting API genre recommendations for: ${genre}`);
+            console.log(`🎭 Getting genre recommendations for: ${genre}`);
             
-            const genreRecommendations = await this.recommendationService.getGenreBasedRecommendations(genre, 10);
-
-            if (!genreRecommendations || genreRecommendations.length === 0) {
-                console.log(`⚠️ No genre recommendations found for: ${genre}`);
-                return null;
-            }
-
-            // Filter out recent artists
-            const filtered = genreRecommendations.filter(track => 
-                !recentArtists.includes(track.artist?.toLowerCase())
-            );
-
-            if (filtered.length === 0) {
-                console.log('⚠️ All genre recommendations filtered out due to recent artists');
-                return null;
-            }
-
-            // Try to find each recommended track in our search system
-            for (const track of filtered.slice(0, 5)) {
-                try {
-                    const searchQuery = `${track.artist} ${track.title}`;
-                    const searchResults = await this.sourceHandlers.search(searchQuery, 3);
-                    
-                    if (searchResults && searchResults.length > 0) {
-                        const bestMatch = this.findBestMatch(searchResults, track.title, track.artist);
-                        if (bestMatch && this.isMusicContent(bestMatch)) {
-                            console.log(`✅ Found API genre track: ${bestMatch.title} by ${bestMatch.author} (${genre})`);
-                            return bestMatch;
-                        }
-                    }
-                } catch (error) {
-                    console.log(`⚠️ Failed to search for genre track: ${track.artist} - ${track.title}`);
-                    continue;
-                }
-            }
-
-            console.log(`⚠️ No API genre recommendations could be found in search results for: ${genre}`);
-            return null;
+            // Use our genre-based search since recommendation service was removed
+            return await this.getGenreBasedRecommendation(null, genre);
 
         } catch (error) {
-            console.error('❌ API genre recommendations error:', error);
+            console.error('❌ Genre recommendations error:', error);
             return null;
         }
     }
@@ -1174,48 +1137,50 @@ class SmartAutoPlay {
 
     async getAISmartRecommendation(currentTrack, playHistory = []) {
         try {
-            console.log('🤖 Getting AI-powered recommendation...');
+            console.log('🤖 Getting smart recommendation...');
             
-            if (!this.aiRecommendationService.enabled) {
-                console.log('⚠️ AI recommendations not available (no API key)');
-                return null;
-            }
-
-            // Get AI recommendations from the service
-            const recommendations = await this.aiRecommendationService.getSmartRecommendations(
-                currentTrack,
-                playHistory,
-                {
-                    timeOfDay: this.getTimeContext(),
-                    mood: this.detectMood(currentTrack)
+            // Use intelligent heuristics since AI service was removed
+            const genre = this.detectGenre(currentTrack);
+            const mood = this.detectMood(currentTrack);
+            const timeContext = this.getTimeContext();
+            
+            // Build smart search query based on context
+            const smartQueries = [
+                `${genre} ${mood} music`,
+                `${timeContext.toLowerCase()} ${genre} playlist`,
+                `popular ${genre} artists`,
+                `${mood} ${genre} songs`
+            ];
+            
+            for (const query of smartQueries) {
+                try {
+                    const results = await this.sourceHandlers.search(query, 5);
+                    
+                    if (results && results.length > 0) {
+                        // Filter by genre and mood matching
+                        const filtered = results.filter(track => {
+                            const trackGenre = this.detectGenre(track);
+                            const trackMood = this.detectMood(track);
+                            return (trackGenre === genre || this.isRelatedGenre(trackGenre, genre)) &&
+                                   this.isMusicContent(track);
+                        });
+                        
+                        if (filtered.length > 0) {
+                            const recommendation = this.selectBestTrack(filtered);
+                            console.log(`🤖 Smart recommended: "${recommendation.title}" by ${recommendation.author}`);
+                            return recommendation;
+                        }
+                    }
+                } catch (error) {
+                    continue;
                 }
-            );
-
-            if (!recommendations || recommendations.length === 0) {
-                console.log('🤖 No AI recommendations returned');
-                return null;
             }
-
-            // Pick the best recommendation from the AI results
-            const bestRecommendation = recommendations[0];
             
-            // Convert AI recommendation format to our track format
-            const track = {
-                title: bestRecommendation.title,
-                author: bestRecommendation.artist,
-                url: `${bestRecommendation.title} ${bestRecommendation.artist}`, // Search query for SourceHandlers
-                duration: null, // Will be filled when the track is found
-                source: 'ai-recommendation',
-                reason: bestRecommendation.reason || 'AI recommendation',
-                similarity: bestRecommendation.similarity || 0.8,
-                energy: bestRecommendation.energy || 'medium'
-            };
-
-            console.log(`🤖 AI recommended: "${track.title}" by ${track.author} (${track.reason})`);
-            return track;
+            console.log('🤖 No smart recommendations found');
+            return null;
 
         } catch (error) {
-            console.error('❌ Error getting AI recommendation:', error.message);
+            console.error('❌ Error getting smart recommendation:', error.message);
             return null;
         }
     }

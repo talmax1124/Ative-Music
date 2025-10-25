@@ -17,16 +17,42 @@
   --success: theme('colors.green.500');
   --warning: theme('colors.yellow.500');
   --error: theme('colors.red.500');
+  
+  /* Mobile-specific variables */
+  --mobile-nav-height: 80px;
+  --mobile-header-height: 60px;
+  --touch-target-min: 44px;
+  --mobile-spacing: 16px;
+  --mobile-content-padding: calc(var(--mobile-nav-height) + 20px);
 }
 
 /* Base layer customizations */
 @layer base {
+  html {
+    @apply scroll-smooth;
+  }
+  
   body {
-    @apply bg-surface-900 text-slate-100 font-sans;
+    @apply bg-surface-900 text-slate-100 font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
   }
   
   * {
     @apply scrollbar-thin scrollbar-track-surface-800 scrollbar-thumb-surface-600;
+  }
+  
+  /* Improve touch interactions */
+  button, [role="button"], input[type="button"], input[type="submit"] {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  
+  /* Better focus states for accessibility */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-primary-500;
   }
 }
 
@@ -126,7 +152,165 @@
   }
 }
 
-/* Utility layer for custom utilities */
+/* Enhanced Mobile Components */
+@layer components {
+  /* Mobile navigation with gestures */
+  .mobile-nav {
+    @apply fixed bottom-0 left-0 right-0 bg-surface-800/95 backdrop-blur-lg border-t border-surface-600 z-50;
+    height: var(--mobile-nav-height);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  
+  .mobile-nav-grid {
+    @apply grid grid-cols-5 gap-1 h-full items-center px-2;
+  }
+  
+  .mobile-nav-item {
+    @apply flex flex-col items-center justify-center p-2 rounded-xl transition-all duration-200 relative;
+    min-height: var(--touch-target-min);
+    min-width: var(--touch-target-min);
+  }
+  
+  .mobile-nav-item.active {
+    @apply bg-primary-600 text-white shadow-lg scale-105;
+  }
+  
+  .mobile-nav-item:not(.active) {
+    @apply text-slate-400 hover:text-slate-200 hover:bg-surface-700/50;
+  }
+  
+  .mobile-nav-item .icon {
+    @apply text-lg mb-1;
+  }
+  
+  .mobile-nav-item .label {
+    @apply text-xs font-medium;
+  }
+  
+  /* Mobile header */
+  .mobile-header {
+    @apply fixed top-0 left-0 right-0 bg-surface-900/95 backdrop-blur-lg border-b border-surface-600 z-40;
+    height: var(--mobile-header-height);
+    padding-top: env(safe-area-inset-top);
+  }
+  
+  /* Enhanced mobile cards */
+  .card-mobile {
+    @apply p-4 text-sm rounded-2xl shadow-lg border border-surface-600/50;
+  }
+  
+  .card-interactive {
+    @apply transform transition-all duration-200 active:scale-95 active:bg-surface-700;
+  }
+  
+  /* Enhanced mobile buttons */
+  .btn-mobile {
+    @apply px-4 py-3 text-sm font-medium rounded-xl shadow-sm;
+    min-height: var(--touch-target-min);
+    min-width: var(--touch-target-min);
+  }
+  
+  .btn-mobile-large {
+    @apply px-6 py-4 text-base font-semibold rounded-2xl shadow-md;
+    min-height: 56px;
+  }
+  
+  /* Touch-friendly inputs */
+  .input-mobile {
+    @apply px-4 py-4 text-base rounded-xl border-2 border-surface-600 focus:border-primary-500;
+    min-height: var(--touch-target-min);
+  }
+  
+  /* Enhanced music controls */
+  .music-control-mobile {
+    @apply w-14 h-14 text-2xl rounded-full shadow-lg flex items-center justify-center;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-dark) 100%);
+  }
+  
+  .music-control-secondary {
+    @apply w-12 h-12 text-xl rounded-xl bg-surface-700 border border-surface-600;
+  }
+  
+  /* Mobile playlist enhancements */
+  .playlist-item-mobile {
+    @apply p-4 border-b border-surface-700/50 active:bg-surface-700 transition-all duration-150;
+    min-height: 72px;
+  }
+  
+  .playlist-item-dragging {
+    @apply bg-surface-600 scale-105 shadow-2xl z-10;
+  }
+  
+  /* Enhanced mobile modals */
+  .modal-mobile {
+    @apply fixed inset-x-4 bottom-4 top-auto rounded-t-2xl max-h-[85vh] overflow-hidden;
+    background: var(--bg-secondary);
+    backdrop-filter: blur(20px);
+  }
+  
+  .modal-mobile-header {
+    @apply p-4 border-b border-surface-600 flex items-center justify-between;
+  }
+  
+  .modal-mobile-content {
+    @apply p-4 overflow-y-auto;
+    max-height: calc(85vh - 80px);
+  }
+  
+  /* Mobile search enhancements */
+  .search-mobile {
+    @apply relative;
+  }
+  
+  .search-mobile-input {
+    @apply w-full pl-12 pr-4 py-4 text-base rounded-2xl bg-surface-800 border border-surface-600 focus:border-primary-500;
+  }
+  
+  .search-mobile-icon {
+    @apply absolute left-4 top-1/2 transform -translate-y-1/2 text-slate-400;
+  }
+  
+  .search-results-mobile {
+    @apply absolute top-full left-0 right-0 bg-surface-800 rounded-2xl shadow-2xl border border-surface-600 mt-2 max-h-80 overflow-y-auto z-50;
+  }
+  
+  .search-result-item {
+    @apply p-4 border-b border-surface-700/50 active:bg-surface-700 transition-colors cursor-pointer;
+  }
+  
+  /* Mobile queue enhancements */
+  .queue-mobile {
+    @apply space-y-2;
+  }
+  
+  .queue-item-mobile {
+    @apply bg-surface-800 rounded-xl p-4 border border-surface-600/50 shadow-sm;
+  }
+  
+  .queue-item-current {
+    @apply bg-gradient-to-r from-primary-900/50 to-primary-800/50 border-primary-500/50;
+  }
+  
+  .queue-controls-mobile {
+    @apply flex items-center justify-between gap-3 mt-3;
+  }
+  
+  /* Mobile gestures and interactions */
+  .swipeable {
+    touch-action: pan-y;
+  }
+  
+  .draggable {
+    touch-action: none;
+    user-select: none;
+  }
+  
+  .pull-to-refresh {
+    overscroll-behavior-y: contain;
+  }
+}
+
+/* Responsive utilities */
 @layer utilities {
   .text-gradient {
     @apply bg-gradient-to-r from-primary-400 to-accent-400 bg-clip-text text-transparent;
@@ -147,5 +331,125 @@
   
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
+  }
+  
+  /* Mobile-specific utilities */
+  .touch-manipulation {
+    touch-action: manipulation;
+  }
+  
+  .safe-area-inset-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  
+  .safe-area-inset-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+/* Mobile-first media queries */
+@media (max-width: 768px) {
+  .card {
+    @apply card-mobile;
+  }
+  
+  .btn {
+    @apply btn-mobile;
+  }
+  
+  .input {
+    @apply input-mobile;
+  }
+  
+  .container {
+    @apply container-mobile;
+  }
+  
+  /* Hide desktop-only elements on mobile */
+  .desktop-only {
+    @apply hidden;
+  }
+  
+  /* Stack navigation vertically on mobile */
+  .nav-horizontal {
+    @apply flex-col space-y-2 space-x-0;
+  }
+  
+  /* Make music player controls touch-friendly */
+  .music-controls .btn {
+    @apply music-control-mobile;
+  }
+  
+  /* Mobile playlist styling */
+  .playlist-item {
+    @apply playlist-item-mobile;
+  }
+  
+  /* Mobile modal adjustments */
+  .modal {
+    @apply modal-mobile;
+  }
+  
+  /* Improve text readability on mobile */
+  .text-xs {
+    @apply text-sm;
+  }
+  
+  /* Increase spacing for touch targets */
+  .space-y-1 {
+    @apply space-y-3;
+  }
+  
+  .space-x-1 {
+    @apply space-x-3;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Extra small screens - further optimizations */
+  .card {
+    @apply p-2 text-xs;
+  }
+  
+  .btn {
+    @apply px-2 py-1 text-xs;
+  }
+  
+  .container {
+    @apply px-2;
+  }
+  
+  /* Smaller music controls for very small screens */
+  .music-control-mobile {
+    @apply w-10 h-10 text-lg;
+  }
+  
+  /* Compact playlist items */
+  .playlist-item-mobile {
+    @apply p-2;
+  }
+}
+
+/* Large screens - desktop optimizations */
+@media (min-width: 769px) {
+  .mobile-only {
+    @apply hidden;
+  }
+  
+  .mobile-nav {
+    @apply hidden;
+  }
+  
+  /* Restore larger sizing for desktop */
+  .btn-mobile {
+    @apply px-4 py-2 text-base min-h-auto min-w-auto;
+  }
+  
+  .input-mobile {
+    @apply px-4 py-3 text-base;
+  }
+  
+  .container-mobile {
+    @apply px-6 pb-6;
   }
 }

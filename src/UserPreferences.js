@@ -1,8 +1,8 @@
-const firebaseService = require('./FirebaseService.js');
+const neonService = require('./NeonService.js');
 
 class UserPreferences {
     constructor() {
-        this.firebaseService = firebaseService;
+        this.neonService = neonService;
         this.preferences = {
             users: {},
             global: {
@@ -60,7 +60,7 @@ class UserPreferences {
 
         user.lastActive = timestamp;
         
-        await this.firebaseService.saveUserPreference(userId, guildId, track.id || track.title, {
+        await this.neonService.saveUserPreference(userId, guildId, track.id || track.title, {
             action: 'play',
             track: {
                 title: track.title,
@@ -72,7 +72,7 @@ class UserPreferences {
             timestamp: timestamp
         });
 
-        await this.firebaseService.saveListeningHistory(userId, guildId, {
+        await this.neonService.saveListeningHistory(userId, guildId, {
             title: track.title,
             author: track.author,
             genre: genre,
@@ -104,7 +104,7 @@ class UserPreferences {
                 user.favoriteArtists[track.author] = Math.max(0, user.favoriteArtists[track.author] - 0.5);
             }
 
-            await this.firebaseService.saveUserPreference(userId, guildId, track.id || track.title, {
+            await this.neonService.saveUserPreference(userId, guildId, track.id || track.title, {
                 action: 'skip',
                 track: {
                     title: track.title,
@@ -135,7 +135,7 @@ class UserPreferences {
             user.favoriteGenres[genre] = (user.favoriteGenres[genre] || 0) + 2;
             user.favoriteArtists[track.author] = (user.favoriteArtists[track.author] || 0) + 2;
 
-            await this.firebaseService.saveUserPreference(userId, guildId, track.id || track.title, {
+            await this.neonService.saveUserPreference(userId, guildId, track.id || track.title, {
                 action: 'repeat',
                 track: {
                     title: track.title,

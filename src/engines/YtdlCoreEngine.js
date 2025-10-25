@@ -1,4 +1,5 @@
 const ytdl = require('@distube/ytdl-core');
+const yts = require('yt-search');
 const { PassThrough } = require('stream');
 
 class YtdlCoreEngine {
@@ -40,8 +41,42 @@ class YtdlCoreEngine {
     }
 
     async search(query, limit = 10) {
-        // This engine doesn't search, only streams URLs
-        return [];
+        try {
+            console.log(`🔍 [${this.name}] Searching YouTube: ${query}`);
+            
+            const searchResults = await yts(query);
+            const videos = searchResults.videos.slice(0, Math.min(limit, 20));
+
+            const formattedResults = videos
+                .filter(video => video.duration && video.duration.seconds > 30) // Filter out very short videos
+                .map(video => ({
+                    title: video.title,
+                    author: video.author?.name || 'Unknown',
+                    url: video.url,
+                    duration: video.duration?.timestamp || '0:00',
+                    thumbnail: video.thumbnail,
+                    source: 'youtube',
+                    viewCount: video.views || 0,
+                    publishedAt: video.ago
+                }));
+
+            console.log(`✅ [${this.name}] Found ${formattedResults.length} YouTube results`);
+            return formattedResults;
+        } catch (error) {
+            console.error(`❌ [${this.name}] YouTube search failed: ${error.message}`);
+            return [];
+        }
+    }
+
+    formatDuration(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        
+        if (hours > 0) {
+            return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        return `${minutes}:${secs.toString().padStart(2, '0')}`;
     }
 
     async getStream(url) {
